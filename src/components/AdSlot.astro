@@ -1,0 +1,29 @@
+---
+import { ADS_ENABLED } from '../data/ads';
+
+interface Props {
+  name: string;
+  width: number;
+  height: number;
+  variant: 'article-top' | 'article-inline' | 'sidebar';
+}
+
+const { name, width, height, variant } = Astro.props;
+---
+
+{
+  ADS_ENABLED && (
+    <>
+      <!-- Ad placeholder: replace this div with your ad network tag. -->
+      <div
+        data-ad-slot={name}
+        data-ad-variant={variant}
+        style={`width: ${width}px; height: ${height}px; max-width: 100%;`}
+        class="mx-auto flex items-center justify-center border border-dashed border-slate-300 text-xs text-slate-400"
+        aria-hidden="true"
+      >
+        Ad placeholder
+      </div>
+    </>
+  )
+}

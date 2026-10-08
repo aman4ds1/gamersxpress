@@ -4,6 +4,8 @@ import { getCollection, render } from 'astro:content';
 import type { CollectionEntry } from 'astro:content';
 import { CATEGORY_LABELS } from '../../data/categories';
 import { entitySlug } from '../../data/entities';
+import { ADS_ENABLED } from '../../data/ads';
+import AdSlot from '../../components/AdSlot.astro';
 
 export async function getStaticPaths() {
   const articles = await getCollection('articles');
@@ -41,85 +43,101 @@ const topicLinks = article.data.entities
     { name: title, path: `/news/${article.id}` },
   ]}
 >
-  <article class="mx-auto max-w-3xl px-4 py-10">
-    <p class="text-sm text-slate-500 dark:text-slate-400">
-      <time datetime={pubDate.toISOString()}>
-        {pubDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
-      </time>
-      {' · '}
-      <a
-        href={`/category/${category}`}
-        class="hover:text-slate-900 dark:hover:text-white"
+  <article
+    class={ADS_ENABLED
+      ? 'mx-auto grid max-w-6xl gap-8 px-4 py-10 lg:grid-cols-[minmax(0,1fr)_300px]'
+      : 'mx-auto max-w-3xl px-4 py-10'}
+  >
+    <div class={ADS_ENABLED ? 'min-w-0' : undefined}>
+      <p class="text-sm text-slate-500 dark:text-slate-400">
+        <time datetime={pubDate.toISOString()}>
+          {pubDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+        </time>
+        {' · '}
+        <a
+          href={`/category/${category}`}
+          class="hover:text-slate-900 dark:hover:text-white"
+        >
+          {categoryLabel}
+        </a>
+      </p>
+      <h1 class="mt-2 text-3xl font-extrabold tracking-tight sm:text-4xl">
+        {title}
+      </h1>
+      {
+        updatedDate && (
+          <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            Updated{' '}
+            <time datetime={updatedDate.toISOString()}>
+              {updatedDate.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+              })}
+            </time>
+          </p>
+        )
+      }
+      <p class="mt-4 text-lg text-slate-600 dark:text-slate-300">{description}</p>
+
+      {
+        topicLinks.length > 0 && (
+          <ul class="mt-4 flex flex-wrap gap-2" aria-label="Topics">
+            {topicLinks.map(({ entity, slug }) => (
+              <li>
+                <a
+                  href={`/topic/${slug}`}
+                  class="inline-block rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:text-white"
+                >
+                  {entity}
+                </a>
+              </li>
+            ))}
+          </ul>
+        )
+      }
+
+      <AdSlot name="article-top" width={728} height={90} variant="article-top" />
+
+      <div class="article-body mt-8">
+        <Content />
+        <AdSlot name="article-inline" width={336} height={280} variant="article-inline" />
+      </div>
+
+      <section
+        class="mt-10 border-t border-slate-200 pt-6 dark:border-slate-800"
+        aria-labelledby="sources-heading"
       >
-        {categoryLabel}
-      </a>
-    </p>
-    <h1 class="mt-2 text-3xl font-extrabold tracking-tight sm:text-4xl">
-      {title}
-    </h1>
-    {
-      updatedDate && (
-        <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">
-          Updated{' '}
-          <time datetime={updatedDate.toISOString()}>
-            {updatedDate.toLocaleDateString('en-US', {
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric',
-            })}
-          </time>
-        </p>
-      )
-    }
-    <p class="mt-4 text-lg text-slate-600 dark:text-slate-300">{description}</p>
-
-    {
-      topicLinks.length > 0 && (
-        <ul class="mt-4 flex flex-wrap gap-2" aria-label="Topics">
-          {topicLinks.map(({ entity, slug }) => (
-            <li>
-              <a
-                href={`/topic/${slug}`}
-                class="inline-block rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:text-white"
-              >
-                {entity}
-              </a>
-            </li>
-          ))}
-        </ul>
-      )
-    }
-
-    <div class="article-body mt-8">
-      <Content />
+        <h2
+          id="sources-heading"
+          class="text-xl font-bold tracking-tight"
+        >
+          Sources
+        </h2>
+        <ol class="mt-3 list-decimal space-y-2 pl-6 text-sm">
+          {
+            sources.map((source) => (
+              <li>
+                <a
+                  href={source.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
+                >
+                  {source.name}
+                </a>
+              </li>
+            ))
+          }
+        </ol>
+      </section>
     </div>
-
-    <section
-      class="mt-10 border-t border-slate-200 pt-6 dark:border-slate-800"
-      aria-labelledby="sources-heading"
-    >
-      <h2
-        id="sources-heading"
-        class="text-xl font-bold tracking-tight"
-      >
-        Sources
-      </h2>
-      <ol class="mt-3 list-decimal space-y-2 pl-6 text-sm">
-        {
-          sources.map((source) => (
-            <li>
-              <a
-                href={source.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                class="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
-              >
-                {source.name}
-              </a>
-            </li>
-          ))
-        }
-      </ol>
-    </section>
+    {
+      ADS_ENABLED && (
+        <aside class="hidden lg:block" aria-label="Sidebar">
+          <AdSlot name="article-sidebar" width={300} height={600} variant="sidebar" />
+        </aside>
+      )
+    }
   </article>
 </BaseLayout>
