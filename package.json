@@ -14,7 +14,8 @@
     "check:articles": "node checks/check-articles.mjs",
     "check:seo": "node checks/seo-dist.mjs",
     "test": "node --test \"checks/**/*.test.mjs\"",
-    "postbuild": "pagefind --site dist"
+    "postbuild": "pagefind --site dist",
+    "deploy": "npm run build && wrangler deploy"
   },
   "repository": {
     "type": "git",
@@ -39,6 +40,7 @@
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
     "pagefind": "^1.5.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "wrangler": "^4.149.0"
   }
 }
