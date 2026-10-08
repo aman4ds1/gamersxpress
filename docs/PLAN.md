@@ -8,7 +8,16 @@ Relaunch gamersxpress.com as a gaming news publication plus a small set of brows
 
 Topics: gaming news, PC, PlayStation, Xbox, Nintendo, hardware, gaming tech (NVIDIA/AMD/Intel, handhelds, VR/AR, AI in gaming, engines), esports, and Indian gaming and esports.
 
-## 2. Principles
+## 2. Audience and regional rules
+
+- One English site (US English spelling), plain language, no regional versions, no hreflang.
+- Primary audiences: US, UK, India. Region is expressed through tags and entities, not separate sections, except the existing `india` category.
+- Prices and availability: record per region only when an official or reputable source confirms them; otherwise state they are unconfirmed. Never convert currencies in articles.
+- Release and event times: stored as UTC and rendered by a time component in PT/ET, BST and IST. Models never convert times.
+- Sources include UK and Indian outlets and official regional pages.
+- No cookies for analytics; add a privacy policy page.
+
+## 3. Principles
 
 1. **Quality over volume.** Start at 2-4 articles per day. Never publish to hit a number.
 2. **Code decides, models assist.** SEO output, checks, and publish gates are deterministic code. Models only write text (articles, titles, descriptions, alt text) and extract facts.
@@ -19,7 +28,7 @@ Topics: gaming news, PC, PlayStation, Xbox, Nintendo, hardware, gaming tech (NVI
 7. **No secrets in the repo.** API keys live in GitHub Secrets and local `.env` (gitignored).
 8. **Free by default.** No paid services without an explicit decision.
 
-## 3. Architecture
+## 4. Architecture
 
 ```
 gamersxpress.com (DNS on Cloudflare, registrar GoDaddy)
@@ -34,7 +43,7 @@ Two sections on one site:
 - `/news`, `/category`, `/topic`: article content (automated pipeline)
 - `/tools`: static pages with client-side JavaScript. No server calls. The pipeline never touches them.
 
-## 4. Repo layout
+## 5. Repo layout
 
 ```
 AGENTS.md                  agent rules (short)
@@ -71,7 +80,7 @@ drafts/                    articles that failed gates (never deployed)
 .github/workflows/         publish.yml, site-check.yml, weekly.yml
 ```
 
-## 5. Article schema
+## 6. Article schema
 
 Collection `articles` (`src/content.config.ts`, glob loader over `src/content/articles/**/*.md`). URLs use `entry.id`.
 
@@ -88,7 +97,7 @@ Collection `articles` (`src/content.config.ts`, glob loader over `src/content/ar
 | image | string path, optional |
 | imageAlt | string, required if image is set |
 
-## 6. Pipeline stages
+## 7. Pipeline stages
 
 Each stage reads and writes JSON files so it can be tested alone. A run publishes at most one article.
 
@@ -102,10 +111,10 @@ Each stage reads and writes JSON files so it can be tested alone. A run publishe
 8. **Verify.** A different model family checks each claim in the draft against the facts sheet. Code also checks that every number, price, date, and spec in the article appears in the facts sheet. Any unsupported claim fails the run.
 9. **SEO.** Generate title, description, slug, tags, entities, and image alt text. Code validates lengths and formats.
 10. **Internal links.** Match entities and keywords against existing articles. Link first mentions only, 3-5 links max, plus a related-articles block.
-11. **Quality gates** (section 8).
+11. **Quality gates** (section 9).
 12. **Publish.** Pass: commit to `main`. Fail: write to `drafts/` and open an Issue.
 
-## 7. Providers and models
+## 8. Providers and models
 
 Code calls `generate(role, prompt)`. Model names and provider order are read from `pipeline/config.yaml` and never hardcoded, because free-tier eligibility changes.
 
@@ -119,7 +128,7 @@ Fallback: next provider in the list for that role; last resort OpenRouter free m
 
 Secrets: `GEMINI_API_KEY`, `MISTRAL_API_KEY`, optional `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`. Treat free tiers as possibly logged or used for training: never put secrets or private data in prompts. Limits differ by provider and change often; check each provider's dashboard.
 
-## 8. Quality gates (code, always run)
+## 9. Quality gates (code, always run)
 
 An article must pass all of these to publish:
 
@@ -137,13 +146,13 @@ An article must pass all of these to publish:
 
 Site-level checks on every push: build, Lighthouse CI, linkinator, and a scan of `dist/` for one H1, a canonical tag, and parseable JSON-LD on every page. If a check fails after an article commit, revert that commit and open an Issue.
 
-## 9. Technical SEO (generated in code, not by models)
+## 10. Technical SEO (generated in code, not by models)
 
 Title, meta description, canonical URL, Open Graph and Twitter cards, JSON-LD (Organization, WebSite, NewsArticle with author and publisher, BreadcrumbList), XML sitemap, robots.txt, RSS feed, image alt text, heading structure, internal links, fast static pages. Trust pages are required: About, Editorial Policy, AI disclosure, Corrections, Contact. Articles show an "Updated" date when edited.
 
 After deploy: ping IndexNow (Bing, Yandex), resubmit the sitemap through the Search Console API. Do not use the Google Indexing API for articles.
 
-## 10. Safety layer
+## 11. Safety layer
 
 - **Kill switch:** repo variable `PAUSED=true` stops all runs.
 - **Daily cap:** `DAILY_CAP` (start at 2-4).
@@ -153,21 +162,21 @@ After deploy: ping IndexNow (Bing, Yandex), resubmit the sitemap through the Sea
 - **Alerts:** failed workflows email the owner; optional Telegram message.
 - Batch commits: one commit per run, so Cloudflare Pages stays well under its monthly build limit.
 
-## 11. Workflows
+## 12. Workflows
 
 - `publish.yml`: schedule about every 3 hours (schedules can be delayed). Runs the pipeline and commits.
 - `site-check.yml`: on every push to `main` and on pull requests. Build, checks, auto-revert on failure.
 - `weekly.yml`: pulls Search Console and PageSpeed data, writes a short report, updates `data/topic-performance.json`.
 
-## 12. Hosting limits to respect
+## 13. Hosting limits to respect
 
 Cloudflare Pages free plan: 500 builds per month, one build at a time, 20-minute build timeout, 20,000 files per site, 25 MiB per file. Static bandwidth is unmetered. Keep images small, use one cover image per article, and check the file count occasionally. If builds become a constraint, build in GitHub Actions and deploy with `wrangler`.
 
-## 13. Tools section
+## 14. Tools section
 
 Tools live under `/tools` and run fully in the browser, with data in JSON files in the repo. Each tool page has a title, a short explanation, the tool, and a "how it works" section, with `<SEO />` applied. Build order: mouse sensitivity converter, resolution and frame-time calculator, PSU wattage estimator, storage and download-time calculator. "Can my PC run it" comes later and must say "meets the published requirements", never promise performance. Do not scrape benchmark sites.
 
-## 14. Rollout order
+## 15. Rollout order
 
 1. Astro skeleton, layout, SEO component, JSON-LD, sitemap, RSS, robots.txt
 2. Content collection, article and category pages, sample articles
@@ -182,7 +191,7 @@ Tools live under `/tools` and run fully in the browser, with data in JSON files 
 11. After about 50 reviewed articles, switch to `auto` at 2-4 per day
 12. Weekly report, social posting, tools section
 
-## 15. Ads (future)
+## 16. Ads (future)
 
 - Ads are off until approved. Do not add ad scripts yet.
 - Layout includes empty, fixed-size ad slots to avoid layout shift.
@@ -191,7 +200,7 @@ Tools live under `/tools` and run fully in the browser, with data in JSON files 
 - Ads never influence what the pipeline publishes or how stories are written.
 - Affiliate links are disclosed on the page.
 
-## 16. Non-goals
+## 17. Non-goals
 
 - No WordPress, no database, no paid SEO tools, no paid backlinks
 - No agent frameworks in the pipeline
