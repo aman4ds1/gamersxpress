@@ -1,5 +1,11 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { CATEGORY_LABELS } from '../data/categories';
+
+const latest = (await getCollection('articles'))
+  .sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf())
+  .slice(0, 10);
 ---
 
 <BaseLayout title="GamersXpress — Gaming News, Hardware & Esports">
@@ -19,11 +25,48 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     <h2 id="latest-articles" class="text-2xl font-bold tracking-tight">
       Latest articles
     </h2>
-    <!-- Article cards will be rendered here once the content collection exists. -->
-    <div
-      class="mt-6 rounded border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400"
-    >
-      Latest articles will appear here.
-    </div>
+    {
+      latest.length > 0 ? (
+        <ul class="mt-6 space-y-8">
+          {latest.map((article) => (
+            <li>
+              <article>
+                <p class="text-sm text-slate-500 dark:text-slate-400">
+                  <time datetime={article.data.pubDate.toISOString()}>
+                    {article.data.pubDate.toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric',
+                    })}
+                  </time>
+                  {' · '}
+                  <a
+                    href={`/category/${article.data.category}`}
+                    class="hover:text-slate-900 dark:hover:text-white"
+                  >
+                    {CATEGORY_LABELS[article.data.category]}
+                  </a>
+                </p>
+                <h3 class="mt-1 text-xl font-bold tracking-tight">
+                  <a
+                    href={`/news/${article.id}`}
+                    class="hover:text-sky-600 dark:hover:text-sky-400"
+                  >
+                    {article.data.title}
+                  </a>
+                </h3>
+                <p class="mt-2 text-slate-600 dark:text-slate-300">
+                  {article.data.description}
+                </p>
+              </article>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div class="mt-6 rounded border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+          Latest articles will appear here.
+        </div>
+      )
+    }
   </section>
 </BaseLayout>
