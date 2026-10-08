@@ -1,0 +1,83 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { CONTACT_EMAIL } from '../data/site';
+
+const description =
+  'How GamersXpress handles data: anonymous, aggregate visit statistics via cookieless Cloudflare Web Analytics, no accounts, no personal data.';
+
+const lastUpdated = new Date('2026-10-08');
+const lastUpdatedDisplay = lastUpdated.toLocaleDateString('en-US', {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+  timeZone: 'UTC',
+});
+const lastUpdatedIso = lastUpdated.toISOString().slice(0, 10);
+---
+
+<BaseLayout
+  title="Privacy | GamersXpress"
+  description={description}
+  breadcrumbs={[
+    { name: 'GamersXpress', path: '/' },
+    { name: 'Privacy', path: '/privacy' },
+  ]}
+>
+  <article class="mx-auto max-w-3xl px-4 py-10">
+    <h1 class="text-3xl font-extrabold tracking-tight">Privacy</h1>
+    <p class="mt-4 text-lg text-slate-600 dark:text-slate-300">
+      GamersXpress is a static website. This page explains what the site
+      collects and what it does not.
+    </p>
+    <p class="mt-3 text-sm text-slate-500 dark:text-slate-400">
+      Last updated <time datetime={lastUpdatedIso}>{lastUpdatedDisplay}</time>
+    </p>
+
+    <h2 class="mt-8 text-xl font-bold tracking-tight">What the site collects</h2>
+    <p class="mt-3 text-slate-600 dark:text-slate-300">
+      Anonymous, aggregate visit statistics: which pages are read and how
+      people arrive at the site, summed up across visitors rather than tracked
+      per person. The site has no accounts, no comment system, and no forms
+      that store what you send it. We do not ask for or keep personal data
+      through the website.
+    </p>
+
+    <h2 class="mt-8 text-xl font-bold tracking-tight">Analytics</h2>
+    <p class="mt-3 text-slate-600 dark:text-slate-300">
+      The site uses Cloudflare Web Analytics. It is cookieless — it does not
+      set cookies and does not identify individual visitors. The numbers it
+      reports are anonymous and aggregate.
+    </p>
+
+    <h2 class="mt-8 text-xl font-bold tracking-tight">Cookies</h2>
+    <p class="mt-3 text-slate-600 dark:text-slate-300">
+      This site does not currently set any cookies. If advertising or other
+      tracking cookies are ever added, this page will be updated before they
+      are enabled, and the date above will change.
+    </p>
+
+    <h2 class="mt-8 text-xl font-bold tracking-tight">Third-party links</h2>
+    <p class="mt-3 text-slate-600 dark:text-slate-300">
+      Articles link to sources, game stores, and other sites. When you follow
+      a link you leave gamersxpress.com, and whatever that site does is up to
+      that site.
+    </p>
+
+    <h2 class="mt-8 text-xl font-bold tracking-tight">Questions</h2>
+    <p class="mt-3 text-slate-600 dark:text-slate-300">
+      If you have a question about this page, email
+      <a
+        href={`mailto:${CONTACT_EMAIL}`}
+        class="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
+      >
+        {CONTACT_EMAIL}
+      </a>. If you email us, we receive your address and message as normal
+      email — that is separate from anything the website itself collects. See
+      also the <a
+        href="/contact"
+        class="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
+        >contact page</a
+      >.
+    </p>
+  </article>
+</BaseLayout>
