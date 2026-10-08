@@ -182,7 +182,16 @@ Tools live under `/tools` and run fully in the browser, with data in JSON files 
 11. After about 50 reviewed articles, switch to `auto` at 2-4 per day
 12. Weekly report, social posting, tools section
 
-## 15. Non-goals
+## 15. Ads (future)
+
+- Ads are off until approved. Do not add ad scripts yet.
+- Layout includes empty, fixed-size ad slots to avoid layout shift.
+- Add a Privacy Policy page now; add a consent banner when ads or tracking cookies go live.
+- `public/ads.txt` is added only when an ad account exists.
+- Ads never influence what the pipeline publishes or how stories are written.
+- Affiliate links are disclosed on the page.
+
+## 16. Non-goals
 
 - No WordPress, no database, no paid SEO tools, no paid backlinks
 - No agent frameworks in the pipeline
