@@ -1,0 +1,47 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { CONTACT_EMAIL } from '../data/site';
+
+const description =
+  'Get in touch with GamersXpress by email — corrections, story tips, feedback, and everything else.';
+---
+
+<BaseLayout
+  title="Contact | GamersXpress"
+  description={description}
+  breadcrumbs={[
+    { name: 'GamersXpress', path: '/' },
+    { name: 'Contact', path: '/contact' },
+  ]}
+>
+  <article class="mx-auto max-w-3xl px-4 py-10">
+    <h1 class="text-3xl font-extrabold tracking-tight">Contact</h1>
+    <p class="mt-4 text-lg text-slate-600 dark:text-slate-300">
+      The best way to reach GamersXpress is by email.
+    </p>
+
+    <h2 class="mt-8 text-xl font-bold tracking-tight">Email</h2>
+    <p class="mt-3 text-slate-600 dark:text-slate-300">
+      <a
+        href={`mailto:${CONTACT_EMAIL}`}
+        class="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
+      >
+        {CONTACT_EMAIL}
+      </a>
+    </p>
+
+    <h2 class="mt-8 text-xl font-bold tracking-tight">What to include</h2>
+    <ul class="mt-3 list-disc space-y-2 pl-6 text-slate-600 dark:text-slate-300">
+      <li>
+        Corrections: the article link and what looks wrong. See
+        <a
+          href="/corrections"
+          class="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
+          >corrections</a
+        >.
+      </li>
+      <li>Story tips: a link to the source we should look at.</li>
+      <li>Anything else: whatever you need to say, in your own words.</li>
+    </ul>
+  </article>
+</BaseLayout>

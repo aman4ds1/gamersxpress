@@ -1,12 +1,35 @@
 ---
 const year = new Date().getFullYear();
+const footerLinks = [
+  { label: 'About', href: '/about' },
+  { label: 'Editorial Policy', href: '/editorial-policy' },
+  { label: 'AI Disclosure', href: '/ai-disclosure' },
+  { label: 'Corrections', href: '/corrections' },
+  { label: 'Contact', href: '/contact' },
+];
 ---
 
 <footer class="border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950">
-  <div
-    class="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-6 text-sm text-slate-500 sm:flex-row sm:items-center sm:justify-between dark:text-slate-400"
-  >
-    <p>&copy; {year} GamersXpress. All rights reserved.</p>
-    <p>Gaming news, hardware, and esports coverage.</p>
+  <div class="mx-auto max-w-6xl px-4 py-6 text-sm text-slate-500 dark:text-slate-400">
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <p>&copy; {year} GamersXpress. All rights reserved.</p>
+      <p>Gaming news, hardware, and esports coverage.</p>
+    </div>
+    <nav aria-label="Footer" class="mt-4">
+      <ul class="flex flex-wrap gap-x-5 gap-y-2">
+        {
+          footerLinks.map((item) => (
+            <li>
+              <a
+                href={item.href}
+                class="transition-colors hover:text-slate-900 dark:hover:text-white"
+              >
+                {item.label}
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+    </nav>
   </div>
 </footer>

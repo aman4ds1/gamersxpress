@@ -1,0 +1,57 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { CONTACT_EMAIL } from '../data/site';
+
+const description =
+  'Found an error in a GamersXpress article? Here is how to report it and how fixes are handled with an Updated date.';
+---
+
+<BaseLayout
+  title="Corrections | GamersXpress"
+  description={description}
+  breadcrumbs={[
+    { name: 'GamersXpress', path: '/' },
+    { name: 'Corrections', path: '/corrections' },
+  ]}
+>
+  <article class="mx-auto max-w-3xl px-4 py-10">
+    <h1 class="text-3xl font-extrabold tracking-tight">Corrections</h1>
+    <p class="mt-4 text-lg text-slate-600 dark:text-slate-300">
+      If you find an error in a GamersXpress article, tell us and we will fix
+      it.
+    </p>
+
+    <h2 class="mt-8 text-xl font-bold tracking-tight">Report an error</h2>
+    <p class="mt-3 text-slate-600 dark:text-slate-300">
+      Email
+      <a
+        href={`mailto:${CONTACT_EMAIL}`}
+        class="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
+      >
+        {CONTACT_EMAIL}
+      </a>
+      with the article link and what looks wrong. The claim is checked against
+      the sources the article cites.
+    </p>
+
+    <h2 class="mt-8 text-xl font-bold tracking-tight">How fixes are handled</h2>
+    <p class="mt-3 text-slate-600 dark:text-slate-300">
+      If the article is wrong, it is corrected and shows an Updated date with
+      the date of the fix, below the original publication date. If a source
+      itself has changed, the article is updated to match what the source now
+      says.
+    </p>
+
+    <h2 class="mt-8 text-xl font-bold tracking-tight">What is not a correction</h2>
+    <p class="mt-3 text-slate-600 dark:text-slate-300">
+      Updates to an ongoing story appear as new articles rather than edits to
+      old ones. See the
+      <a
+        href="/editorial-policy"
+        class="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
+        >editorial policy</a
+      >
+      for how stories are sourced.
+    </p>
+  </article>
+</BaseLayout>
