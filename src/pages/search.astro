@@ -1,0 +1,90 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const description =
+  'Search GamersXpress articles by game, hardware, topic, or entity.';
+---
+
+<BaseLayout
+  title="Search | GamersXpress"
+  description={description}
+  breadcrumbs={[
+    { name: 'GamersXpress', path: '/' },
+    { name: 'Search', path: '/search' },
+  ]}
+>
+  <div class="mx-auto max-w-3xl px-4 py-10">
+    <h1 class="text-3xl font-extrabold tracking-tight">Search</h1>
+    <p class="mt-2 text-slate-600 dark:text-slate-300">
+      Search every GamersXpress article by game, hardware, topic, or entity.
+    </p>
+
+    <label for="search-input" class="mt-6 block text-sm font-medium">
+      Search articles
+    </label>
+    <input
+      id="search-input"
+      type="search"
+      autocomplete="off"
+      placeholder="Try NVIDIA, PS5, esports…"
+      class="mt-2 w-full rounded border border-slate-300 bg-white px-3 py-2 text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+    />
+    <p
+      id="search-status"
+      class="mt-4 min-h-5 text-sm text-slate-500 dark:text-slate-400"
+      role="status"
+    >
+    </p>
+    <ol id="search-results" class="mt-6 space-y-6"></ol>
+  </div>
+
+  <script is:inline type="module">
+    const input = document.getElementById('search-input');
+    const status = document.getElementById('search-status');
+    const results = document.getElementById('search-results');
+
+    let pagefind = null;
+    try {
+      pagefind = await import('/pagefind/pagefind.js');
+      await pagefind.init();
+      status.textContent = 'Type to search.';
+    } catch {
+      status.textContent =
+        'The search index is not available yet. It is created when the site is built.';
+    }
+
+    input.addEventListener('input', async () => {
+      const query = input.value.trim();
+      results.replaceChildren();
+      if (!pagefind) return;
+      if (!query) {
+        status.textContent = 'Type to search.';
+        return;
+      }
+      status.textContent = 'Searching…';
+      const search = await pagefind.debouncedSearch(query);
+      if (search === null) return;
+      const data = await Promise.all(
+        search.results.slice(0, 20).map((result) => result.data()),
+      );
+      status.textContent =
+        data.length === 0
+          ? `No results for “${query}”.`
+          : `${data.length} result${data.length === 1 ? '' : 's'}.`;
+      for (const item of data) {
+        const li = document.createElement('li');
+        const link = document.createElement('a');
+        link.href = item.url;
+        link.className =
+          'text-lg font-bold text-sky-600 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300';
+        link.textContent = item.meta.title;
+        const excerpt = document.createElement('p');
+        excerpt.className =
+          'mt-1 text-sm text-slate-600 dark:text-slate-300';
+        excerpt.innerHTML = item.excerpt;
+        li.append(link, excerpt);
+        results.append(li);
+      }
+    });
+  </script>
+</BaseLayout>

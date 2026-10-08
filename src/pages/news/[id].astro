@@ -3,6 +3,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 import { getCollection, render } from 'astro:content';
 import type { CollectionEntry } from 'astro:content';
 import { CATEGORY_LABELS } from '../../data/categories';
+import { entitySlug } from '../../data/entities';
 
 export async function getStaticPaths() {
   const articles = await getCollection('articles');
@@ -21,6 +22,9 @@ const { Content } = await render(article);
 const { title, description, pubDate, updatedDate, category, sources, image, imageAlt } =
   article.data;
 const categoryLabel = CATEGORY_LABELS[category];
+const topicLinks = article.data.entities
+  .map((entity) => ({ entity, slug: entitySlug(entity) }))
+  .filter(({ slug }) => slug);
 ---
 
 <BaseLayout
@@ -68,6 +72,23 @@ const categoryLabel = CATEGORY_LABELS[category];
       )
     }
     <p class="mt-4 text-lg text-slate-600 dark:text-slate-300">{description}</p>
+
+    {
+      topicLinks.length > 0 && (
+        <ul class="mt-4 flex flex-wrap gap-2" aria-label="Topics">
+          {topicLinks.map(({ entity, slug }) => (
+            <li>
+              <a
+                href={`/topic/${slug}`}
+                class="inline-block rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:text-white"
+              >
+                {entity}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )
+    }
 
     <div class="article-body mt-8">
       <Content />

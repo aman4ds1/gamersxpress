@@ -1,0 +1,89 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import type { CollectionEntry } from 'astro:content';
+import { entitySlug } from '../../data/entities';
+
+export async function getStaticPaths() {
+  const articles = await getCollection('articles');
+  const bySlug = new Map<
+    string,
+    { entity: string; articles: CollectionEntry<'articles'>[] }
+  >();
+  for (const article of articles) {
+    for (const entity of article.data.entities) {
+      const slug = entitySlug(entity);
+      if (!slug) continue;
+      const entry = bySlug.get(slug) ?? { entity, articles: [] };
+      entry.articles.push(article);
+      bySlug.set(slug, entry);
+    }
+  }
+  return [...bySlug.entries()].map(([slug, { entity, articles }]) => ({
+    params: { entity: slug },
+    props: {
+      entity,
+      articles: articles.sort(
+        (a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
+      ),
+    },
+  }));
+}
+
+interface Props {
+  entity: string;
+  articles: CollectionEntry<'articles'>[];
+}
+
+const { entity, articles } = Astro.props;
+const slug = entitySlug(entity);
+const count = articles.length;
+---
+
+<BaseLayout
+  title={`${entity} — latest articles | GamersXpress`}
+  description={`${entity} news, guides and analysis on GamersXpress — ${count} article${count === 1 ? '' : 's'}, each with its sources linked.`}
+  breadcrumbs={[
+    { name: 'GamersXpress', path: '/' },
+    { name: entity, path: `/topic/${slug}` },
+  ]}
+>
+  <div class="mx-auto max-w-6xl px-4 py-10">
+    <h1 class="text-3xl font-extrabold tracking-tight">{entity}</h1>
+    <p class="mt-2 text-slate-600 dark:text-slate-300">
+      Latest {entity} coverage on GamersXpress — {count} article{
+        count === 1 ? '' : 's'
+      }, each with its sources linked.
+    </p>
+    <ul class="mt-8 space-y-8">
+      {
+        articles.map((article) => (
+          <li>
+            <article>
+              <p class="text-sm text-slate-500 dark:text-slate-400">
+                <time datetime={article.data.pubDate.toISOString()}>
+                  {article.data.pubDate.toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                  })}
+                </time>
+              </p>
+              <h2 class="mt-1 text-xl font-bold tracking-tight">
+                <a
+                  href={`/news/${article.id}`}
+                  class="hover:text-sky-600 dark:hover:text-sky-400"
+                >
+                  {article.data.title}
+                </a>
+              </h2>
+              <p class="mt-2 text-slate-600 dark:text-slate-300">
+                {article.data.description}
+              </p>
+            </article>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</BaseLayout>
