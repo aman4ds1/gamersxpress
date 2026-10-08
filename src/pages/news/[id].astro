@@ -49,14 +49,14 @@ const topicLinks = article.data.entities
       : 'mx-auto max-w-3xl px-4 py-10'}
   >
     <div class={ADS_ENABLED ? 'min-w-0' : undefined}>
-      <p class="text-sm text-slate-500 dark:text-slate-400">
+      <p class="text-sm text-ink-subtle">
         <time datetime={pubDate.toISOString()}>
           {pubDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
         </time>
         {' · '}
         <a
           href={`/category/${category}`}
-          class="hover:text-slate-900 dark:hover:text-white"
+          class="hover:text-ink-brand"
         >
           {categoryLabel}
         </a>
@@ -66,7 +66,7 @@ const topicLinks = article.data.entities
       </h1>
       {
         updatedDate && (
-          <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">
+          <p class="mt-2 text-sm text-ink-subtle">
             Updated{' '}
             <time datetime={updatedDate.toISOString()}>
               {updatedDate.toLocaleDateString('en-US', {
@@ -78,7 +78,7 @@ const topicLinks = article.data.entities
           </p>
         )
       }
-      <p class="mt-4 text-lg text-slate-600 dark:text-slate-300">{description}</p>
+      <p class="mt-4 text-lg text-ink-muted">{description}</p>
 
       {
         topicLinks.length > 0 && (
@@ -87,7 +87,7 @@ const topicLinks = article.data.entities
               <li>
                 <a
                   href={`/topic/${slug}`}
-                  class="inline-block rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-500 dark:hover:text-white"
+                  class="inline-block rounded-sm border border-line-strong px-2.5 py-1 text-xs font-medium text-ink-muted hover:border-line-hover hover:text-ink-strong"
                 >
                   {entity}
                 </a>
@@ -105,7 +105,7 @@ const topicLinks = article.data.entities
       </div>
 
       <section
-        class="mt-10 border-t border-slate-200 pt-6 dark:border-slate-800"
+        class="mt-10 border-t border-line pt-6"
         aria-labelledby="sources-heading"
       >
         <h2
@@ -122,7 +122,7 @@ const topicLinks = article.data.entities
                   href={source.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
+                  class="text-accent underline underline-offset-2 hover:text-accent-hover"
                 >
                   {source.name}
                 </a>

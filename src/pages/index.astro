@@ -9,12 +9,12 @@ const latest = (await getCollection('articles'))
 ---
 
 <BaseLayout title="GamersXpress — Gaming News, Hardware & Esports">
-  <section class="border-b border-slate-200 dark:border-slate-800">
+  <section class="border-b border-line">
     <div class="mx-auto max-w-6xl px-4 py-14 text-center">
       <h1 class="text-3xl font-extrabold tracking-tight sm:text-4xl">
         Gaming news that checks out
       </h1>
-      <p class="mx-auto mt-4 max-w-2xl text-base text-slate-600 sm:text-lg dark:text-slate-300">
+      <p class="mx-auto mt-4 max-w-2xl text-base text-ink-muted sm:text-lg">
         PC, PlayStation, Xbox, Nintendo, hardware, and esports coverage with
         sources you can verify.
       </p>
@@ -31,7 +31,7 @@ const latest = (await getCollection('articles'))
           {latest.map((article) => (
             <li>
               <article>
-                <p class="text-sm text-slate-500 dark:text-slate-400">
+                <p class="text-sm text-ink-subtle">
                   <time datetime={article.data.pubDate.toISOString()}>
                     {article.data.pubDate.toLocaleDateString('en-US', {
                       year: 'numeric',
@@ -42,7 +42,7 @@ const latest = (await getCollection('articles'))
                   {' · '}
                   <a
                     href={`/category/${article.data.category}`}
-                    class="hover:text-slate-900 dark:hover:text-white"
+                    class="hover:text-ink-brand"
                   >
                     {CATEGORY_LABELS[article.data.category]}
                   </a>
@@ -50,12 +50,12 @@ const latest = (await getCollection('articles'))
                 <h3 class="mt-1 text-xl font-bold tracking-tight">
                   <a
                     href={`/news/${article.id}`}
-                    class="hover:text-sky-600 dark:hover:text-sky-400"
+                    class="hover:text-accent"
                   >
                     {article.data.title}
                   </a>
                 </h3>
-                <p class="mt-2 text-slate-600 dark:text-slate-300">
+                <p class="mt-2 text-ink-muted">
                   {article.data.description}
                 </p>
               </article>
@@ -63,7 +63,7 @@ const latest = (await getCollection('articles'))
           ))}
         </ul>
       ) : (
-        <div class="mt-6 rounded border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+        <div class="mt-6 rounded-sm border border-dashed border-line-strong p-10 text-center text-sm text-ink-subtle">
           Latest articles will appear here.
         </div>
       )

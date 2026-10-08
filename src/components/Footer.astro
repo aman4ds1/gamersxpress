@@ -10,8 +10,8 @@ const footerLinks = [
 ];
 ---
 
-<footer class="border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950">
-  <div class="mx-auto max-w-6xl px-4 py-6 text-sm text-slate-500 dark:text-slate-400">
+<footer class="border-t border-line bg-surface">
+  <div class="mx-auto max-w-6xl px-4 py-6 text-sm text-ink-subtle">
     <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
       <p>&copy; {year} GamersXpress. All rights reserved.</p>
       <p>Gaming news, hardware, and esports coverage.</p>
@@ -23,7 +23,7 @@ const footerLinks = [
             <li>
               <a
                 href={item.href}
-                class="transition-colors hover:text-slate-900 dark:hover:text-white"
+                class="transition-colors hover:text-ink-brand"
               >
                 {item.label}
               </a>

@@ -15,7 +15,7 @@ const description =
 >
   <div class="mx-auto max-w-3xl px-4 py-10">
     <h1 class="text-3xl font-extrabold tracking-tight">Search</h1>
-    <p class="mt-2 text-slate-600 dark:text-slate-300">
+    <p class="mt-2 text-ink-muted">
       Search every GamersXpress article by game, hardware, topic, or entity.
     </p>
 
@@ -27,11 +27,11 @@ const description =
       type="search"
       autocomplete="off"
       placeholder="Try NVIDIA, PS5, esports…"
-      class="mt-2 w-full rounded border border-slate-300 bg-white px-3 py-2 text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+      class="mt-2 w-full rounded-sm border border-line-strong bg-surface-raised px-3 py-2 text-ink outline-none focus:border-focus-ring"
     />
     <p
       id="search-status"
-      class="mt-4 min-h-5 text-sm text-slate-500 dark:text-slate-400"
+      class="mt-4 min-h-5 text-sm text-ink-subtle"
       role="status"
     >
     </p>
@@ -76,11 +76,11 @@ const description =
         const link = document.createElement('a');
         link.href = item.url;
         link.className =
-          'text-lg font-bold text-sky-600 hover:text-sky-500 dark:text-sky-400 dark:hover:text-sky-300';
+          'text-lg font-bold text-accent hover:text-accent-hover';
         link.textContent = item.meta.title;
         const excerpt = document.createElement('p');
         excerpt.className =
-          'mt-1 text-sm text-slate-600 dark:text-slate-300';
+          'mt-1 text-sm text-ink-muted';
         excerpt.innerHTML = item.excerpt;
         li.append(link, excerpt);
         results.append(li);

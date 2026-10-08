@@ -50,7 +50,7 @@ const count = articles.length;
 >
   <div class="mx-auto max-w-6xl px-4 py-10">
     <h1 class="text-3xl font-extrabold tracking-tight">{entity}</h1>
-    <p class="mt-2 text-slate-600 dark:text-slate-300">
+    <p class="mt-2 text-ink-muted">
       Latest {entity} coverage on GamersXpress — {count} article{
         count === 1 ? '' : 's'
       }, each with its sources linked.
@@ -60,7 +60,7 @@ const count = articles.length;
         articles.map((article) => (
           <li>
             <article>
-              <p class="text-sm text-slate-500 dark:text-slate-400">
+              <p class="text-sm text-ink-subtle">
                 <time datetime={article.data.pubDate.toISOString()}>
                   {article.data.pubDate.toLocaleDateString('en-US', {
                     year: 'numeric',
@@ -72,12 +72,12 @@ const count = articles.length;
               <h2 class="mt-1 text-xl font-bold tracking-tight">
                 <a
                   href={`/news/${article.id}`}
-                  class="hover:text-sky-600 dark:hover:text-sky-400"
+                  class="hover:text-accent"
                 >
                   {article.data.title}
                 </a>
               </h2>
-              <p class="mt-2 text-slate-600 dark:text-slate-300">
+              <p class="mt-2 text-ink-muted">
                 {article.data.description}
               </p>
             </article>
