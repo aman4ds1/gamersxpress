@@ -193,8 +193,7 @@ function printTable(results) {
 export async function run(articlesDir = ARTICLES_DIR) {
   const files = (await readdir(articlesDir)).filter((name) => name.endsWith('.md')).sort();
   if (files.length === 0) {
-    console.error('check-articles: no articles found in src/content/articles/');
-    process.exitCode = 1;
+    console.log('check-articles: no articles in src/content/articles/ — nothing to check');
     return;
   }
   const articles = [];

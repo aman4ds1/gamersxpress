@@ -38,11 +38,19 @@ interface Props {
 const { entity, articles } = Astro.props;
 const slug = entitySlug(entity);
 const count = articles.length;
+const summary =
+  count > 0
+    ? `Latest ${entity} coverage on GamersXpress — ${count} article${count === 1 ? '' : 's'}, each with its sources linked.`
+    : `Latest ${entity} coverage on GamersXpress is coming soon.`;
+const description =
+  count > 0
+    ? `${entity} news, guides and analysis on GamersXpress — ${count} article${count === 1 ? '' : 's'}, each with its sources linked.`
+    : `${entity} news, guides and analysis on GamersXpress — coming soon.`;
 ---
 
 <BaseLayout
   title={`${entity} — latest articles | GamersXpress`}
-  description={`${entity} news, guides and analysis on GamersXpress — ${count} article${count === 1 ? '' : 's'}, each with its sources linked.`}
+  description={description}
   breadcrumbs={[
     { name: 'GamersXpress', path: '/' },
     { name: entity, path: `/topic/${slug}` },
@@ -50,40 +58,42 @@ const count = articles.length;
 >
   <div class="mx-auto max-w-6xl px-4 py-10">
     <h1 class="text-3xl font-extrabold tracking-tight">{entity}</h1>
-    <p class="mt-2 text-ink-muted">
-      Latest {entity} coverage on GamersXpress — {count} article{
-        count === 1 ? '' : 's'
-      }, each with its sources linked.
-    </p>
-    <ul class="mt-8 space-y-8">
-      {
-        articles.map((article) => (
-          <li>
-            <article>
-              <p class="text-sm text-ink-subtle">
-                <time datetime={article.data.pubDate.toISOString()}>
-                  {article.data.pubDate.toLocaleDateString('en-US', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                  })}
-                </time>
-              </p>
-              <h2 class="mt-1 text-xl font-bold tracking-tight">
-                <a
-                  href={`/news/${article.id}`}
-                  class="hover:text-accent"
-                >
-                  {article.data.title}
-                </a>
-              </h2>
-              <p class="mt-2 text-ink-muted">
-                {article.data.description}
-              </p>
-            </article>
-          </li>
-        ))
-      }
-    </ul>
+    <p class="mt-2 text-ink-muted">{summary}</p>
+    {
+      count > 0 ? (
+        <ul class="mt-8 space-y-8">
+          {articles.map((article) => (
+            <li>
+              <article>
+                <p class="text-sm text-ink-subtle">
+                  <time datetime={article.data.pubDate.toISOString()}>
+                    {article.data.pubDate.toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric',
+                    })}
+                  </time>
+                </p>
+                <h2 class="mt-1 text-xl font-bold tracking-tight">
+                  <a
+                    href={`/news/${article.id}`}
+                    class="hover:text-accent"
+                  >
+                    {article.data.title}
+                  </a>
+                </h2>
+                <p class="mt-2 text-ink-muted">
+                  {article.data.description}
+                </p>
+              </article>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div class="mt-8 rounded-sm border border-dashed border-line-strong p-8 text-center text-sm text-ink-subtle">
+          New {entity} articles are coming soon.
+        </div>
+      )
+    }
   </div>
 </BaseLayout>
