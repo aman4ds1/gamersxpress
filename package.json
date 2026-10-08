@@ -10,8 +10,10 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "check": "astro check",
+    "check": "astro check && node checks/check-articles.mjs",
+    "check:articles": "node checks/check-articles.mjs",
     "check:seo": "node checks/seo-dist.mjs",
+    "test": "node --test \"checks/**/*.test.mjs\"",
     "postbuild": "pagefind --site dist"
   },
   "repository": {
