@@ -1,0 +1,29 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="GamersXpress — Gaming News, Hardware & Esports">
+  <section class="border-b border-slate-200 dark:border-slate-800">
+    <div class="mx-auto max-w-6xl px-4 py-14 text-center">
+      <h1 class="text-3xl font-extrabold tracking-tight sm:text-4xl">
+        Gaming news that checks out
+      </h1>
+      <p class="mx-auto mt-4 max-w-2xl text-base text-slate-600 sm:text-lg dark:text-slate-300">
+        PC, PlayStation, Xbox, Nintendo, hardware, and esports coverage with
+        sources you can verify.
+      </p>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 py-10" aria-labelledby="latest-articles">
+    <h2 id="latest-articles" class="text-2xl font-bold tracking-tight">
+      Latest articles
+    </h2>
+    <!-- Article cards will be rendered here once the content collection exists. -->
+    <div
+      class="mt-6 rounded border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400"
+    >
+      Latest articles will appear here.
+    </div>
+  </section>
+</BaseLayout>

@@ -1,0 +1,37 @@
+{
+  "name": "gamersxpress",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aman4ds1/gamersxpress.git"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/aman4ds1/gamersxpress/issues"
+  },
+  "homepage": "https://github.com/aman4ds1/gamersxpress#readme",
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "astro": "^7.3.7",
+    "tailwindcss": "^4.3.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "typescript": "^6.0.3"
+  }
+}
