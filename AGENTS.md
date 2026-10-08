@@ -4,6 +4,7 @@
 - Site URL: https://gamersxpress.com. Keep `site` in astro.config set to it.
 - Articles are Markdown in src/content/articles/ and must match the Zod schema.
 - Never commit secrets. API keys come from environment variables only; keep .env gitignored.
+- Do not add ad scripts, analytics cookies, or tracking. Ad slots stay behind ADS_ENABLED=false until the owner turns them on.
 - After every change: run `npm run build` and `npm run check`, and fix errors before finishing.
 - Keep changes small: one task per session, no unrelated refactors.
 - Do not add dependencies without saying why. Prefer built-in Astro features.
