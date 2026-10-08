@@ -28,7 +28,14 @@ const { category, articles } = Astro.props;
 const label = CATEGORY_LABELS[category];
 ---
 
-<BaseLayout title={`${label} | GamersXpress`}>
+<BaseLayout
+  title={`${label} | GamersXpress`}
+  description={`${label} coverage on GamersXpress — news, reviews, and analysis with sources you can verify.`}
+  breadcrumbs={[
+    { name: 'GamersXpress', path: '/' },
+    { name: label, path: `/category/${category}` },
+  ]}
+>
   <div class="mx-auto max-w-6xl px-4 py-10">
     <h1 class="text-3xl font-extrabold tracking-tight">{label}</h1>
     {

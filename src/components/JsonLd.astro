@@ -1,0 +1,84 @@
+---
+import { SITE_NAME, SITE_DESCRIPTION } from '../data/site';
+
+interface Props {
+  title?: string;
+  description?: string;
+  image?: string;
+  type?: 'website' | 'article';
+  datePublished?: Date;
+  dateModified?: Date;
+  breadcrumbs?: { name: string; path: string }[];
+}
+
+const {
+  title = SITE_NAME,
+  description = SITE_DESCRIPTION,
+  image,
+  type = 'website',
+  datePublished,
+  dateModified,
+  breadcrumbs,
+} = Astro.props;
+
+const site = Astro.site;
+if (!site) throw new Error('astro.config.mjs must set `site`');
+
+const root = new URL('/', site).href;
+const canonical = new URL(Astro.url.pathname, site);
+const organizationId = `${root}#organization`;
+const imageUrl = image ? new URL(image, site).href : undefined;
+const headline = title.endsWith(`| ${SITE_NAME}`)
+  ? title.slice(0, title.lastIndexOf('|')).trim()
+  : title;
+
+const graph: Record<string, unknown>[] = [
+  {
+    '@type': 'Organization',
+    '@id': organizationId,
+    name: SITE_NAME,
+    url: root,
+  },
+  {
+    '@type': 'WebSite',
+    '@id': `${root}#website`,
+    name: SITE_NAME,
+    description: SITE_DESCRIPTION,
+    url: root,
+    publisher: { '@id': organizationId },
+  },
+];
+
+if (type === 'article' && datePublished) {
+  graph.push({
+    '@type': 'NewsArticle',
+    headline,
+    description,
+    datePublished: datePublished.toISOString(),
+    dateModified: (dateModified ?? datePublished).toISOString(),
+    author: { '@type': 'Organization', name: SITE_NAME, url: root },
+    publisher: { '@id': organizationId },
+    mainEntityOfPage: { '@type': 'WebPage', '@id': canonical.href },
+    ...(imageUrl && { image: [imageUrl] }),
+  });
+}
+
+if (breadcrumbs?.length) {
+  graph.push({
+    '@type': 'BreadcrumbList',
+    itemListElement: breadcrumbs.map((crumb, index) => ({
+      '@type': 'ListItem',
+      position: index + 1,
+      name: crumb.name,
+      item: new URL(crumb.path, site).href,
+    })),
+  });
+}
+
+const jsonLd = JSON.stringify({
+  '@context': 'https://schema.org',
+  '@graph': graph,
+}).replace(/</g, '\\u003c');
+---
+
+<script type="application/ld+json" set:html={jsonLd} />

@@ -18,12 +18,25 @@ interface Props {
 
 const { article } = Astro.props;
 const { Content } = await render(article);
-const { title, description, pubDate, updatedDate, category, sources } =
+const { title, description, pubDate, updatedDate, category, sources, image, imageAlt } =
   article.data;
 const categoryLabel = CATEGORY_LABELS[category];
 ---
 
-<BaseLayout title={`${title} | GamersXpress`}>
+<BaseLayout
+  title={`${title} | GamersXpress`}
+  description={description}
+  image={image}
+  imageAlt={imageAlt}
+  type="article"
+  datePublished={pubDate}
+  dateModified={updatedDate}
+  breadcrumbs={[
+    { name: 'GamersXpress', path: '/' },
+    { name: categoryLabel, path: `/category/${category}` },
+    { name: title, path: `/news/${article.id}` },
+  ]}
+>
   <article class="mx-auto max-w-3xl px-4 py-10">
     <p class="text-sm text-slate-500 dark:text-slate-400">
       <time datetime={pubDate.toISOString()}>
