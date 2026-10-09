@@ -73,6 +73,59 @@ verify:
     - pattern: '^(?:19|20)\d{2}$'
       context: '^#{1,6}\s'
 
+# Publish gates (pipeline/gates.py; PLAN.md section 9). Every value is code,
+# never a model. `overlap` is the n-gram text-overlap check against the source
+# texts gathered in data/gathered/<cluster-id>.json.
+gates:
+  max_title: 65
+  min_description: 70
+  max_description: 160
+  min_words: 300
+  min_sources: 2
+  overlap:
+    ngram: 8
+    max_ratio: 0.2
+  near_duplicate:
+    title_similarity: 0.8
+    window_days: 7
+  banned_phrases:
+    - "in today's fast-paced world"
+    - "gamers everywhere"
+    - "it's worth noting"
+    - "needless to say"
+    - "revolutionary"
+    - "game-changing"
+    - "in conclusion"
+    - "read on"
+    - "at the end of the day"
+    - "without further ado"
+
+# Scoring stage (pipeline/score.py; PLAN.md section 7.4). A story is only
+# covered when its score reaches min_score; recency, tier and outlet count are
+# the inputs, plus an optional per-category boost.
+score:
+  min_score: 50
+  weights:
+    tier1: 40
+    tier2: 15
+    owner: 10
+    max_owners: 4
+    fresh_hours: 6
+    fresh_bonus: 30
+    day_hours: 24
+    day_bonus: 20
+    two_day_hours: 48
+    two_day_bonus: 10
+
+# Safety layer (PLAN.md section 11). The kill switch reads PAUSED from the
+# environment; the daily cap reads DAILY_CAP (falling back to this default).
+# PUBLISH_MODE must be "draft" or "auto"; the workflow decides whether the
+# working-tree changes are committed to main or opened as a pull request.
+safety:
+  daily_cap: 4
+  publish_modes: [draft, auto]
+  breaker_threshold: 3
+
 # RSS sources used by the ingest stage (PLAN.md section 6 trust tiers).
 # Tier 1 = official sources, tier 2 = reputable outlets.
 sources:
