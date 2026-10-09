@@ -294,14 +294,6 @@ def _item_published(item: dict) -> dt.datetime | None:
     return None
 
 
-_TAG_RE = re.compile(r"<[^>]+>")
-
-
-def _summary_text(item: dict) -> str:
-    summary = item.get("summary") or item.get("description") or ""
-    return _TAG_RE.sub("", summary).strip()
-
-
 def process_feed(source: dict, content: bytes, now: dt.datetime, window: dt.timedelta | None = None) -> FeedCandidates:
     """Parse one feed body and filter its items to the tier's freshness window."""
     if window is None:
@@ -328,7 +320,6 @@ def process_feed(source: dict, content: bytes, now: dt.datetime, window: dt.time
                 "link": normalize_url(item.get("link") or ""),
                 "published": published.isoformat(),
                 "age_hours": round((now - published).total_seconds() / 3600, 2),
-                "summary": _summary_text(item),
                 "source_name": source["name"],
                 "tier": source["tier"],
                 "owner": source["owner"],

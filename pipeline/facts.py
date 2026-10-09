@@ -39,6 +39,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "facts"
 
 MAX_SOURCE_CHARS = 4000
+# A claim's text and value must stay short: longer fields are almost always a
+# verbatim passage copied from a source, so they are clipped before the sheet is
+# saved (PLAN.md principle 3: facts, not source prose).
+MAX_FIELD_CHARS = 300
 
 logger = logging.getLogger("gamersxpress.pipeline.facts")
 
@@ -122,17 +126,36 @@ def extract_claims(
     return generate("fast", prompt, json_schema=CLAIM_SCHEMA, run_state=run_state, **kwargs)
 
 
+def _clip_field(text: str, limit: int = MAX_FIELD_CHARS) -> str:
+    """Keep claim text and values short so a sheet never stores a long passage."""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip()
+
+
 def validate_claims(data: Any) -> list[dict]:
-    """Validate the model output against CLAIM_SCHEMA and return the claims."""
+    """Validate the model output against CLAIM_SCHEMA and return the claims.
+
+    ``claim`` and ``value`` are clipped to :data:`MAX_FIELD_CHARS` so a facts
+    sheet never holds a long verbatim passage copied from a source article.
+    """
     errors = schema_errors(data, CLAIM_SCHEMA)
     if errors:
         raise FactsError("; ".join(errors))
     claims = data["claims"]
+    clipped: list[dict] = []
     for index, claim in enumerate(claims):
         url = claim["source_url"]
         if not re.match(r"^https?://", url):
             raise FactsError(f"claims[{index}].source_url must be an http(s) URL: {url!r}")
-    return claims
+        clipped.append(
+            {
+                **claim,
+                "claim": _clip_field(claim["claim"]),
+                "value": _clip_field(claim["value"]),
+            }
+        )
+    return clipped
 
 
 def confirmation_from_sources(sources: list[dict]) -> dict:
@@ -204,6 +227,7 @@ def facts(
 
 __all__ = [
     "CLAIM_SCHEMA",
+    "MAX_FIELD_CHARS",
     "FactsError",
     "UnconfirmedStory",
     "build_prompt",

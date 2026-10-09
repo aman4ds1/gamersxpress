@@ -93,6 +93,20 @@ def test_validate_claims_rejects_bad_schema(bad):
         facts.validate_claims(bad)
 
 
+def test_validate_claims_clips_long_claim_and_value():
+    long_claim = "claim " * 100
+    long_value = "value " * 100
+    claims = facts.validate_claims({"claims": [claim(claim=long_claim, value=long_value)]})
+    assert len(claims[0]["claim"]) <= facts.MAX_FIELD_CHARS
+    assert len(claims[0]["value"]) <= facts.MAX_FIELD_CHARS
+    assert long_claim.startswith(claims[0]["claim"])
+    assert long_value.startswith(claims[0]["value"])
+
+    short = facts.validate_claims({"claims": [claim(claim="Short", value="Tiny")]})
+    assert short[0]["claim"] == "Short"
+    assert short[0]["value"] == "Tiny"
+
+
 # --- facts() end to end ------------------------------------------------------
 
 
