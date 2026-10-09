@@ -22,7 +22,7 @@ Topics: gaming news, PC, PlayStation, Xbox, Nintendo, hardware, gaming tech (NVI
 1. **Quality over volume.** Start at 2-4 articles per day. Never publish to hit a number.
 2. **Code decides, models assist.** SEO output, checks, and publish gates are deterministic code. Models only write text (articles, titles, descriptions, alt text) and extract facts.
 3. **Facts first.** The writer sees only a verified facts sheet, never the source articles' prose.
-4. **Writer and verifier are different model families.**
+4. **Writer and verifier are different model families.** If the writer's family is unknown or no different-family verifier is available, the run fails and publishes nothing.
 5. **When unsure, publish nothing.** Any failed gate, rate limit, or provider outage means skip the run.
 6. **Rumors are labeled or skipped.** Never state a rumor as fact. Only confirmed pricing and availability appear as fact.
 7. **No secrets in the repo.** API keys live in GitHub Secrets and local `.env` (gitignored).
@@ -32,7 +32,7 @@ Topics: gaming news, PC, PlayStation, Xbox, Nintendo, hardware, gaming tech (NVI
 
 ```
 gamersxpress.com (DNS on Cloudflare, registrar GoDaddy)
-  -> Cloudflare Pages (static hosting)
+  -> Cloudflare Workers (static assets, not Pages)
   -> Astro site (static output, no server code, no database)
   -> GitHub repo (content is Markdown files)
   -> GitHub Actions (pipeline, checks, reports)
@@ -124,9 +124,11 @@ Code calls `generate(role, prompt)`. Model names and provider order are read fro
 | writer | article generation | Gemini Flash (Google AI Studio) |
 | verifier | independent claim check | Mistral |
 
-Fallback: next provider in the list for that role; last resort OpenRouter free models. If the verifier's providers are all unavailable, skip the run. Never publish unverified.
+Fallback: next provider in the list for that role; last resort OpenRouter free models. If the verifier's providers are all unavailable, skip the run. Never publish unverified. Writer and verifier are different model families. If the writer's family is unknown or no different-family verifier is available, the run fails and publishes nothing.
 
 Secrets: `GEMINI_API_KEY`, `MISTRAL_API_KEY`, optional `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`. Treat free tiers as possibly logged or used for training: never put secrets or private data in prompts. Limits differ by provider and change often; check each provider's dashboard.
+
+The verifier's family must differ from the writer's actual family on every run; if none is available, skip the run
 
 ## 9. Quality gates (code, always run)
 
@@ -160,17 +162,19 @@ After deploy: ping IndexNow (Bing, Yandex), resubmit the sitemap through the Sea
 - **Concurrency:** one publish run at a time.
 - **Publish modes** (`PUBLISH_MODE`): `draft` opens a PR per article for human merge; `auto` commits directly when all gates pass. Stay in `draft` until about 50 articles have been reviewed.
 - **Alerts:** failed workflows email the owner; optional Telegram message.
-- Batch commits: one commit per run, so Cloudflare Pages stays well under its monthly build limit.
+- Batch commits: one commit per run, so the workflow builds and deploys once per run.
 
 ## 12. Workflows
 
-- `publish.yml`: schedule about every 3 hours (schedules can be delayed). Runs the pipeline and commits.
+- `publish.yml`: schedule about every 3 hours (schedules can be delayed). Runs the pipeline, commits, then builds and deploys itself with `npm run deploy`, authenticated with the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` GitHub secrets.
 - `site-check.yml`: on every push to `main` and on pull requests. Build, checks, auto-revert on failure.
 - `weekly.yml`: pulls Search Console and PageSpeed data, writes a short report, updates `data/topic-performance.json`.
 
 ## 13. Hosting limits to respect
 
-Cloudflare Pages free plan: 500 builds per month, one build at a time, 20-minute build timeout, 20,000 files per site, 25 MiB per file. Static bandwidth is unmetered. Keep images small, use one cover image per article, and check the file count occasionally. If builds become a constraint, build in GitHub Actions and deploy with `wrangler`.
+Hosting is Cloudflare Workers static assets (not Cloudflare Pages): `npm run deploy` builds the site and runs `wrangler deploy` on `dist/`. The publish workflow does the same build and deploy itself, using the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` GitHub secrets.
+
+Static assets are limited to 20,000 files per site and 25 MiB per file. Keep images small, use one cover image per article, and check the file count occasionally.
 
 ## 14. Tools section
 
