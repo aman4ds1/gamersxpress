@@ -1,5 +1,11 @@
 # GamersXpress project rules
 
+> **Review gate.** At the start of every session, before starting any new task,
+> check for `docs/REVIEW-PENDING.md`. If it exists, open it and tell the user —
+> in a few lines — that there are changes waiting to be reviewed, then wait for
+> their go-ahead before doing anything else. Do not start new work while that
+> file is present.
+
 - Stack: Astro (static output), TypeScript, Tailwind. No database, no server code, no SSR.
 - Site URL: https://gamersxpress.com. Keep `site` in astro.config set to it.
 - Articles are Markdown in src/content/articles/ and must match the Zod schema.
