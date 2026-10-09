@@ -60,6 +60,19 @@ freshness:
     3: 24 hours
   stale_after: 7 days
 
+# Verifier stage (pipeline/verify.py; PLAN.md principle 4 / stage 6).
+# `list_markers` is stripped from the start of each body line before values are
+# extracted, so list numbering (for example "1." or "-") is not read as a fact.
+# `number_whitelist` entries are {pattern, context}: a value whose normalized
+# token fully matches `pattern` is ignored, and if `context` is set the value's
+# raw line must also match that regex. This covers harmless numbers such as a
+# calendar year used in a heading.
+verify:
+  list_markers: '^\s*(?:[-*+]|\d{1,3}[.)])\s+'
+  number_whitelist:
+    - pattern: '^(?:19|20)\d{2}$'
+      context: '^#{1,6}\s'
+
 # RSS sources used by the ingest stage (PLAN.md section 6 trust tiers).
 # Tier 1 = official sources, tier 2 = reputable outlets.
 sources:

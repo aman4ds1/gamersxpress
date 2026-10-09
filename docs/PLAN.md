@@ -70,6 +70,7 @@ pipeline/
   seo.py                   title, description, slug, tags, entities, alt text
   link.py                  internal links
   publish.py               gates, commit or draft
+prompts/                   model prompt templates (writer.md, plus prompts/README.md)
 checks/                    quality-gate scripts and their tests
 data/
   seen.json                covered story clusters
@@ -107,7 +108,7 @@ Each stage reads and writes JSON files so it can be tested alone. A run publishe
 4. **Score.** Official source present, number of independent outlets, category fit, recency, performance hints from `data/topic-performance.json`. Pick the top cluster above a minimum score, otherwise end the run.
 5. **Gather.** Fetch full text of every source in the cluster. Respect robots.txt. Source text is for facts only.
 6. **Facts sheet.** Extract claims as JSON: claim, value, source URL, confidence. Require at least one tier-1 source, or two tier-2 sources with different owners; tier 3 never counts toward confirmation. Drop unconfirmed claims or mark them `rumor`.
-7. **Write.** Input: facts sheet only. Output: original article covering what happened, why gamers should care, context (for example previous generation comparison), and what is unconfirmed. Include a "Sources" section.
+7. **Write.** Input: facts sheet only. Output: original article covering what happened, why gamers should care, context (for example previous generation comparison), and what is unconfirmed. Record every source (name and URL) in the front matter `sources` field; the page template renders the Sources section from that front matter, so the writer must not generate a duplicate Sources section in the Markdown body.
 8. **Verify.** A different model family checks each claim in the draft against the facts sheet. Code also checks that every number, price, date, and spec in the article appears in the facts sheet. Any unsupported claim fails the run.
 9. **SEO.** Generate title, description, slug, tags, entities, and image alt text. Code validates lengths and formats.
 10. **Internal links.** Match entities and keywords against existing articles. Link first mentions only, 3-5 links max, plus a related-articles block.

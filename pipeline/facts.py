@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from providers import Generation, RunState, generate as default_generate
+from json_schema import schema_errors
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "facts"
@@ -121,50 +122,11 @@ def extract_claims(
     return generate("fast", prompt, json_schema=CLAIM_SCHEMA, run_state=run_state, **kwargs)
 
 
-def _validate_schema(value: Any, schema: dict[str, Any], path: str = "$") -> None:
-    kind = schema.get("type")
-    if kind == "object":
-        if not isinstance(value, dict):
-            raise FactsError(f"{path}: expected object, got {type(value).__name__}")
-        properties = schema.get("properties", {})
-        if schema.get("additionalProperties") is False:
-            extra = set(value) - set(properties)
-            if extra:
-                raise FactsError(f"{path}: unexpected keys {sorted(extra)}")
-        for key, subschema in properties.items():
-            if key in value:
-                _validate_schema(value[key], subschema, f"{path}.{key}")
-        for key in schema.get("required", []):
-            if key not in value:
-                raise FactsError(f"{path}: missing required key {key!r}")
-    elif kind == "array":
-        if not isinstance(value, list):
-            raise FactsError(f"{path}: expected array, got {type(value).__name__}")
-        for index, item in enumerate(value):
-            _validate_schema(item, schema.get("items", {}), f"{path}[{index}]")
-    elif kind == "string":
-        if not isinstance(value, str):
-            raise FactsError(f"{path}: expected string, got {type(value).__name__}")
-        if "enum" in schema and value not in schema["enum"]:
-            raise FactsError(f"{path}: value {value!r} not in {schema['enum']}")
-    elif kind == "boolean":
-        if not isinstance(value, bool):
-            raise FactsError(f"{path}: expected boolean, got {type(value).__name__}")
-    elif kind == "integer":
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise FactsError(f"{path}: expected integer, got {type(value).__name__}")
-    elif kind == "number":
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise FactsError(f"{path}: expected number, got {type(value).__name__}")
-        if "minimum" in schema and value < schema["minimum"]:
-            raise FactsError(f"{path}: {value} is below minimum {schema['minimum']}")
-        if "maximum" in schema and value > schema["maximum"]:
-            raise FactsError(f"{path}: {value} is above maximum {schema['maximum']}")
-
-
 def validate_claims(data: Any) -> list[dict]:
     """Validate the model output against CLAIM_SCHEMA and return the claims."""
-    _validate_schema(data, CLAIM_SCHEMA)
+    errors = schema_errors(data, CLAIM_SCHEMA)
+    if errors:
+        raise FactsError("; ".join(errors))
     claims = data["claims"]
     for index, claim in enumerate(claims):
         url = claim["source_url"]

@@ -90,9 +90,14 @@ def run(
     run_state = RunState()
     circuit = _load_json(circuit_path, {"consecutive_failures": 0, "paused": False})
 
+    # The verifier writes its per-article report next to the run report. Keep it
+    # out of the shared kwargs so the writer stage does not receive it.
+    verify_kwargs = dict(kwargs)
+    verify_kwargs.setdefault("report_dir", Path(report_path).parent)
+
     try:
         writer = write_fn(facts, run_state=run_state, **kwargs)
-        verify_fn(writer.value, facts, run_state=run_state, **kwargs)
+        verify_fn(writer.value, facts, run_state=run_state, **verify_kwargs)
     except MissingWriterFamilyError as exc:
         circuit["consecutive_failures"] = int(circuit.get("consecutive_failures", 0)) + 1
         circuit["paused"] = circuit["consecutive_failures"] >= CIRCUIT_BREAKER_THRESHOLD

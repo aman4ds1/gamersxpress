@@ -1,45 +1,586 @@
-"""Verifier stage: independent claim check by a different model family.
+"""Verifier stage: no article passes without independent verification.
 
-``run_state`` is required and must already carry the writer's family. If it
-does not, :func:`providers.generate` fails closed with
-:class:`MissingWriterFamilyError` before calling any provider, because the
-verifier must never share the writer's model family (PLAN.md principle 4).
+Two independent checks must both pass, and the whole stage runs behind the
+family guard from PLAN.md principle 4:
+
+1. **Model check.** The ``verifier`` role (a different model family than the
+   writer) receives the article and the facts sheet and must return JSON
+   saying, for every factual sentence, whether a sheet claim supports it, plus
+   any unsupported claim, any rumor stated as fact and any region-specific
+   price or availability missing from the sheet. Missing, malformed or
+   schema-invalid output is a FAIL, never a pass.
+
+   ``generate`` is called *without* a ``json_schema`` on purpose: with one, a
+   parse error inside the provider layer becomes ``ProviderError`` retries and
+   finally ``SkipRun`` (a skipped run), which would let malformed verifier
+   output stop the pipeline instead of failing it. Parsing here keeps a parse
+   error a hard FAIL.
+
+2. **Code check (independent of the model).** Every number, price, percentage,
+   date, time, version and spec value in the article body must appear in the
+   facts sheet after normalization (``1,299`` = ``1299``, ``$1.3k`` = ``1300``,
+   dates in any of several formats). A small, explicit config whitelist covers
+   harmless numbers (list markers, a calendar year in a heading).
+
+3. **Family guard.** The verifier call goes through the guard in
+   :func:`providers.generate`: no recorded writer family raises
+   :class:`MissingWriterFamilyError` without calling a provider, and no
+   different-family model raises :class:`SkipRun`. Mock providers bypass the
+   missing-state error only in tests and ``--dry-run``.
+
+Any failure means the article must not be published. The result is written to
+``data/reports/verify-<id>.json``.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import logging
+import re
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Callable
 
-from providers import Generation, RunState, generate as default_generate
+import yaml
+
+from providers import (
+    PROJECT_ROOT,
+    Generation,
+    RunState,
+    generate as default_generate,
+)
+from json_schema import schema_errors
+
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name("config.yaml")
+DEFAULT_REPORT_DIR = PROJECT_ROOT / "data" / "reports"
+DEFAULT_LIST_MARKERS = r"^\s*(?:[-*+]|\d{1,3}[.)])\s+"
+
+logger = logging.getLogger("gamersxpress.pipeline.verify")
+
+VERIFIER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "sentences": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "sentence": {"type": "string"},
+                    "supported": {"type": "boolean"},
+                    "fact": {"type": "string"},
+                },
+                "required": ["sentence", "supported"],
+                "additionalProperties": False,
+            },
+        },
+        "unsupported_claims": {"type": "array", "items": {"type": "string"}},
+        "rumors_stated_as_fact": {"type": "array", "items": {"type": "string"}},
+        "unsupported_regional": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "sentences",
+        "unsupported_claims",
+        "rumors_stated_as_fact",
+        "unsupported_regional",
+    ],
+    "additionalProperties": False,
+}
 
 SYSTEM_INSTRUCTION = (
-    "You are an independent fact checker. Compare every claim, number, price, "
-    "date and spec in the draft against the facts sheet and report anything "
-    "unsupported or contradicted. Do not assume facts that are not listed."
+    "You are an independent fact checker. You receive a news article and the "
+    "verified facts sheet it was written from. The article passes only if every "
+    "factual sentence is supported by a claim in the sheet.\n"
+    "Reply with JSON only, no prose and no code fences, in exactly this shape:\n"
+    '{"sentences":[{"sentence":"...","supported":true,"fact":"..."}],'
+    '"unsupported_claims":["..."],"rumors_stated_as_fact":["..."],'
+    '"unsupported_regional":["..."]}\n'
+    "List every factual sentence of the article in \"sentences\" and set "
+    "\"supported\" to whether a sheet claim supports it; put the supporting "
+    "claim in \"fact\" or \"\" when unsupported. In \"unsupported_claims\" list "
+    "any factual claim the sheet does not support. In \"rumors_stated_as_fact\" "
+    "list anything the sheet marks as a rumor (is_rumor true) that the article "
+    "states as fact. In \"unsupported_regional\" list any region-specific price "
+    "or availability the article states that the sheet does not contain. Do not "
+    "add claims, do not edit the article and do not add fields."
 )
+
+
+@dataclass
+class VerifyReport:
+    """Outcome of the verifier stage for one article."""
+
+    id: str
+    passed: bool
+    writer_family: str | None
+    verifier_family: str | None
+    verifier_provider: str | None
+    verifier_model: str | None
+    unsupported: list[str] = field(default_factory=list)
+    unmatched_numbers: list[str] = field(default_factory=list)
+    model_sentences: list[dict] = field(default_factory=list)
+    error: str | None = None
+    duplicate_sources: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "passed": self.passed,
+            "writer_family": self.writer_family,
+            "verifier_family": self.verifier_family,
+            "verifier_provider": self.verifier_provider,
+            "verifier_model": self.verifier_model,
+            "unsupported": self.unsupported,
+            "unmatched_numbers": self.unmatched_numbers,
+            "model_sentences": self.model_sentences,
+            "error": self.error,
+            "duplicate_sources": self.duplicate_sources,
+        }
+
+
+# --- model check -------------------------------------------------------------
+
+
+def build_prompt(article: str, facts: Any) -> str:
+    sheet = facts if isinstance(facts, str) else json.dumps(facts, indent=2, ensure_ascii=False)
+    return f"{SYSTEM_INSTRUCTION}\n\nArticle:\n{_as_text(article)}\n\nFacts sheet:\n{sheet}\n\nJSON:"
+
+
+def _extract_json(text: str) -> Any:
+    text = text.strip()
+    match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if match:
+        text = match.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(text[start : end + 1])
+        raise
+
+
+def _model_check(
+    article: Any,
+    facts: Any,
+    *,
+    run_state: RunState | None,
+    generate: Callable[..., Generation],
+    prompt: str | None,
+    **kwargs: Any,
+) -> tuple[Generation, dict]:
+    prompt = prompt if prompt is not None else build_prompt(article, facts)
+    generation = generate("verifier", prompt, run_state=run_state, **kwargs)
+
+    empty = {
+        "ok": False,
+        "error": None,
+        "sentences": [],
+        "unsupported_sentences": [],
+        "unsupported_claims": [],
+        "rumors_stated_as_fact": [],
+        "unsupported_regional": [],
+    }
+
+    raw = generation.value
+    if isinstance(raw, dict):
+        data = raw
+    elif isinstance(raw, str):
+        try:
+            data = _extract_json(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return generation, {**empty, "error": f"verifier output is not valid JSON: {exc}"}
+    else:
+        return generation, {**empty, "error": "verifier returned no output"}
+
+    errors = schema_errors(data, VERIFIER_SCHEMA)
+    if errors:
+        return generation, {**empty, "error": "verifier JSON failed schema validation: " + "; ".join(errors)}
+
+    unsupported_sentences = [item["sentence"] for item in data["sentences"] if not item["supported"]]
+    ok = not (
+        unsupported_sentences
+        or data["unsupported_claims"]
+        or data["rumors_stated_as_fact"]
+        or data["unsupported_regional"]
+    )
+    return generation, {
+        "ok": ok,
+        "error": None,
+        "sentences": data["sentences"],
+        "unsupported_sentences": unsupported_sentences,
+        "unsupported_claims": data["unsupported_claims"],
+        "rumors_stated_as_fact": data["rumors_stated_as_fact"],
+        "unsupported_regional": data["unsupported_regional"],
+    }
+
+
+# --- configuration -----------------------------------------------------------
+
+
+def load_verify_config(path: str | Path | None = None) -> dict:
+    path = Path(path) if path else DEFAULT_CONFIG_PATH
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        raw = {}
+    section = raw.get("verify") or {}
+    whitelist = []
+    for entry in section.get("number_whitelist") or []:
+        if isinstance(entry, str):
+            whitelist.append({"pattern": entry, "context": None})
+        elif isinstance(entry, dict) and entry.get("pattern"):
+            whitelist.append({"pattern": entry["pattern"], "context": entry.get("context")})
+    return {
+        "list_markers": section.get("list_markers") or DEFAULT_LIST_MARKERS,
+        "whitelist": whitelist,
+    }
+
+
+# --- code check --------------------------------------------------------------
+
+_MONTHS = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+    r"Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
+
+_MODEL_RE = re.compile(
+    r"(?<![\w.])(?:rtx|gtx|rx|arc|ryzen|threadripper|snapdragon|dimensity|exynos|tensor)"
+    r"\s?\d{2,5}(?:\s?(?:xtx|xt|ti|super|x3d|g))?(?![\w])",
+    re.I,
+)
+_RESOLUTION_RE = re.compile(r"(?<![\w.])(\d{3,4})\s*[x×]\s*(\d{3,4})(?![\w])")
+_BROAD_RESOLUTION_RE = re.compile(
+    r"(?<![\w.])(4k|8k|1080p|1440p|2160p|900p|720p|480p)(?![\w])", re.I
+)
+_SPEC_RE = re.compile(
+    r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s?"
+    r"(gib|mib|gb|tb|mb|kb|ghz|mhz|hz|kw|w|fps|nm|mm|mah|wh|bits|bit|cores|core|cuda|vram|tflops|tops|ppi|dpi|ms)"
+    r"(?![\w])",
+    re.I,
+)
+_PRICE_RE = re.compile(
+    r"(?<![\w])(?:US\$|USD|GBP|INR|Rs\.?|₹|£|\$)\s?(\d[\d,]*(?:\.\d+)?)\s?(k)?(?![\w])",
+    re.I,
+)
+_PRICE_SUFFIX_RE = re.compile(
+    r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s?(k)?\s?(USD|GBP|INR|Rs)(?![\w])", re.I
+)
+_PERCENT_RE = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s?%")
+_K_NUMBER_RE = re.compile(r"(?<![\w.])(\d[\d,]*\.\d+)\s?k(?![\w])", re.I)
+_DATE_MDY = re.compile(
+    rf"(?<![\w.])({_MONTHS})\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s+(\d{{4}})(?![\w])", re.I
+)
+_DATE_DMY = re.compile(rf"(?<![\w.])(\d{{1,2}})\s+({_MONTHS})\s+(\d{{4}})(?![\w])", re.I)
+_DATE_ISO = re.compile(r"(?<![\w.])(\d{4})-(\d{2})-(\d{2})(?![\w])")
+_DATE_SLASH = re.compile(r"(?<![\w.])(\d{1,2})/(\d{1,2})/(\d{4})(?![\w])")
+_TIME_RE = re.compile(
+    r"(?<![\w.])(\d{1,2}):(\d{2})(?::\d{2})?\s?(am|pm|utc|gmt|pt|pst|pdt|et|est|edt|bst|ist)?(?![\w])",
+    re.I,
+)
+_VERSION_RE = re.compile(r"(?<![\w.])v?(\d+\.\d+\.\d+(?:\.\d+)?)(?![\w.])")
+_NUMBER_RE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])")
+
+
+def _decimal_token(number: str, *, thousands: bool = False) -> str:
+    try:
+        value = Decimal(number.replace(",", ""))
+    except InvalidOperation:
+        return number.lower()
+    if thousands:
+        value *= 1000
+    return format(value.normalize(), "f")
+
+
+def _unit_token(unit: str) -> str:
+    unit = unit.lower()
+    if unit in ("bit", "bits"):
+        return "bit"
+    if unit in ("core", "cores"):
+        return "core"
+    return unit
+
+
+def _iso_date(year: str, month: str, day: str) -> str:
+    try:
+        return dt.date(int(year), int(month), int(day)).isoformat()
+    except ValueError:
+        return f"{year}-{month}-{day}"
+
+
+def _money(match: re.Match) -> str:
+    return _decimal_token(match.group(1), thousands=bool(match.group(2)))
+
+
+def _money_suffix(match: re.Match) -> str:
+    return _decimal_token(match.group(1), thousands=bool(match.group(2)))
+
+
+def _k_number(match: re.Match) -> str:
+    return _decimal_token(match.group(1), thousands=True)
+
+
+def _percent(match: re.Match) -> str:
+    return _decimal_token(match.group(1)) + "%"
+
+
+def _model(match: re.Match) -> str:
+    return re.sub(r"\s+", "", match.group(0)).lower()
+
+
+def _resolution(match: re.Match) -> str:
+    return f"{match.group(1)}x{match.group(2)}"
+
+
+def _broad_resolution(match: re.Match) -> str:
+    return match.group(1).lower()
+
+
+def _spec(match: re.Match) -> str:
+    return _decimal_token(match.group(1)) + _unit_token(match.group(2))
+
+
+def _date_mdy(match: re.Match) -> str:
+    return _iso_date(match.group(3), _month_number(match.group(1)), match.group(2))
+
+
+def _date_dmy(match: re.Match) -> str:
+    return _iso_date(match.group(3), _month_number(match.group(2)), match.group(1))
+
+
+def _date_iso(match: re.Match) -> str:
+    return _iso_date(match.group(1), match.group(2), match.group(3))
+
+
+def _date_slash(match: re.Match) -> str:
+    return _iso_date(match.group(3), match.group(1), match.group(2))
+
+
+def _time(match: re.Match) -> str:
+    return f"{match.group(1)}:{match.group(2)}{match.group(3) or ''}".lower()
+
+
+def _version(match: re.Match) -> str:
+    return match.group(1)
+
+
+def _number(match: re.Match) -> str:
+    return _decimal_token(match.group(0))
+
+
+_MONTH_NUMBERS = {
+    "jan": "1", "feb": "2", "mar": "3", "apr": "4", "may": "5", "jun": "6",
+    "jul": "7", "aug": "8", "sep": "9", "oct": "10", "nov": "11", "dec": "12",
+}
+
+
+def _month_number(name: str) -> str:
+    return _MONTH_NUMBERS[name[:3].lower()]
+
+
+_STEPS: list[tuple[re.Pattern, Callable[[re.Match], str]]] = [
+    (_PRICE_RE, _money),
+    (_PRICE_SUFFIX_RE, _money_suffix),
+    (_K_NUMBER_RE, _k_number),
+    (_PERCENT_RE, _percent),
+    (_MODEL_RE, _model),
+    (_RESOLUTION_RE, _resolution),
+    (_BROAD_RESOLUTION_RE, _broad_resolution),
+    (_SPEC_RE, _spec),
+    (_DATE_MDY, _date_mdy),
+    (_DATE_DMY, _date_dmy),
+    (_DATE_ISO, _date_iso),
+    (_DATE_SLASH, _date_slash),
+    (_TIME_RE, _time),
+    (_VERSION_RE, _version),
+    (_NUMBER_RE, _number),
+]
+
+
+def _split_front_matter(text: str) -> tuple[str, str]:
+    match = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n?(.*)$", text, re.DOTALL)
+    return (match.group(1), match.group(2)) if match else ("", text)
+
+
+_SOURCES_HEADING_RE = re.compile(r"^#{1,6}[ \t]+sources[ \t]*$", re.IGNORECASE | re.MULTILINE)
+
+
+def find_sources_heading(article: Any) -> str | None:
+    """Return a body Sources heading when the article repeats front-matter sources.
+
+    The news page renders Sources from the front matter ``sources`` field, so a
+    Sources section in the Markdown body would duplicate it. The front matter is
+    stripped before searching, so its ``sources:`` key is never matched.
+    """
+    _front, body = _split_front_matter(_as_text(article))
+    match = _SOURCES_HEADING_RE.search(body)
+    return match.group(0).strip() if match else None
+
+
+def _extract_from_line(line: str, context: str) -> list[dict]:
+    found: list[dict] = []
+
+    def record(normalizer: Callable[[re.Match], str]) -> Callable[[re.Match], str]:
+        def repl(match: re.Match) -> str:
+            found.append({"raw": match.group(0).strip(), "token": normalizer(match), "line": context})
+            return " " * len(match.group(0))
+
+        return repl
+
+    remaining = line
+    for pattern, normalizer in _STEPS:
+        remaining = pattern.sub(record(normalizer), remaining)
+    return found
+
+
+def extract_values(text: str, config: dict) -> list[dict]:
+    """Extract every checkable value from ``text`` (one entry per occurrence)."""
+    markers = re.compile(config["list_markers"])
+    values: list[dict] = []
+    for raw_line in text.splitlines():
+        line = markers.sub("", raw_line, count=1)
+        line = re.sub(r"https?://\S+", " ", line)
+        values.extend(_extract_from_line(line, raw_line))
+    return values
+
+
+def _whitelisted(value: dict, config: dict) -> bool:
+    for entry in config["whitelist"]:
+        if re.fullmatch(entry["pattern"], value["token"]):
+            if not entry["context"] or re.search(entry["context"], value["line"]):
+                return True
+    return False
+
+
+def _facts_text(facts: dict) -> str:
+    parts: list[str] = []
+    for claim in facts.get("claims") or []:
+        parts.append(str(claim.get("claim", "")))
+        parts.append(str(claim.get("value", "")))
+    return "\n".join(parts)
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def code_check(article: Any, facts: dict, config: dict) -> dict:
+    """Check the article body's values against the facts sheet (model-independent)."""
+    _front, body = _split_front_matter(_as_text(article))
+    article_values = extract_values(body, config)
+    facts_tokens = {value["token"] for value in extract_values(_facts_text(facts), config)}
+
+    unmatched: list[str] = []
+    for value in article_values:
+        if value["token"] in facts_tokens or _whitelisted(value, config):
+            continue
+        unmatched.append(value["raw"])
+    return {"ok": not unmatched, "unmatched": _dedupe(unmatched), "checked": len(article_values)}
+
+
+# --- stage -------------------------------------------------------------------
+
+
+def verify(
+    article: Any,
+    facts: Any,
+    *,
+    run_state: RunState | None = None,
+    generate: Callable[..., Generation] = default_generate,
+    prompt: str | None = None,
+    report_dir: str | Path = DEFAULT_REPORT_DIR,
+    verify_config: dict | None = None,
+    config_path: str | Path = DEFAULT_CONFIG_PATH,
+    id: str | None = None,
+    **kwargs: Any,
+) -> VerifyReport:
+    """Independently verify ``article`` against the facts sheet and report.
+
+    Raises :class:`MissingWriterFamilyError` or :class:`SkipRun` from the
+    family guard before any provider is called; otherwise returns a
+    :class:`VerifyReport` (never raises on a failed check).
+    """
+    sheet = _load_facts(facts)
+    story_id = re.sub(r"[^0-9A-Za-z._-]", "-", str(id or sheet.get("id") or "unnamed"))
+    writer_family = run_state.writer_family if run_state is not None else None
+
+    generation, model_result = _model_check(
+        article, sheet, run_state=run_state, generate=generate, prompt=prompt, **kwargs
+    )
+
+    config = verify_config if verify_config is not None else load_verify_config(config_path)
+    code_result = code_check(article, sheet, config)
+    duplicate_sources = find_sources_heading(article)
+
+    unsupported = (
+        list(model_result["unsupported_sentences"])
+        + list(model_result["unsupported_claims"])
+        + list(model_result["rumors_stated_as_fact"])
+        + list(model_result["unsupported_regional"])
+    )
+    report = VerifyReport(
+        id=story_id,
+        passed=bool(model_result["ok"] and code_result["ok"] and duplicate_sources is None),
+        writer_family=writer_family,
+        verifier_family=generation.family,
+        verifier_provider=generation.provider,
+        verifier_model=generation.model,
+        unsupported=unsupported,
+        unmatched_numbers=code_result["unmatched"],
+        model_sentences=model_result["sentences"],
+        error=model_result["error"],
+        duplicate_sources=duplicate_sources,
+    )
+    _write_report(report_dir, story_id, report.to_dict())
+    if report.passed:
+        logger.info("verify passed: id=%s (%d value(s) checked)", story_id, code_result["checked"])
+    else:
+        logger.warning(
+            "verify failed: id=%s unsupported=%d unmatched=%d duplicate_sources=%s error=%s",
+            story_id, len(unsupported), len(code_result["unmatched"]), duplicate_sources, report.error,
+        )
+    return report
+
+
+def _load_facts(facts: Any) -> dict:
+    if isinstance(facts, dict):
+        return facts
+    if isinstance(facts, (str, Path)):
+        path = Path(facts)
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(facts, str):
+            return json.loads(facts)
+    raise TypeError("facts must be a dict, a JSON string or a path to a facts sheet")
+
+
+def _write_report(report_dir: str | Path, story_id: str, data: dict) -> Path:
+    report_dir = Path(report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    path = report_dir / f"verify-{story_id}.json"
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
 
 
 def _as_text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False)
 
 
-def build_prompt(draft: Any, facts: Any) -> str:
-    return (
-        f"{SYSTEM_INSTRUCTION}\n\nDraft:\n{_as_text(draft)}"
-        f"\n\nFacts sheet:\n{_as_text(facts)}"
-    )
-
-
-def verify(
-    draft: Any,
-    facts: Any = None,
-    *,
-    run_state: RunState,
-    prompt: str | None = None,
-    generate: Callable[..., Generation] = default_generate,
-    **kwargs: Any,
-) -> Generation:
-    """Generate the independent check and record the verifier's family."""
-    prompt = prompt if prompt is not None else build_prompt(draft, facts)
-    return generate("verifier", prompt, run_state=run_state, **kwargs)
+__all__ = [
+    "DEFAULT_REPORT_DIR",
+    "VERIFIER_SCHEMA",
+    "VerifyReport",
+    "build_prompt",
+    "code_check",
+    "extract_values",
+    "find_sources_heading",
+    "load_verify_config",
+    "verify",
+]
