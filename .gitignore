@@ -4,3 +4,7 @@ dist/
 .env.*
 .astro/
 .wrangler/
+.venv/
+venv/
+__pycache__/
+*.pyc

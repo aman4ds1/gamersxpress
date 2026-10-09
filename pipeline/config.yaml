@@ -1,0 +1,209 @@
+# Pipeline configuration.
+# Model names and provider order live ONLY here, never hardcoded in Python.
+# Free-tier eligibility changes often, so edit these lists instead of code.
+#
+# Provider names must match a registered provider in pipeline/providers.py.
+# Each role is an ordered fallback chain: try the first, then the next, etc.
+#
+# `family` describes the UNDERLYING MODEL, not the hosting provider. It is how
+# PLAN.md principle 4 is enforced: the writer and the verifier must use
+# different model families. Examples: a Gemini model hosted by Google is
+# family "google"; a Llama model served by Groq or Cerebras is family "meta";
+# Mistral models are family "mistral". Two entries that differ only by host
+# (for example the same Llama model on Groq vs Cerebras) share one family.
+
+roles:
+  # fast: scoring, extraction, SEO text. Cheapest/fastest models first.
+  fast:
+    - provider: gemini
+      model: gemini-3.5-flash
+      family: google
+    - provider: mistral
+      model: mistral-small-latest
+      family: mistral
+
+  # writer: article generation. Gemini Flash (Google AI Studio) by default.
+  writer:
+    - provider: gemini
+      model: gemini-3.5-flash
+      family: google
+    - provider: mistral
+      model: mistral-large-latest
+      family: mistral
+
+  # verifier: independent claim check. Must be a different family than the
+  # writer's actual family; providers.py filters matching families out at runtime.
+  verifier:
+    - provider: mistral
+      model: mistral-large-latest
+      family: mistral
+    - provider: gemini
+      model: gemini-3.5-flash
+      family: google
+
+# Retry policy applied per provider before falling back to the next one.
+# max_attempts counts the first try. Delays are seconds: base * 2**attempt,
+# capped at max_delay_seconds.
+retry:
+  max_attempts: 3
+  base_delay_seconds: 1
+  max_delay_seconds: 30
+
+# Freshness windows per tier, plus a separate staleness cap (PLAN pipeline
+# stage 2 / 4). ingest drops items older than their tier's window. `stale_after`
+# is how old a story's NEWEST item may be before it is considered stale; scoring
+# applies it later when a story is assembled from clustered candidates.
+freshness:
+  windows:
+    1: 7 days
+    2: 48 hours
+    3: 24 hours
+  stale_after: 7 days
+
+# RSS sources used by the ingest stage (PLAN.md section 6 trust tiers).
+# Tier 1 = official sources, tier 2 = reputable outlets.
+sources:
+  # Tier 1: official
+  - name: NVIDIA Gaming News
+    site: https://nvidianews.nvidia.com
+    feed_url: https://nvidianews.nvidia.com/cats/gaming.xml
+    tier: 1
+    owner: nvidia
+    region: global
+    categories: [hardware, pc, tech]
+  - name: NVIDIA Blog
+    site: https://blogs.nvidia.com
+    feed_url: https://feeds.feedburner.com/nvidiablog
+    tier: 1
+    owner: nvidia
+    region: global
+    categories: [hardware, pc, tech]
+  - name: PlayStation Blog
+    site: https://blog.playstation.com
+    feed_url: http://feeds.feedburner.com/psblog
+    tier: 1
+    owner: sony
+    region: global
+    categories: [playstation, gaming-news]
+  - name: Xbox Wire
+    site: https://news.xbox.com
+    feed_url: https://news.xbox.com/en-us/feed/
+    tier: 1
+    owner: microsoft
+    region: global
+    categories: [xbox, gaming-news]
+  - name: AMD Newsroom
+    site: https://newsroom.amd.com
+    feed_url: https://newsroom.amd.com/rss.xml
+    tier: 1
+    owner: amd
+    region: global
+    categories: [hardware, pc, tech]
+    # UNVERIFIED: test from Actions
+  - name: Intel Newsroom
+    site: https://newsroom.intel.com
+    feed_url: https://newsroom.intel.com/feed/
+    tier: 1
+    owner: intel
+    region: global
+    categories: [hardware, pc, tech]
+    # UNVERIFIED: test from Actions
+
+  # Tier 2: reputable outlets
+  - name: Tom's Hardware
+    site: https://www.tomshardware.com
+    feed_url: https://www.tomshardware.com/feeds.xml
+    tier: 2
+    owner: future
+    region: global
+    categories: [hardware, pc, tech]
+  - name: TechPowerUp News
+    site: https://www.techpowerup.com
+    feed_url: https://www.techpowerup.com/rss/news
+    tier: 2
+    owner: techpowerup
+    region: global
+    categories: [hardware, pc, tech]
+  - name: GamersNexus
+    site: https://gamersnexus.net
+    feed_url: https://gamersnexus.net/rss.xml
+    tier: 2
+    owner: gamersnexus
+    region: us
+    categories: [hardware, pc, tech]
+  - name: PC Gamer
+    site: https://www.pcgamer.com
+    feed_url: https://www.pcgamer.com/feeds.xml
+    tier: 2
+    owner: future
+    region: global
+    categories: [pc, gaming-news]
+  - name: Eurogamer
+    site: https://www.eurogamer.net
+    feed_url: https://www.eurogamer.net/feed
+    tier: 2
+    owner: ign-entertainment
+    region: uk
+    categories: [gaming-news]
+    # verify owner
+  - name: Rock Paper Shotgun
+    site: https://www.rockpapershotgun.com
+    feed_url: https://www.rockpapershotgun.com/feed
+    tier: 2
+    owner: ign-entertainment
+    region: uk
+    categories: [pc, gaming-news]
+    # verify owner
+  - name: VG247
+    site: https://www.vg247.com
+    feed_url: https://www.vg247.com/feed
+    tier: 2
+    owner: ign-entertainment
+    region: uk
+    categories: [gaming-news]
+    # verify owner
+  - name: Push Square
+    site: https://www.pushsquare.com
+    feed_url: https://www.pushsquare.com/feeds/latest
+    tier: 2
+    owner: hookshot-media
+    region: uk
+    categories: [playstation, gaming-news]
+    # verify owner
+  - name: GameSpot
+    site: https://www.gamespot.com
+    feed_url: https://www.gamespot.com/feeds/mashup/
+    tier: 2
+    owner: fandom
+    region: us
+    categories: [gaming-news]
+    # verify owner
+  - name: Dot Esports
+    site: https://dotesports.com
+    feed_url: https://dotesports.com/feed
+    tier: 2
+    owner: dot-esports
+    region: us
+    categories: [esports]
+    # verify owner
+  - name: Esports News UK
+    site: https://esports-news.co.uk
+    feed_url: https://esports-news.co.uk/feed
+    tier: 2
+    owner: esports-news-uk
+    region: uk
+    categories: [esports]
+  - name: The Bridge Esports
+    site: https://thebridge.in
+    feed_url: https://thebridge.in/category/esports/google_feeds.xml
+    tier: 2
+    owner: the-bridge
+    region: india
+    categories: [india, esports]
+  - name: Respawn (Outlook India)
+    site: https://respawn.outlookindia.com
+    feed_url: https://respawn.outlookindia.com/rss/gaming
+    tier: 2
+    owner: outlook-india
+    region: india
+    categories: [india, gaming-news, esports]

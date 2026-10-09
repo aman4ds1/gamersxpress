@@ -106,7 +106,7 @@ Each stage reads and writes JSON files so it can be tested alone. A run publishe
 3. **Dedupe and cluster.** Normalize URLs, group items about one story using fuzzy title match plus entity match. Skip clusters in `data/seen.json` (with a cooldown window).
 4. **Score.** Official source present, number of independent outlets, category fit, recency, performance hints from `data/topic-performance.json`. Pick the top cluster above a minimum score, otherwise end the run.
 5. **Gather.** Fetch full text of every source in the cluster. Respect robots.txt. Source text is for facts only.
-6. **Facts sheet.** Extract claims as JSON: claim, value, source URL, confidence. Require at least one tier-1 source or two independent tier-2 sources. Drop unconfirmed claims or mark them `rumor`.
+6. **Facts sheet.** Extract claims as JSON: claim, value, source URL, confidence. Require at least one tier-1 source, or two tier-2 sources with different owners; tier 3 never counts toward confirmation. Drop unconfirmed claims or mark them `rumor`.
 7. **Write.** Input: facts sheet only. Output: original article covering what happened, why gamers should care, context (for example previous generation comparison), and what is unconfirmed. Include a "Sources" section.
 8. **Verify.** A different model family checks each claim in the draft against the facts sheet. Code also checks that every number, price, date, and spec in the article appears in the facts sheet. Any unsupported claim fails the run.
 9. **SEO.** Generate title, description, slug, tags, entities, and image alt text. Code validates lengths and formats.

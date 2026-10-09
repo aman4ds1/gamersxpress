@@ -1,0 +1,55 @@
+{
+  "feeds": {
+    "https://nvidianews.nvidia.com/cats/gaming.xml": {
+      "etag": "\"6ac8063f-11c02\"",
+      "last_modified": "Thu, 08 Oct 2026 21:08:15 GMT"
+    },
+    "https://feeds.feedburner.com/nvidiablog": {
+      "last_modified": "Fri, 9 Oct 2026 00:11:21 GMT"
+    },
+    "http://feeds.feedburner.com/psblog": {
+      "last_modified": "Thu, 8 Oct 2026 19:16:01 GMT"
+    },
+    "https://news.xbox.com/en-us/feed/": {
+      "etag": "\"b9472ee9e84b4c6dd0624f161bf8f1c8\"",
+      "last_modified": "Thu, 08 Oct 2026 18:53:44 GMT"
+    },
+    "https://newsroom.amd.com/rss.xml": {},
+    "https://newsroom.intel.com/feed/": {
+      "etag": "\"8650c-65d5a1fdc6cc8-gzip\""
+    },
+    "https://www.tomshardware.com/feeds.xml": {},
+    "https://www.techpowerup.com/rss/news": {},
+    "https://gamersnexus.net/rss.xml": {
+      "etag": "\"1791508391\"",
+      "last_modified": "Fri, 09 Oct 2026 01:13:11 GMT"
+    },
+    "https://www.pcgamer.com/feeds.xml": {},
+    "https://www.eurogamer.net/feed": {
+      "last_modified": "Thu, 08 Oct 2026 17:00:00 GMT"
+    },
+    "https://www.rockpapershotgun.com/feed": {
+      "last_modified": "Thu, 08 Oct 2026 21:56:00 GMT"
+    },
+    "https://www.vg247.com/feed": {
+      "last_modified": "Tue, 02 Jun 2026 08:41:21 GMT"
+    },
+    "https://www.pushsquare.com/feeds/latest": {},
+    "https://www.gamespot.com/feeds/mashup/": {},
+    "https://dotesports.com/feed": {
+      "last_modified": "Fri, 09 Oct 2026 10:16:56 GMT"
+    },
+    "https://esports-news.co.uk/feed": {
+      "etag": "W/\"93a6184711e53612bddb703f2d5e6df1\"",
+      "last_modified": "Fri, 09 Oct 2026 08:11:17 GMT"
+    },
+    "https://thebridge.in/category/esports/google_feeds.xml": {
+      "etag": "\"5210-1790610885265\"",
+      "last_modified": "Mon, 28 Sep 2026 15:54:45 GMT"
+    },
+    "https://respawn.outlookindia.com/rss/gaming": {
+      "last_modified": "Fri, 09 Oct 2026 10:11:33 GMT"
+    }
+  },
+  "updated_at": "2026-10-09T10:40:07.945551+00:00"
+}

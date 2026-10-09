@@ -1,0 +1,4 @@
+# Runtime dependencies for the pipeline.
+# HTTP uses the standard library (urllib) on purpose, so no requests.
+PyYAML>=6.0
+feedparser>=6.0  # RSS/Atom feed parsing in ingest.py
