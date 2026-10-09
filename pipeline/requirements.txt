@@ -3,3 +3,4 @@
 PyYAML>=6.0
 feedparser>=6.0  # RSS/Atom feed parsing in ingest.py
 trafilatura>=2.0  # full-text download/extraction in gather.py
+Pillow>=10.0  # local 1200x630 WebP cover rendering in cover.py (PLAN.md section 13)

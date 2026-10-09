@@ -1,0 +1,20 @@
+{
+  "entities": [
+    { "canonical": "PlayStation 5", "aliases": ["PS5", "Play Station 5"] },
+    { "canonical": "PlayStation 4", "aliases": ["PS4"] },
+    { "canonical": "Xbox Series X", "aliases": ["XSX"] },
+    { "canonical": "Xbox Series S", "aliases": ["XSS"] },
+    { "canonical": "Nintendo Switch 2", "aliases": ["Switch 2"] },
+    { "canonical": "Nintendo Switch", "aliases": [] },
+    { "canonical": "Steam Deck", "aliases": ["SteamDeck"] },
+    { "canonical": "NVIDIA", "aliases": ["Nvidia"] },
+    { "canonical": "AMD", "aliases": ["Advanced Micro Devices"] },
+    { "canonical": "Intel", "aliases": ["Intel Corporation"] },
+    { "canonical": "GeForce RTX 5090", "aliases": ["RTX 5090"] },
+    { "canonical": "GeForce RTX 5080", "aliases": ["RTX 5080"] },
+    { "canonical": "Radeon RX 9070 XT", "aliases": ["RX 9070 XT"] },
+    { "canonical": "Valve", "aliases": ["Valve Corporation"] },
+    { "canonical": "Sony", "aliases": ["Sony Interactive Entertainment"] },
+    { "canonical": "Microsoft", "aliases": ["Microsoft Gaming"] }
+  ]
+}
