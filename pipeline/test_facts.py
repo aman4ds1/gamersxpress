@@ -10,9 +10,9 @@ from providers import Generation, RunState
 NOW = dt.datetime(2026, 10, 9, 12, 0, 0, tzinfo=dt.timezone.utc)
 
 
-def source(link="https://a.example/1", name="Alpha", tier=2, owner="co-a", region="us", text="Some body text about the story."):
+def source(link="https://a.example/1", name="Alpha", tier=2, owner="co-a", region="us", text="Some body text about the story.", title=""):
     return {
-        "link": link, "source_name": name, "tier": tier, "owner": owner,
+        "link": link, "title": title, "source_name": name, "tier": tier, "owner": owner,
         "region": region, "status": "ok", "text": text, "error": None,
     }
 
@@ -194,3 +194,114 @@ def test_build_prompt_truncates_long_text():
     prompt = facts.build_prompt("s", [source(text=long_text)])
     assert "[truncated]" in prompt
     assert len(prompt) < len(long_text)
+
+
+# --- coherence: claims must come from sources about the cluster's entity -------
+
+
+def test_primary_entities_uses_the_most_supported_headline_entity():
+    primary = facts.primary_entities(
+        title="Gears of War: E-Day Sold 168,000 Copies on Steam",
+        source_titles=[
+            "Gears of War: E-Day sales figures are in",
+            "Gears of War: E-Day breaks records on Steam",
+            "Ace Combat 8 has sold one million copies",
+        ],
+    )
+    assert "gears of war e-day" in primary
+    assert "ace combat 8" not in primary
+
+
+def test_coherence_drops_claims_from_off_topic_sources(tmp_path):
+    gathered_sources = [
+        source(
+            link="https://a.example/gears",
+            title="Gears of War: E-Day Sold 168,000 Copies on Steam",
+            owner="co-a",
+            tier=2,
+        ),
+        source(
+            link="https://b.example/ace",
+            title="Ace Combat 8 Has Sold One Million Copies",
+            owner="co-b",
+            tier=2,
+        ),
+    ]
+    data = gathered("gears-1", gathered_sources)
+    on_topic = claim(
+        claim="E-Day sold 168,000 copies on Steam",
+        value="168,000 copies",
+        source_url="https://a.example/gears",
+    )
+    off_topic = claim(
+        claim="Ace Combat 8 sold one million copies",
+        value="one million",
+        source_url="https://b.example/ace",
+    )
+    generation = make_generate({"claims": [on_topic, off_topic]})
+    result = facts.facts(
+        data,
+        id="gears-1",
+        title="Gears of War: E-Day Sold 168,000 Copies on Steam but Xbox Game Pass Players Generated 130% More Revenue",
+        output_dir=tmp_path,
+        now=NOW,
+        generate=generation,
+    )
+    assert [claim["claim"] for claim in result["claims"]] == [on_topic["claim"]]
+    assert result["coherence"]["checked"] is True
+    dropped = result["coherence"]["dropped_claims"]
+    assert len(dropped) == 1
+    assert dropped[0]["source_url"] == "https://b.example/ace"
+
+
+def test_coherence_logs_dropped_claims(caplog, tmp_path):
+    gathered_sources = [
+        source(link="https://a.example/gears", title="Gears of War: E-Day sales", owner="co-a", tier=2),
+        source(link="https://b.example/ace", title="Ace Combat 8 sells a million", owner="co-b", tier=2),
+    ]
+    result = facts.facts(
+        gathered("gear", gathered_sources),
+        title="Gears of War: E-Day Sold 168,000 Copies on Steam",
+        output_dir=tmp_path,
+        now=NOW,
+        generate=make_generate({"claims": [
+            claim(source_url="https://b.example/ace", claim="Ace Combat 8 shipped a million"),
+        ]}),
+    )
+    assert result["claims"] == []
+    assert any("off-topic" in record.message for record in caplog.records)
+
+
+def test_coherence_skips_when_no_primary_entity(tmp_path):
+    data = gathered(
+        sources=[
+            source(title="general gadgets digest"),
+            source(link="https://a.example/2", name="Alpha 2", owner="co-b", title="general gadgets digest"),
+        ],
+    )
+    result = facts.facts(
+        data,
+        output_dir=tmp_path,
+        now=NOW,
+        generate=make_generate({"claims": [claim()]}),
+    )
+    assert result["coherence"]["checked"] is False
+    assert len(result["claims"]) == 1
+
+
+def test_coherence_uses_claim_text_when_source_has_no_title(tmp_path):
+    data = gathered(
+        sources=[
+            source(title=""),
+            source(link="https://a.example/2", name="Alpha 2", owner="co-b", title=""),
+        ],
+    )
+    result = facts.facts(
+        data,
+        title="Nvidia confirms next graphics card launch window",
+        output_dir=tmp_path,
+        now=NOW,
+        generate=make_generate({"claims": [claim(claim="Nvidia confirmed the launch window for its next graphics card line")]}),
+    )
+    assert len(result["claims"]) == 1
+    assert result["coherence"]["checked"] is True

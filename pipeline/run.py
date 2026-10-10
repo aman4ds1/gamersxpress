@@ -398,6 +398,7 @@ def run(
         facts = facts_fn(
             gathered, id=cluster_id, output_dir=paths.facts_dir,
             generate=generate, run_state=run_state, now=now,
+            title=chosen.get("title"), entities=chosen.get("entities"),
         )
 
         writer = write_fn(facts, run_state=run_state, generate=generate)

@@ -13,8 +13,9 @@ Output is written to ``data/gathered/<cluster-id>.json``:
       "gathered_at": "...",
       "sources": [
         {
-          "link": "...", "source_name": "...", "tier": 1, "owner": "...",
-          "region": "us", "status": "ok", "text": "<full text>", "error": null
+          "link": "...", "title": "...", "source_name": "...", "tier": 1,
+          "owner": "...", "region": "us", "status": "ok", "text": "<full text>",
+          "error": null
         }
       ]
     }
@@ -139,6 +140,7 @@ def gather(
         url = item.get("link")
         base = {
             "link": url,
+            "title": item.get("title", ""),
             "source_name": item.get("source_name", "?"),
             "tier": item.get("tier"),
             "owner": item.get("owner", "?"),
