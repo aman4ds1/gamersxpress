@@ -59,6 +59,10 @@ _GEMINI_DROP_KEYS = {
     "default",
 }
 
+# Honest, identifying User-Agent for API calls to LLM providers. Sent on every
+# HTTP request so the providers and the models-listing tool identify us.
+_USER_AGENT = "GamersXpress/0.1 (+https://gamersxpress.com)"
+
 
 class SkipRun(Exception):
     """Raised when every provider for a role is unavailable.
@@ -174,7 +178,12 @@ def http_post_json(
 ) -> dict:
     """POST JSON and return the parsed response, raising ProviderError on failure."""
     data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers=dict(headers), method="POST")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={**dict(headers), "User-Agent": _USER_AGENT},
+        method="POST",
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
@@ -290,6 +299,21 @@ class MistralProvider(OpenAICompatibleProvider):
     base_url = "https://api.mistral.ai/v1"
 
 
+class GroqProvider(OpenAICompatibleProvider):
+    """GroqCloud (api.groq.com). OpenAI chat-completions dialect.
+
+    Base URL and authentication follow console.groq.com/docs/api-reference:
+    ``https://api.groq.com/openai/v1`` with a ``Bearer`` token. Model ids are
+    namespaced by their upstream (for example ``meta-llama/llama-4-...`` for
+    Meta's Llama, ``openai/gpt-oss-120b`` for OpenAI); the config ``family``
+    must still describe the underlying model, not Groq.
+    """
+
+    name = "groq"
+    env_key = "GROQ_API_KEY"
+    base_url = "https://api.groq.com/openai/v1"
+
+
 class GeminiProvider(Provider):
     """Google AI Studio (Gemini API) generateContent."""
 
@@ -398,10 +422,11 @@ def _sample_from_schema(schema: Any) -> Any:
 
 
 def default_providers() -> dict[str, Provider]:
-    """Registered providers. Add Groq/Cerebras/OpenRouter here when needed."""
+    """Registered providers. Add Cerebras/OpenRouter here when needed."""
     return {
         "gemini": GeminiProvider(),
         "mistral": MistralProvider(),
+        "groq": GroqProvider(),
         "mock": MockProvider(),
     }
 
@@ -543,6 +568,17 @@ def generate(
     if role not in roles:
         raise ValueError(f"unknown role {role!r}; expected one of {sorted(roles)}")
 
+    role_chain = [entry for entry in roles[role] if entry.get("enabled", True)]
+    if not role_chain:
+        message = (
+            f"cannot run role {role!r}: every configured model is disabled "
+            f"(enabled: false) in pipeline/config.yaml"
+        )
+        if run_state is not None:
+            run_state.add_failures([message])
+        logger.error(message)
+        raise SkipRun(message)
+
     if dry_run is None:
         dry_run = _env_flag(os.environ.get("DRY_RUN"))
     providers = providers if providers is not None else default_providers()
@@ -551,7 +587,7 @@ def generate(
         exclude_families is None
         and role == "verifier"
         and not dry_run
-        and not _chain_is_mock(roles[role], providers)
+        and not _chain_is_mock(role_chain, providers)
     ):
         writer_family = run_state.writer_family if run_state is not None else None
         if writer_family is None:
@@ -564,7 +600,7 @@ def generate(
             raise MissingWriterFamilyError(message)
         exclude_families = {writer_family}
 
-    chain = _select_chain(role, roles[role], exclude_families, run_state)
+    chain = _select_chain(role, role_chain, exclude_families, run_state)
 
     fallbacks: list[str] = []
 
@@ -643,6 +679,7 @@ __all__ = [
     "OpenAICompatibleProvider",
     "GeminiProvider",
     "MistralProvider",
+    "GroqProvider",
     "MockProvider",
     "VALID_ROLES",
     "generate",

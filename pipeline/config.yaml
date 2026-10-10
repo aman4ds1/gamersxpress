@@ -2,6 +2,13 @@
 # Model names and provider order live ONLY here, never hardcoded in Python.
 # Free-tier eligibility changes often, so edit these lists instead of code.
 #
+# Model ids below were verified against each provider's models endpoint
+# (tools/list_models.py) on 2026-10-10; every enabled entry responds to a live
+# call. Add `enabled: false` to keep a model listed for reference without
+# using it: generate() skips disabled entries, so they cost no calls or logs.
+# Mistral entries are disabled because the key is quota-limited (HTTP 429,
+# error code 1300) on the free tier; re-test them before re-enabling.
+#
 # Provider names must match a registered provider in pipeline/providers.py.
 # Each role is an ordered fallback chain: try the first, then the next, etc.
 #
@@ -9,37 +16,65 @@
 # PLAN.md principle 4 is enforced: the writer and the verifier must use
 # different model families. Examples: a Gemini model hosted by Google is
 # family "google"; a Llama model served by Groq or Cerebras is family "meta";
-# Mistral models are family "mistral". Two entries that differ only by host
-# (for example the same Llama model on Groq vs Cerebras) share one family.
+# OpenAI's gpt-oss models on Groq are family "openai"; Mistral models are
+# family "mistral". Two entries that differ only by host share one family, and
+# two different lines of one vendor (gemini-3.5-flash vs gemini-3.1-pro) do not
+# count as independent families.
 
 roles:
   # fast: scoring, extraction, SEO text. Cheapest/fastest models first.
   fast:
     - provider: gemini
-      model: gemini-3.5-flash
+      # Flash-Lite: Google's budget text model, plenty for claim extraction and
+      # SEO title/description; cheaper than the plain Flash used by the writer.
+      model: gemini-3.5-flash-lite
       family: google
+    - provider: groq
+      # gpt-oss-20b: OpenAI's small open reasoning model, fast on Groq's
+      # hardware; independent family (openai) so fast survives a Google outage.
+      model: openai/gpt-oss-20b
+      family: openai
     - provider: mistral
+      # "latest" Mistral small: cheap Mistral fallback.
+      enabled: false  # 429 on the free tier, re-test later
       model: mistral-small-latest
       family: mistral
 
   # writer: article generation. Gemini Flash (Google AI Studio) by default.
   writer:
     - provider: gemini
+      # Flash 3.5: best quality-per-cost on this key for long prose.
       model: gemini-3.5-flash
       family: google
+    - provider: groq
+      # gpt-oss-120b: OpenAI's largest open model, a capable prose fallback
+      # when Google is down. Family is "openai" (the model), not Groq (the host).
+      model: openai/gpt-oss-120b
+      family: openai
     - provider: mistral
-      model: mistral-large-latest
+      # Medium 3.5: strongest Mistral model this key can access.
+      enabled: false  # 429 on the free tier, re-test later
+      model: mistral-medium-3.5
       family: mistral
 
   # verifier: independent claim check. Must be a different family than the
   # writer's actual family; providers.py filters matching families out at runtime.
   verifier:
-    - provider: mistral
-      model: mistral-large-latest
-      family: mistral
+    - provider: groq
+      # gpt-oss-120b (primary): strongest independent family available. With the
+      # usual Google writer the verifier lands here (openai vs google).
+      model: openai/gpt-oss-120b
+      family: openai
     - provider: gemini
+      # Flash 3.5: fallback that only serves when the writer actually used a
+      # non-Google family (then "google" is eligible for the verifier).
       model: gemini-3.5-flash
       family: google
+    - provider: mistral
+      # Mistral fallback for cross-family reads.
+      enabled: false  # 429 on the free tier, re-test later
+      model: mistral-medium-3.5
+      family: mistral
 
 # Retry policy applied per provider before falling back to the next one.
 # max_attempts counts the first try. Delays are seconds: base * 2**attempt,

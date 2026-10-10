@@ -272,6 +272,143 @@ def test_verifier_normal_case_uses_different_family():
     assert writer.family != verifier.family
 
 
+# --- shipped-config family pairings (PLAN.md principle 4) --------------------
+# These mirror the configure chains: gemini(google) + groq(openai) + mistral.
+# Every writer family must leave the verifier a different-family model.
+
+
+def test_pairing_gemini_writer_with_groq_verifier():
+    config = {
+        "roles": {
+            "writer": chain(("gemini", "g", "google"), ("groq", "x", "openai"), ("mistral", "m", "mistral")),
+            "verifier": chain(("groq", "x", "openai"), ("gemini", "g", "google"), ("mistral", "m", "mistral")),
+        },
+        "retry": {"max_attempts": 1, "base_delay_seconds": 1, "max_delay_seconds": 30},
+    }
+    gemini = FakeProvider("gemini", ["written", "never"])
+    groq = FakeProvider("groq", ["verified"])
+    mistral = FakeProvider("mistral", ["never"])
+    run = providers.RunState()
+
+    writer = providers.generate(
+        "writer", "p", config=config,
+        providers={"gemini": gemini, "groq": groq, "mistral": mistral},
+        env=keyed("gemini", "groq", "mistral"), run_state=run,
+    )
+    verifier = providers.generate(
+        "verifier", "p", config=config,
+        providers={"gemini": gemini, "groq": groq, "mistral": mistral},
+        env=keyed("gemini", "groq", "mistral"), run_state=run,
+    )
+    assert writer.family == "google"
+    assert verifier.provider == "groq"
+    assert verifier.family == "openai"
+    assert verifier.family != writer.family
+    assert len(gemini.calls) == 1  # gemini writer only; excluded from the verifier
+
+
+def test_pairing_groq_writer_with_gemini_verifier():
+    config = {
+        "roles": {
+            "writer": chain(("gemini", "g", "google"), ("groq", "x", "openai"), ("mistral", "m", "mistral")),
+            "verifier": chain(("groq", "x", "openai"), ("gemini", "g", "google"), ("mistral", "m", "mistral")),
+        },
+        "retry": {"max_attempts": 1, "base_delay_seconds": 1, "max_delay_seconds": 30},
+    }
+    gemini = FakeProvider("gemini", [providers.ProviderError("down", retryable=False), "verified"])
+    groq = FakeProvider("groq", ["written", "never"])
+    mistral = FakeProvider("mistral", ["never"])
+    run = providers.RunState()
+
+    writer = providers.generate(
+        "writer", "p", config=config,
+        providers={"gemini": gemini, "groq": groq, "mistral": mistral},
+        env=keyed("gemini", "groq", "mistral"), run_state=run,
+    )
+    verifier = providers.generate(
+        "verifier", "p", config=config,
+        providers={"gemini": gemini, "groq": groq, "mistral": mistral},
+        env=keyed("gemini", "groq", "mistral"), run_state=run,
+    )
+    assert writer.provider == "groq"
+    assert writer.family == "openai"
+    assert verifier.provider == "gemini"
+    assert verifier.family == "google"
+    assert verifier.family != writer.family
+    assert len(groq.calls) == 1  # groq writer only; excluded from the verifier
+
+
+def test_pairing_mistral_writer_with_groq_verifier():
+    config = {
+        "roles": {
+            "writer": chain(("gemini", "g", "google"), ("groq", "x", "openai"), ("mistral", "m", "mistral")),
+            "verifier": chain(("groq", "x", "openai"), ("gemini", "g", "google"), ("mistral", "m", "mistral")),
+        },
+        "retry": {"max_attempts": 1, "base_delay_seconds": 1, "max_delay_seconds": 30},
+    }
+    gemini = FakeProvider("gemini", [providers.ProviderError("down", retryable=False), "never"])
+    groq = FakeProvider("groq", [providers.ProviderError("down", retryable=False), "verified"])
+    mistral = FakeProvider("mistral", ["written", "never"])
+    run = providers.RunState()
+
+    writer = providers.generate(
+        "writer", "p", config=config,
+        providers={"gemini": gemini, "groq": groq, "mistral": mistral},
+        env=keyed("gemini", "groq", "mistral"), run_state=run,
+    )
+    verifier = providers.generate(
+        "verifier", "p", config=config,
+        providers={"gemini": gemini, "groq": groq, "mistral": mistral},
+        env=keyed("gemini", "groq", "mistral"), run_state=run,
+    )
+    assert writer.provider == "mistral"
+    assert writer.family == "mistral"
+    assert verifier.provider == "groq"
+    assert verifier.family == "openai"
+    assert verifier.family != writer.family
+
+
+def test_shipped_config_guard_holds_for_every_writer_family():
+    def enabled(entries):
+        return [entry for entry in entries if entry.get("enabled", True)]
+
+    config = providers.load_config()
+    writer_families = {entry["family"] for entry in enabled(config["roles"]["writer"])}
+    verifier = enabled(config["roles"]["verifier"])
+    for family in writer_families:
+        remaining = [entry for entry in verifier if entry["family"] != family]
+        assert remaining, f"verifier has no eligible model when writer family is {family}"
+        assert any(entry.get("enabled", True) for entry in remaining)
+
+
+def test_disabled_entries_are_never_called():
+    config = {
+        "roles": {"writer": chain(("gemini", "g", "google"), ("mistral", "m", "mistral"))},
+        "retry": {"max_attempts": 1, "base_delay_seconds": 1, "max_delay_seconds": 30},
+    }
+    config["roles"]["writer"][1]["enabled"] = False
+    gemini = FakeProvider("gemini", ["ok"])
+    mistral = FakeProvider("mistral", ["never"])
+
+    result = providers.generate(
+        "writer", "p", config=config, providers={"gemini": gemini, "mistral": mistral},
+        env=keyed("gemini", "mistral"), dry_run=False,
+    )
+    assert result.provider == "gemini"
+    assert result.model == "g"
+    assert mistral.calls == []
+
+
+def test_all_disabled_role_raises_skiprun():
+    config = make_config(chain(("gemini", "g", "google")))
+    config["roles"]["writer"][0]["enabled"] = False
+    with pytest.raises(providers.SkipRun, match="disabled"):
+        providers.generate(
+            "writer", "p", config=config, providers={"gemini": FakeProvider("gemini", ["x"])},
+            env=keyed("gemini"), dry_run=False,
+        )
+
+
 def test_verifier_without_writer_family_raises_and_skips_provider():
     config = make_config(chain(("mistral", "m", "mistral")), role="verifier")
     mistral = FakeProvider("mistral", ["never"])
@@ -416,6 +553,52 @@ def test_mistral_payload_and_extract():
 
     data = {"choices": [{"message": {"content": "hello"}}]}
     assert provider.extract(data) == "hello"
+
+
+def test_groq_is_registered_with_groq_key():
+    provider = providers.default_providers()["groq"]
+    assert isinstance(provider, providers.GroqProvider)
+    assert provider.env_key == "GROQ_API_KEY"
+    assert provider.base_url == "https://api.groq.com/openai/v1"
+
+
+def test_groq_payload_and_extract():
+    provider = providers.GroqProvider()
+    url, payload, headers = provider.prepare("openai/gpt-oss-20b", "hi", "KEY", None)
+    assert url == "https://api.groq.com/openai/v1/chat/completions"
+    assert headers["Authorization"] == "Bearer KEY"
+    assert payload["model"] == "openai/gpt-oss-20b"
+    assert payload["messages"] == [{"role": "user", "content": "hi"}]
+
+    data = {"choices": [{"message": {"content": "hello"}}]}
+    assert provider.extract(data) == "hello"
+
+
+def test_http_post_json_sends_identifying_user_agent(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(request, timeout):
+        captured["ua"] = request.get_header("User-agent")
+        captured["url"] = request.full_url
+        return FakeResponse()
+
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake_urlopen)
+    result = providers.http_post_json(
+        "https://api.groq.com/openai/v1/chat/completions", {"a": 1}, {"Content-Type": "application/json"}
+    )
+    assert result == {"ok": True}
+    assert captured["url"].startswith("https://api.groq.com/openai/v1/chat/completions")
+    assert captured["ua"] == "GamersXpress/0.1 (+https://gamersxpress.com)"
 
 
 def test_complete_uses_injected_transport():
