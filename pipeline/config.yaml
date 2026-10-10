@@ -164,8 +164,16 @@ cluster:
 # Facts stage (pipeline/facts.py). Extraction runs once per source; this caps
 # how many claims a single source may contribute, so a long article cannot
 # crowd out the story's other sources. Bumping it re-extracts cached sheets.
+#
+# Confirmation (PLAN.md pipeline stage 6): a story is confirmed with one tier-1
+# source, or at least two independent attributed origins among the extracted
+# claims (outlets repeating one origin count as one). Setting
+# allow_single_origin_attributed to true additionally lets a single attributed
+# (named, non-"unstated") origin confirm a story. Changing it re-extracts cached
+# sheets.
 facts:
   max_claims_per_source: 15
+  allow_single_origin_attributed: false
 
 # Verifier stage (pipeline/verify.py; PLAN.md principle 4 / stage 6).
 # `list_markers` is stripped from the start of each body line before values are

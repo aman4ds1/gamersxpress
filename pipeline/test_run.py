@@ -311,7 +311,11 @@ def repair_generate(writer_outputs, verifier_outputs, calls):
     def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
         if role == "fast":
             properties = (json_schema or {}).get("properties", {})
-            value = dryrun._claims_json() if "claims" in properties else dryrun._seo_json()
+            value = (
+                dryrun._claims_json(dryrun._prompt_source_url(prompt))
+                if "claims" in properties
+                else dryrun._seo_json()
+            )
             family = "google"
         elif role == "writer":
             value = writer_outputs[min(calls["writer"], len(writer_outputs) - 1)]

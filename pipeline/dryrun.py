@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from typing import Any, Callable
 
 from providers import Generation, RunState
@@ -35,8 +36,8 @@ _FILLER_WORDS = (
 ).split()
 
 _SOURCE_PROSE = (
-    "According to people familiar with the matter, the company outlined its "
-    "plans during a briefing with regional partners. Representatives declined "
+    "According to people familiar with the matter, Nvidia outlined its plans "
+    "during a briefing with regional partners. Representatives declined "
     "to comment on unannounced products, while analysts noted that supply and "
     "retail availability remain uncertain across several markets. The full "
     "announcement is expected alongside the company's next scheduled event, and "
@@ -121,18 +122,27 @@ def sample_body(*, short: bool = False) -> str:
     )
 
 
-def _claims_json() -> dict:
+def _claims_json(source_url: str = "https://a.example/1") -> dict:
     return {
         "claims": [
             {
                 "claim": "Nvidia confirmed the launch window for its next graphics card line",
                 "value": "the launch window was confirmed for the next graphics card line",
-                "source_url": "https://a.example/1",
+                "source_url": source_url,
                 "confidence": 0.9,
+                "origin": "nvidia",
                 "kind": "confirmed",
             }
         ]
     }
+
+
+_URL_LINE_RE = re.compile(r"^URL:\s*(\S+)", re.MULTILINE)
+
+
+def _prompt_source_url(prompt: str) -> str:
+    match = _URL_LINE_RE.search(prompt or "")
+    return match.group(1) if match else "https://a.example/1"
 
 
 def _seo_json() -> dict:
@@ -183,7 +193,7 @@ def make_generate(scenario: str = "pass") -> Callable[..., Generation]:
         if role == "fast":
             properties = (json_schema or {}).get("properties", {})
             if "claims" in properties:
-                value = _claims_json()
+                value = _claims_json(_prompt_source_url(prompt))
             else:
                 value = _seo_json()
             generation = Generation("fast", "mock", "mock-fast", "google", value)

@@ -187,6 +187,81 @@ def test_validate_accepts_dollar_amount_for_in_game_currency_when_named():
     assert errors == []
 
 
+# --- attribution, causal connectives and overlaps ----------------------------
+
+
+def overlap_facts():
+    return {
+        "id": "overlap-1",
+        "claims": [
+            {
+                "claim": "Most DMZ players also play Warzone.",
+                "value": "85% overlap with Warzone players",
+                "source_url": "https://eurogamer.example/overlap",
+                "confidence": 0.8,
+                "origin": "alinea analytics",
+                "kind": "estimate",
+            }
+        ],
+        "sources": [
+            {"source_name": "Eurogamer", "link": "https://eurogamer.example/overlap", "tier": 2, "owner": "ign-entertainment", "region": "uk"}
+        ],
+    }
+
+
+def overlap_article():
+    return "## What happened\n\nAbout 85% of DMZ players also play Warzone, according to estimates from Alinea Analytics."
+
+
+def test_validate_rejects_causal_phrase_in_description():
+    data = seo_data(
+        description="The launch is driven by demand for more memory and faster ray tracing in high-end gaming PCs and creator builds.",
+    )
+    errors = seo.validate(data, article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert any("driven by" in e for e in errors)
+
+
+def test_validate_rejects_causal_phrase_in_title():
+    data = seo_data(title="NVIDIA raises RTX 5090 price because demand is high")
+    errors = seo.validate(data, article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert any("causal" in e and "because" in e for e in errors)
+
+
+def test_validate_rejects_overlap_percentage_written_as_origin():
+    data = seo_data(
+        title="Study finds 85% overlap between DMZ and Warzone players",
+        description="A study estimates an 85% overlap, and says most DMZ players came from Warzone according to the firm behind the data.",
+    )
+    errors = seo.validate(data, article=overlap_article(), facts=overlap_facts(), entities=seo.load_entities())
+    assert any("came from" in e for e in errors)
+
+
+def test_validate_allows_overlap_percentage_without_origin_phrase():
+    data = seo_data(
+        title="Study estimates 85% overlap between DMZ and Warzone players",
+        description="A new estimate says 85% of DMZ players also play Warzone, a figure that could shape the mode's next content update.",
+    )
+    errors = seo.validate(data, article=overlap_article(), facts=overlap_facts(), entities=seo.load_entities())
+    assert not any("origin phrase" in e for e in errors)
+
+
+def test_causal_phrases_cover_the_writer_ban():
+    for phrase in ("in contrast", "because", "driven by", "thanks to", "as a result"):
+        assert phrase in seo.CAUSAL_PHRASES
+
+
+def test_seo_instruction_covers_attribution_and_relation_rules():
+    for required in (
+        "according to estimates from X",
+        "Eurogamer reports",
+        "Never state an estimate",
+        "in contrast",
+        "driven by",
+        "came from",
+    ):
+        assert required in seo.SYSTEM_INSTRUCTION
+
+
 # --- entities ----------------------------------------------------------------
 
 

@@ -92,6 +92,63 @@ def test_writer_template_attributes_source_angle():
     assert "Eurogamer reports" in template
 
 
+def test_writer_template_names_claim_kinds_and_origin():
+    template = write_module.load_template()
+    assert "Attribute by `kind`" in template
+    assert "`origin` and attribution" in template
+    for kind in ("confirmed", "reported", "estimate", "rumor", "opinion"):
+        assert kind in template
+
+
+def test_writer_template_attributes_estimates_with_hedges():
+    template = write_module.load_template()
+    assert "according to estimates from" in template
+    assert "Keep hedge words" in template
+    for hedge in ("estimated", "reportedly", "more than", "over"):
+        assert hedge in template
+
+
+def test_writer_template_attributes_unstated_origin_to_the_outlet():
+    template = write_module.load_template()
+    assert "unstated" in template
+    assert "attribute the claim to the outlet that reported it" in template
+
+
+def test_writer_template_bans_causal_connectives():
+    template = write_module.load_template()
+    assert "No causal or contrast connectives" in template
+    for phrase in ("in contrast", "because", "driven by", "thanks to", "as a result"):
+        assert phrase in template
+
+
+def test_writer_template_keeps_overlaps_and_percentages_exact():
+    template = write_module.load_template()
+    assert "Percentages and overlaps exactly as stated" in template
+    assert "came from" in template
+
+
+def test_writer_template_groups_estimates_and_rumors_in_one_place():
+    template = write_module.load_template()
+    assert "One place for the unconfirmed" in template
+    assert "Group every estimate and rumor" in template
+
+
+def test_writer_template_states_each_fact_once():
+    template = write_module.load_template()
+    assert "state each fact once" in template
+
+
+def test_writer_template_names_person_or_firm_for_opinions():
+    template = write_module.load_template()
+    assert "Name the person or firm" in template
+
+
+def test_writer_template_bans_all_internal_terms():
+    template = write_module.load_template()
+    for term in ("facts sheet", "confidence", "kind", "origin"):
+        assert term in template
+
+
 def test_build_prompt_uses_custom_template(tmp_path):
     path = tmp_path / "writer.md"
     path.write_text("INSTRUCTIONS\n\n{{facts_sheet}}\n", encoding="utf-8")

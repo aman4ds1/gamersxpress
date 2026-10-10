@@ -15,6 +15,13 @@ Validation is code-only and independent of the model:
   does not carry -- is a failure.
 * **No unconfirmed claims.** A value the sheet marks as a rumor (``kind``
   ``"rumor"``) must not appear in the title or description.
+* **No causal or contrast connectives.** A phrase that implies a cause, reason
+  or contrast (``in contrast``, ``because``, ``driven by``, ``thanks to``,
+  ``as a result``) is rejected in the title and description: code cannot prove
+  the relationship from the facts, so the search snippet may not assert it.
+* **No overlap rewritten as an origin.** A percentage paired with an origin
+  phrase (``came from``, ``come from``) fails, because it turns the fact's
+  stated overlap into an unsupported origin claim.
 
 Formatting is fixed in code, not by the model. The slug is built here from the
 final title (transliterated, hyphenated, cut to :data:`MAX_SLUG` at a word
@@ -97,6 +104,28 @@ SNIPPET_BANNED_PHRASES = (
     "facts sheet",
 )
 
+# Connectives that link two facts as cause, reason or contrast. The writer may
+# only use one when a numbered fact states that relationship, which a search
+# snippet cannot prove, so the title and description must not use them at all.
+CAUSAL_PHRASES = (
+    "in contrast",
+    "because",
+    "driven by",
+    "thanks to",
+    "as a result",
+)
+
+# A percentage sorted with an origin phrase rewrites an overlap as "where it
+# came from", which the writer rules forbid. A percentage in the same snippet as
+# one of these phrases fails (PLAN.md principle 6 applied to search text).
+OVERLAP_ORIGIN_PHRASES = (
+    "came from",
+    "come from",
+)
+
+# A percentage as it appears in reader text, used by the overlap-origin check.
+_PERCENT_RE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?\s?%")
+
 logger = logging.getLogger("gamersxpress.pipeline.seo")
 
 SEO_SCHEMA: dict[str, Any] = {
@@ -137,7 +166,14 @@ SYSTEM_INSTRUCTION = (
     "'low confidence'. Never use internal terms such as 'facts sheet' in the "
     "title or description; when a detail is not in the sheet, write 'no other "
     "details are confirmed'. Name in-game currencies wherever an amount "
-    "appears: '100,000 in-game DMZ Cash', never a bare dollar figure. The "
+    "appears: '100,000 in-game DMZ Cash', never a bare dollar figure. "
+    "Attribute an estimate to its origin ('according to estimates from X') and "
+    "a reported claim to the outlet that reported it ('Eurogamer reports'); "
+    "when the origin is unstated, attribute to the outlet. Never state an "
+    "estimate or a reported claim as fact. Never link facts with a causal or "
+    "contrast connective ('in contrast', 'because', 'driven by', 'thanks to', "
+    "'as a result') unless the facts sheet states that relationship, and never "
+    "rewrite a percentage or overlap as an origin ('came from'). The "
     "slug is generated in code from the final title; do not copy a source "
     "headline."
 )
@@ -471,6 +507,22 @@ def validate(
         if phrase in snippet:
             errors.append(f"title or description contains banned phrase: {phrase!r}")
 
+    # Causal and contrast connectives are banned from the snippet: code cannot
+    # prove the relationship from the facts, so the search text must not assert
+    # it (writer rule: no causal or contrast connectives).
+    for phrase in CAUSAL_PHRASES:
+        if phrase in snippet:
+            errors.append(f"title or description uses a causal or contrast phrase: {phrase!r}")
+
+    # A percentage paired with an origin phrase rewrites a stated overlap as
+    # "where it came from" (writer rule: never turn an overlap into an origin).
+    if _PERCENT_RE.search(f"{title}\n{description}"):
+        for phrase in OVERLAP_ORIGIN_PHRASES:
+            if phrase in snippet:
+                errors.append(
+                    f"title or description turns a percentage into an origin phrase: {phrase!r}"
+                )
+
     if not isinstance(description, str):
         errors.append("description is not a string")
     else:
@@ -638,6 +690,7 @@ def generate_seo(
 __all__ = [
     "ALLOWED_CATEGORIES",
     "BANNED_PHRASES",
+    "CAUSAL_PHRASES",
     "MAX_ALT",
     "MAX_DESC",
     "MAX_SLUG",
@@ -645,6 +698,7 @@ __all__ = [
     "MAX_TITLE",
     "MIN_DESC",
     "MIN_TAGS",
+    "OVERLAP_ORIGIN_PHRASES",
     "SEO_SCHEMA",
     "SNIPPET_BANNED_PHRASES",
     "SeoError",
