@@ -16,8 +16,13 @@ Validation is code-only and independent of the model:
 * **No unconfirmed claims.** A value the sheet marks as a rumor (``kind``
   ``"rumor"``) must not appear in the title or description.
 
-If the first answer is invalid the model is asked once more with the validation
-errors attached; if that also fails the story is dropped with :class:`SeoError`.
+Formatting is fixed in code, not by the model. The slug is built here from the
+final title (transliterated, hyphenated, cut to :data:`MAX_SLUG` at a word
+boundary and de-duplicated) and tags and entities are normalized here before
+validation. The model is asked again only for problems code cannot fix (title or
+description length or content, or invented/unconfirmed values); if that second
+answer also fails the story is dropped with :class:`SeoError`. Every field that
+code rewrites is logged.
 
 Entity names are canonicalized against ``data/entities.json`` (alias ``PS5`` ->
 ``PlayStation 5``) so the same product never appears under two names. A new
@@ -51,6 +56,8 @@ MIN_DESC = 70
 MAX_DESC = 160
 MAX_SLUG = 60
 MAX_ALT = 200
+MIN_TAGS = 3
+MAX_TAGS = 6
 
 # Mirrors src/data/categories.ts (the source of truth re-exported by
 # src/content.config.ts). test_seo.py asserts the two lists stay in sync.
@@ -246,18 +253,63 @@ def existing_slugs(articles_dir: str | Path | None = None, drafts_dir: str | Pat
     return slugs
 
 
+def truncate_slug(slug: str, limit: int = MAX_SLUG) -> str:
+    """Cut ``slug`` to at most ``limit`` characters at a word boundary.
+
+    A single word longer than ``limit`` cannot be cut at a hyphen, so it is cut
+    hard. The result is always a valid lowercase hyphenated slug (or empty).
+    """
+    slug = slug.strip("-")
+    if len(slug) <= limit:
+        return slug
+    cut = slug[:limit]
+    if "-" in cut:
+        cut = cut.rsplit("-", 1)[0]
+    return cut.strip("-")
+
+
 def unique_slug(base: str, existing: set[str]) -> str:
-    """Return a slug that is not already in ``existing`` and is <= :data:`MAX_SLUG`."""
-    slug = slugify(base)[:MAX_SLUG].rstrip("-") or "article"
+    """Return a slug that is not already in ``existing`` and is <= :data:`MAX_SLUG`.
+
+    The slug is built from ``base`` (the final title): ASCII, lowercase and
+    hyphen-separated, then cut at a word boundary so a long title never exceeds
+    the length limit. A collision gets a ``-2``, ``-3`` ... suffix.
+    """
+    slug = truncate_slug(slugify(base)) or "article"
     if slug not in existing:
         return slug
     counter = 2
     while True:
         suffix = f"-{counter}"
-        candidate = slug[: MAX_SLUG - len(suffix)].rstrip("-") + suffix
+        stem = truncate_slug(slug, MAX_SLUG - len(suffix)) or "article"
+        candidate = f"{stem}{suffix}"
         if candidate not in existing:
             return candidate
         counter += 1
+
+
+def normalize_tags(tags: Any, *, limit: int = MAX_TAGS) -> list[str]:
+    """Normalize tags to the lowercase hyphenated tag format.
+
+    The model often returns human labels such as ``"game pass"``. Code trims,
+    lowercases, hyphenates, drops empties, dedupes and caps the count so a
+    formatting slip never costs a model retry.
+    """
+    if isinstance(tags, str):
+        raw: Iterable[Any] = [tags]
+    elif isinstance(tags, (list, tuple)):
+        raw = tags
+    else:
+        return []
+    out: list[str] = []
+    for item in raw:
+        tag = slugify(item)
+        if not tag or tag in out:
+            continue
+        out.append(tag)
+    if limit and len(out) > limit:
+        out = out[:limit]
+    return out
 
 
 # --- prompt ------------------------------------------------------------------
@@ -437,8 +489,8 @@ def validate(
 
     if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
         errors.append("tags must be a list of strings")
-    elif not 3 <= len(tags) <= 6:
-        errors.append(f"tags must have 3 to 6 entries, got {len(tags)}")
+    elif not MIN_TAGS <= len(tags) <= MAX_TAGS:
+        errors.append(f"tags must have {MIN_TAGS} to {MAX_TAGS} entries, got {len(tags)}")
     else:
         for tag in tags:
             if not _TAG_RE.fullmatch(tag):
@@ -536,18 +588,36 @@ def generate_seo(
         data = dict(data)
         for field in ("title", "description", "imageAlt"):
             if isinstance(data.get(field), str):
-                data[field] = canonicalize_text(data[field], entities)
-        # The slug comes from the final title, never from the model's slug or a
-        # source headline.
-        data["slug"] = slugify(data.get("title") or "") or slugify(data.get("slug") or "")
-        data["entities"], new_entities = canonicalize_entities(data.get("entities", []), sheet, entities)
+                normalized = canonicalize_text(data[field], entities)
+                if normalized != data[field]:
+                    logger.info("seo normalized %s entity names: %r -> %r", field, data[field], normalized)
+                data[field] = normalized
+
+        # Build the slug in code from the final title, cut to length and made
+        # unique here so a long title or a collision never costs a model retry.
+        # The model's slug and any source headline are never used.
+        raw_slug = data.get("slug")
+        data["slug"] = unique_slug(str(data.get("title") or ""), existing)
+        if data["slug"] != raw_slug:
+            logger.info("seo built slug in code from title: %r -> %r", raw_slug, data["slug"])
+
+        # Normalize tags and entities in code before validating; only problems
+        # code cannot fix (title/description wording, invented values) retry.
+        raw_tags = data.get("tags")
+        data["tags"] = normalize_tags(raw_tags)
+        if data["tags"] != raw_tags:
+            logger.info("seo normalized tags: %r -> %r", raw_tags, data["tags"])
+
+        raw_entities = data.get("entities", [])
+        data["entities"], new_entities = canonicalize_entities(raw_entities, sheet, entities)
+        if data["entities"] != raw_entities:
+            logger.info("seo normalized entities: %r -> %r", raw_entities, data["entities"])
 
         errors = validate(data, article=article, facts=sheet, entities=entities, config=config)
         if errors:
             logger.warning("seo attempt %d invalid: %s", attempt + 1, "; ".join(errors))
             continue
 
-        data["slug"] = unique_slug(data["slug"], existing)
         if new_entities:
             save_entities(entities + new_entities, entities_path)
             logger.info("seo added %d new entity/entities", len(new_entities))
@@ -561,7 +631,8 @@ def generate_seo(
             },
         }
 
-    raise SeoError("SEO metadata failed validation after two attempts: " + "; ".join(errors))
+    detail = "; ".join(errors) if errors else "unknown validation error"
+    raise SeoError(f"SEO metadata failed validation after two attempts: {detail}")
 
 
 __all__ = [
@@ -570,8 +641,10 @@ __all__ = [
     "MAX_ALT",
     "MAX_DESC",
     "MAX_SLUG",
+    "MAX_TAGS",
     "MAX_TITLE",
     "MIN_DESC",
+    "MIN_TAGS",
     "SEO_SCHEMA",
     "SNIPPET_BANNED_PHRASES",
     "SeoError",
@@ -581,8 +654,10 @@ __all__ = [
     "existing_slugs",
     "generate_seo",
     "load_entities",
+    "normalize_tags",
     "save_entities",
     "slugify",
+    "truncate_slug",
     "unique_slug",
     "validate",
 ]

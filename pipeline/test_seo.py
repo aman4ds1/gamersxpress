@@ -236,6 +236,38 @@ def test_existing_slugs_scans_articles_and_drafts(tmp_path):
     assert seo.existing_slugs(tmp_path / "missing", tmp_path / "also-missing") == set()
 
 
+# --- normalization (code owns formatting) ------------------------------------
+
+
+LONG_SLUG_TITLE = "Estimated Gears of War E-Day Sales Raise Query About Last-Minute"
+LONG_SLUG_64 = "estimated-gears-of-war-e-day-sales-raise-query-about-last-minute"
+LONG_SLUG_CUT = "estimated-gears-of-war-e-day-sales-raise-query-about-last"
+
+
+def test_truncate_slug_cuts_64_char_slug_at_word_boundary():
+    assert len(LONG_SLUG_64) == 64
+    cut = seo.truncate_slug(LONG_SLUG_64)
+    assert len(cut) <= seo.MAX_SLUG
+    assert seo.SLUG_RE.fullmatch(cut)
+    assert LONG_SLUG_64.startswith(cut + "-")
+
+
+def test_slugify_transliterates_accents():
+    assert seo.slugify("Pokémon Café Déjà Vu") == "pokemon-cafe-deja-vu"
+
+
+def test_normalize_tags_hyphenates_dedupes_and_drops_empty():
+    assert seo.normalize_tags(["game pass", "GPU", "gpu", "  ", "", "Game Pass"]) == [
+        "game-pass",
+        "gpu",
+    ]
+
+
+def test_normalize_tags_caps_the_count():
+    tags = [f"tag {i}" for i in range(9)]
+    assert seo.normalize_tags(tags) == [f"tag-{i}" for i in range(seo.MAX_TAGS)]
+
+
 # --- prompt ------------------------------------------------------------------
 
 
@@ -353,3 +385,50 @@ def test_generate_seo_raises_after_two_failures(tmp_path):
             drafts_dir=drafts,
         )
     assert len(generate.calls) == 2
+
+
+def test_generate_seo_fixes_formatting_without_a_retry(tmp_path):
+    articles = tmp_path / "articles"
+    drafts = tmp_path / "drafts"
+    articles.mkdir()
+    drafts.mkdir()
+    data = seo_data(
+        slug="estimated-gears-of-war-e-day-sales-raise-query-about-last-minute",
+        title=LONG_SLUG_TITLE,
+        tags=["game pass", "Game Pass", "", "xbox", "pc gaming", "pc-gaming"],
+    )
+    generate = make_generate(data)
+    result = seo.generate_seo(
+        ARTICLE,
+        make_facts(),
+        generate=generate,
+        entities_path=tmp_path / "entities.json",
+        articles_dir=articles,
+        drafts_dir=drafts,
+    )
+    assert result["slug"] == LONG_SLUG_CUT
+    assert len(result["slug"]) <= seo.MAX_SLUG
+    assert result["slug"] != data["slug"]
+    assert result["tags"] == ["game-pass", "xbox", "pc-gaming"]
+    assert len(generate.calls) == 1
+
+
+def test_generate_seo_avoids_slug_collision(tmp_path):
+    articles = tmp_path / "articles"
+    drafts = tmp_path / "drafts"
+    articles.mkdir()
+    drafts.mkdir()
+    (articles / f"{LONG_SLUG_CUT}.md").write_text("---\n---\n", encoding="utf-8")
+    data = seo_data(title=LONG_SLUG_TITLE)
+    generate = make_generate(data)
+    result = seo.generate_seo(
+        ARTICLE,
+        make_facts(),
+        generate=generate,
+        entities_path=tmp_path / "entities.json",
+        articles_dir=articles,
+        drafts_dir=drafts,
+    )
+    assert result["slug"] == f"{LONG_SLUG_CUT}-2"
+    assert len(result["slug"]) <= seo.MAX_SLUG
+    assert len(generate.calls) == 1
