@@ -1,11 +1,22 @@
 """Facts stage: extract claims from gathered source text with the 'fast' role.
 
 Input is the output of the gather stage (``data/gathered/<id>.json``). The
-"fast" model family extracts every distinct factual claim from the source
-texts as JSON: claim, value, source_url, confidence (0..1), is_rumor.
+"fast" model family extracts JSON claims from the source texts: claim, value,
+source_url, confidence (0..1), and kind (confirmed / rumor / opinion).
+
+Extraction runs **once per source**, one model call per source, so a long
+article cannot crowd out the story's other sources. Each call sees only its own
+source and extracts every distinct fact about the story's subject (features,
+modes, dates, prices, platforms, named quotes), up to a per-source maximum
+(``facts.max_claims_per_source`` in config.yaml, default
+:data:`MAX_CLAIMS_PER_SOURCE`). Claims from all sources are merged into one
+sheet afterwards.
 
 The extracted JSON is validated against :data:`CLAIM_SCHEMA` in code; anything
-that does not match raises :class:`FactsError` and the story is dropped.
+that does not match raises :class:`FactsError` and the story is dropped. Each
+claim's ``kind`` is one of ``confirmed``, ``rumor`` or ``opinion``. In-game
+currency amounts must name their currency (for example "100,000 in-game DMZ
+Cash") and are never stored as a bare dollar figure.
 
 A coherence check then keeps every claim honest to the story: each claim's
 source must be about the cluster's primary entity (the named entity shared by
@@ -23,19 +34,19 @@ Output is written to ``data/facts/<id>.json``:
       "id": "<id>",
       "confirmation": {"tier1_sources": 1, "tier2_owners": [...], "confirmed": true},
       "sources": [{"source_name", "link", "title", "tier", "owner", "region"}],
-      "claims": [{"claim", "value", "source_url", "confidence", "is_rumor"}],
+      "claims": [{"claim", "value", "source_url", "confidence", "kind"}],
       "coherence": {"checked": true, "primary_entities": [...], "dropped_claims": [...]},
-"extractor": {"provider", "model", "family"},
+      "extractor": {"provider", "model", "family"},
       "fingerprint": {"format": 1, "value": "<hash of id + model chain + prompt settings>"}
     }
 
 When the file already exists and its stored fingerprint still matches the
 current one (the cluster id, the enabled "fast" role chain from config.yaml,
-and the extraction prompt/schema), the cached sheet is returned without calling
-the model; any mismatch -- including a sheet written before fingerprints
-existed -- means claims are re-extracted and the file overwritten, so stale
-facts are never reused. Bump :data:`PROMPT_VERSION` when extraction output
-rules change so cached sheets invalidate automatically.
+the extraction prompt/schema, and the extraction tuning values), the cached
+sheet is returned without calling the model; any mismatch -- including a sheet
+written before fingerprints existed -- means claims are re-extracted and the
+file overwritten, so stale facts are never reused. Bump :data:`PROMPT_VERSION`
+when extraction output rules change so cached sheets invalidate automatically.
 """
 
 from __future__ import annotations
@@ -60,9 +71,18 @@ MAX_SOURCE_CHARS = 4000
 # verbatim passage copied from a source, so they are clipped before the sheet is
 # saved (PLAN.md principle 3: facts, not source prose).
 MAX_FIELD_CHARS = 300
+# Extraction runs once per source; one long article may contribute at most this
+# many claims, so it cannot crowd out the story's other sources. Overridable per
+# story via `facts.max_claims_per_source` in config.yaml.
+MAX_CLAIMS_PER_SOURCE = 15
+# A source that carries more text than this yet produces fewer than
+# WARN_MIN_CLAIMS claims is logged with a warning, because that strong of a gap
+# usually means the extractor skipped most of what the source says.
+WARN_LOW_SOURCE_CHARS = 1500
+WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v1"
+PROMPT_VERSION = "facts-v2"
 
 logger = logging.getLogger("gamersxpress.pipeline.facts")
 
@@ -78,9 +98,9 @@ CLAIM_SCHEMA: dict[str, Any] = {
                     "value": {"type": "string"},
                     "source_url": {"type": "string"},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                    "is_rumor": {"type": "boolean"},
+                    "kind": {"type": "string", "enum": ["confirmed", "rumor", "opinion"]},
                 },
-                "required": ["claim", "value", "source_url", "confidence", "is_rumor"],
+                "required": ["claim", "value", "source_url", "confidence", "kind"],
                 "additionalProperties": False,
             },
         }
@@ -89,14 +109,21 @@ CLAIM_SCHEMA: dict[str, Any] = {
 }
 
 SYSTEM_INSTRUCTION = (
-    "You are a news-room fact extractor. From the article text below, extract "
-    "every distinct factual claim: what happened, key figures, prices, dates, "
-    "specs, and attributed quotes. Return each claim as an object with: claim "
-    "(short statement), value (the concrete value or a one-line summary), "
-    "source_url (the exact URL that supports it, from the list given), "
-    "confidence (0 to 1), and is_rumor (true only when the text itself marks it "
-    "as speculative, unconfirmed or a rumor). Extract only what the text says; "
-    "never infer, fill gaps, or invent URLs."
+    "You are a news-room fact extractor, working one article at a time. From "
+    "the single article text below, extract every distinct fact about the "
+    "story's subject: the features, mechanics, modes, dates, prices, "
+    "platforms, requirements and named quotes the text states. Do not stop "
+    "early because the article is long: extract every distinct fact, up to the "
+    "per-source limit given with the article. Never invent facts, values, or "
+    "URLs; write only what the text actually says.\n"
+    "Return each fact as an object with: claim (a short statement), value (the "
+    "concrete value or a one-line summary), source_url (the exact URL given for "
+    "this source), confidence (0 to 1), and kind (one of confirmed, rumor, or "
+    "opinion). kind is 'confirmed' when the text states the fact, 'rumor' only "
+    "when the text itself marks it as speculative, unconfirmed, or a leak, and "
+    "'opinion' for a writer's or a source's judgement. Any in-game currency "
+    "amount must name the currency (for example '100,000 in-game DMZ Cash'), "
+    "never appear as a bare dollar figure."
 )
 
 
@@ -122,20 +149,23 @@ class UnconfirmedStory(Exception):
     """Not enough independent sources; the story must not be published."""
 
 
-def build_prompt(id: str, sources: list[dict]) -> str:
+def build_prompt(id: str, source: dict, *, max_claims: int = MAX_CLAIMS_PER_SOURCE) -> str:
+    """Build the extraction prompt for ONE source (one model call per source)."""
     parts = [SYSTEM_INSTRUCTION, "", f"Story ID: {id}", ""]
-    for index, source in enumerate(sources, start=1):
-        parts.append(
-            f"SOURCE {index}: {source['source_name']} "
-            f"(tier {source['tier']}, owner {source['owner']}, region {source['region']})"
-        )
-        parts.append(f"URL: {source['link']}")
-        text = (source.get("text") or "").strip()
-        if text:
-            parts.append("TEXT:\n" + _truncate(text))
-        else:
-            parts.append("TEXT: (no text available)")
-        parts.append("")
+    parts.append(
+        f"SOURCE: {source['source_name']} "
+        f"(tier {source['tier']}, owner {source['owner']}, region {source['region']})"
+    )
+    parts.append(f"URL: {source['link']}")
+    parts.append(
+        f"Extract up to {max_claims} distinct facts from the text below; every "
+        f"claim's source_url must be exactly {source['link']}."
+    )
+    text = (source.get("text") or "").strip()
+    if text:
+        parts.append("TEXT:\n" + _truncate(text))
+    else:
+        parts.append("TEXT: (no text available)")
     return "\n".join(parts)
 
 
@@ -146,17 +176,16 @@ def _truncate(text: str, limit: int = MAX_SOURCE_CHARS) -> str:
 
 
 def extract_claims(
-    gathered: dict,
+    id: str,
+    source: dict,
     *,
-    prompt: str | None = None,
+    max_claims: int = MAX_CLAIMS_PER_SOURCE,
     generate: Callable[..., Generation] = default_generate,
     run_state: RunState | None = None,
     **kwargs: Any,
 ) -> Generation:
-    """Run the 'fast' role to extract claims, returning its Generation."""
-    prompt = prompt if prompt is not None else build_prompt(
-        gathered.get("id", ""), gathered.get("sources") or []
-    )
+    """Run the 'fast' role on a single source, returning its Generation."""
+    prompt = build_prompt(id, source, max_claims=max_claims)
     return generate("fast", prompt, json_schema=CLAIM_SCHEMA, run_state=run_state, **kwargs)
 
 
@@ -290,6 +319,7 @@ def facts(
     now: dt.datetime | None = None,
     generate: Callable[..., Generation] = default_generate,
     run_state: RunState | None = None,
+    max_claims_per_source: int | None = None,
     **kwargs: Any,
 ) -> dict:
     """Extract claims from gathered text, enforce confirmation, save the sheet."""
@@ -307,9 +337,13 @@ def facts(
         logger.warning("%s", message)
         raise UnconfirmedStory(message)
 
+    config_max = int(
+        (load_config().get("facts") or {}).get("max_claims_per_source", MAX_CLAIMS_PER_SOURCE)
+    )
+    max_claims = max_claims_per_source if max_claims_per_source is not None else config_max
     fingerprint = cluster.stage_fingerprint(
         name, "facts", PROMPT_VERSION, SYSTEM_INSTRUCTION, CLAIM_SCHEMA,
-        _extraction_chain(), MAX_SOURCE_CHARS, MAX_FIELD_CHARS,
+        _extraction_chain(), MAX_SOURCE_CHARS, MAX_FIELD_CHARS, max_claims,
     )
     path = output_dir / f"{name}.json"
     if cluster.stored_fingerprint(path) == fingerprint:
@@ -317,11 +351,36 @@ def facts(
         logger.info("facts reused cached sheet %s (fingerprint match)", path)
         return payload
 
-    generation = extract_claims(gathered, generate=generate, run_state=run_state, **kwargs)
-    claims = validate_claims(generation.value)
+    extracted: list[dict] = []
+    generation = None
+    for source in sources:
+        text = str(source.get("text") or "")
+        if not text.strip():
+            logger.info("story %s: source %s has no text; nothing to extract", name, source.get("link"))
+            continue
+        generation = extract_claims(
+            name, source, max_claims=max_claims, generate=generate, run_state=run_state, **kwargs
+        )
+        part = validate_claims(generation.value)
+        if len(part) > max_claims:
+            logger.warning(
+                "story %s: source %s returned %d claim(s), keeping the first %d",
+                name, source.get("link"), len(part), max_claims,
+            )
+            part = part[:max_claims]
+        logger.info("story %s: source %s extracted %d claim(s)", name, source.get("link"), len(part))
+        if len(text) > WARN_LOW_SOURCE_CHARS and len(part) < WARN_MIN_CLAIMS:
+            logger.warning(
+                "story %s: source %s has %d chars but yielded only %d claim(s); "
+                "most of what it says may be missing",
+                name, source.get("link"), len(text), len(part),
+            )
+        extracted.extend(part)
+    if generation is None:
+        raise FactsError(f"story {name}: none of the sources had extractable text")
 
     kept, dropped, primary = coherence_check(
-        claims,
+        extracted,
         sources,
         title=title,
         entities=entities,
@@ -368,6 +427,7 @@ def facts(
 __all__ = [
     "CLAIM_SCHEMA",
     "MAX_FIELD_CHARS",
+    "MAX_CLAIMS_PER_SOURCE",
     "PROMPT_VERSION",
     "FactsError",
     "UnconfirmedStory",

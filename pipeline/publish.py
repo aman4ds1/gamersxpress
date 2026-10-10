@@ -220,6 +220,30 @@ def save_draft(
     return {"published": False, "slug": slug, "draft_path": str(article_path)}
 
 
+def save_repair(
+    original: str,
+    repaired: str,
+    *,
+    slug: str,
+    drafts_dir: str | Path | None = None,
+    changed_clauses: list[str] | None = None,
+) -> dict:
+    """Keep the original and repaired drafts under ``drafts/<slug>/`` for review."""
+    drafts_dir = Path(drafts_dir) if drafts_dir else DEFAULT_DRAFTS_DIR
+    target = drafts_dir / slug
+    target.mkdir(parents=True, exist_ok=True)
+    original_path = target / "original.md"
+    repaired_path = target / "repaired.md"
+    original_path.write_text(original, encoding="utf-8")
+    repaired_path.write_text(repaired, encoding="utf-8")
+    if changed_clauses:
+        (target / "repair-clauses.txt").write_text(
+            "\n".join(changed_clauses) + "\n", encoding="utf-8"
+        )
+    logger.warning("repair drafts kept at %s and %s", original_path, repaired_path)
+    return {"original_path": str(original_path), "repaired_path": str(repaired_path)}
+
+
 def _mark_seen(cluster_id: str, seen_path: str | Path | None, now: dt.datetime | None, *, cluster_data: dict) -> None:
     import cluster
 
@@ -287,6 +311,7 @@ __all__ = [
     "load_log",
     "publish",
     "save_draft",
+    "save_repair",
     "save_log",
     "write_issue",
     "write_last_run",

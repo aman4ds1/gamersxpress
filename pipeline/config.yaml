@@ -34,6 +34,17 @@ roles:
       # hardware; independent family (openai) so fast survives a Google outage.
       model: openai/gpt-oss-20b
       family: openai
+      # Per-model provider options, passed generically through providers.py
+      # (only documented keys are sent; see providers.py prepare()). These two
+      # keys follow the Groq reasoning-model docs: max_completion_tokens raises
+      # the output cap above the 1024 default (which is too low for complex
+      # reasoning), and reasoning_effort low keeps reasoning cheap. response_format
+      # json_object is intentionally absent here: calls for this role already
+      # send a strict json_schema, which takes precedence over any
+      # response_format option.
+      options:
+        max_completion_tokens: 8192
+        reasoning_effort: low
     - provider: mistral
       # "latest" Mistral small: cheap Mistral fallback.
       enabled: false  # 429 on the free tier, re-test later
@@ -51,6 +62,13 @@ roles:
       # when Google is down. Family is "openai" (the model), not Groq (the host).
       model: openai/gpt-oss-120b
       family: openai
+      # Groq gpt-oss options (see providers.py prepare()). response_format
+      # json_object is deliberately NOT set here: the writer emits Markdown, not
+      # JSON, and JSON mode would corrupt the article body. The budget bump and
+      # low reasoning effort still apply so long articles are not truncated.
+      options:
+        max_completion_tokens: 8192
+        reasoning_effort: low
     - provider: mistral
       # Medium 3.5: strongest Mistral model this key can access.
       enabled: false  # 429 on the free tier, re-test later
@@ -65,11 +83,40 @@ roles:
       # usual Google writer the verifier lands here (openai vs google).
       model: openai/gpt-oss-120b
       family: openai
+      # Groq gpt-oss options (see providers.py prepare()). The default 1024
+      # output budget cannot hold a full clause-by-clause verdict: a reasoning
+      # model that hits it returns finish_reason="length" with truncated JSON,
+      # which is exactly the failure seen in the 7b1884edc474 run. Reasoning
+      # tokens count against the output budget, so 8192 gives headroom.
+      # reasoning_effort low keeps each call cheap.
+      # response_format json_object: upstream forces valid JSON. The verifier
+      # still parses it itself (generate is called without json_schema), so a
+      # bad parse stays a hard FAIL instead of a SkipRun.
+      options:
+        max_completion_tokens: 8192
+        reasoning_effort: low
+        response_format: json_object
+    - provider: groq
+      # qwen3.8-27b: Qwen's open reasoning model on Groq, family "qwen". A
+      # third family that never matches the Google writer, so the family guard
+      # (PLAN.md principle 4) still holds with openai as the primary verifier.
+      model: qwen/qwen3.8-27b
+      family: qwen
+      # Same documented gpt-style Groq keys as the gpt-oss entry above:
+      # max_completion_tokens, reasoning_effort, response_format json_object.
+      options:
+        max_completion_tokens: 8192
+        reasoning_effort: low
+        response_format: json_object
     - provider: gemini
       # Flash 3.5: fallback that only serves when the writer actually used a
       # non-Google family (then "google" is eligible for the verifier).
       model: gemini-3.5-flash
       family: google
+      # Gemini's documented JSON mode (generationConfig.responseMimeType =
+      # "application/json"). The verifier still parses the JSON itself.
+      options:
+        response_mime_type: application/json
     - provider: mistral
       # Mistral fallback for cross-family reads.
       enabled: false  # 429 on the free tier, re-test later
@@ -79,10 +126,20 @@ roles:
 # Retry policy applied per provider before falling back to the next one.
 # max_attempts counts the first try. Delays are seconds: base * 2**attempt,
 # capped at max_delay_seconds.
+#
+# finish_reason="length" (Gemini reports "MAX_TOKENS") means the model ran out
+# of output budget and the response is truncated JSON, which must never be
+# parsed. Instead retry up to length_retries times with the token budget scaled
+# by length_budget_multiplier and clamped to length_budget_cap. If it is still
+# truncated the caller fails the run (a verifier truncation is its own failure,
+# verifier_output_invalid, not a skipped run). A 0 cap disables these retries.
 retry:
   max_attempts: 3
   base_delay_seconds: 1
   max_delay_seconds: 30
+  length_retries: 1
+  length_budget_multiplier: 2
+  length_budget_cap: 20000
 
 # Freshness windows per tier, plus a separate staleness cap (PLAN pipeline
 # stage 2 / 4). ingest drops items older than their tier's window. `stale_after`
@@ -102,6 +159,13 @@ freshness:
 # now; seen/cooldown decisions are based on the coverage fields stored above.
 cluster:
   seen_cooldown_days: 7
+  failed_cooldown_hours: 24
+
+# Facts stage (pipeline/facts.py). Extraction runs once per source; this caps
+# how many claims a single source may contribute, so a long article cannot
+# crowd out the story's other sources. Bumping it re-extracts cached sheets.
+facts:
+  max_claims_per_source: 15
 
 # Verifier stage (pipeline/verify.py; PLAN.md principle 4 / stage 6).
 # `list_markers` is stripped from the start of each body line before values are

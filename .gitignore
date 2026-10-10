@@ -11,3 +11,4 @@ __pycache__/
 data/gathered/
 data/candidates/
 data/reports/feed-health.json
+drafts/

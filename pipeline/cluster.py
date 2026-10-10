@@ -50,6 +50,8 @@ from ingest import normalize_url
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_POOL_PATH = PROJECT_ROOT / "data" / "pool.json"
 DEFAULT_SEEN_PATH = PROJECT_ROOT / "data" / "seen.json"
+DEFAULT_FAILED_PATH = PROJECT_ROOT / "data" / "failed.json"
+DEFAULT_FAILED_COOLDOWN_HOURS = 24
 
 SEEN_COOLDOWN = dt.timedelta(days=7)
 DEFAULT_STALE_AFTER = dt.timedelta(days=7)
@@ -67,7 +69,7 @@ SAME_EVENT_SIMILARITY = 0.85
 
 logger = logging.getLogger("gamersxpress.pipeline.cluster")
 
-_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*")
+_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*")
 _LEADING_STOP = {
     "the", "a", "an", "new", "first", "why", "how", "what", "when", "who",
     "this", "that", "these", "those", "is", "are", "and", "but", "for",
@@ -362,6 +364,13 @@ def _normalized_entities(entities: Iterable[object]) -> list[str]:
     return sorted({str(entity).strip().lower() for entity in entities if str(entity).strip()})
 
 
+def _story_key(primary_entities: Iterable[object], story_type: str | None = None) -> str:
+    """Story key combining primary entities and story type."""
+    ents = ",".join(_normalized_entities(primary_entities))
+    stype = str(story_type or "").strip()
+    return f"{ents}|{stype}" if stype else ents
+
+
 def cluster_id_for_urls(urls: Iterable[str]) -> str:
     """Cluster id: a digest of the members' normalized, sorted, deduped URLs.
 
@@ -503,6 +512,70 @@ def save_seen(seen: dict, path: str | Path | None = None) -> Path:
     return path
 
 
+
+# --- failed ------------------------------------------------------------------
+
+
+def load_failed(path: str | Path | None = None) -> dict:
+    path = Path(path) if path else DEFAULT_FAILED_PATH
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"stories": {}}
+    if not isinstance(data, dict):
+        return {"stories": {}}
+    data.setdefault("stories", {})
+    return data
+
+
+def save_failed(failed: dict, path: str | Path | None = None) -> Path:
+    path = Path(path) if path else DEFAULT_FAILED_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(failed, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
+
+
+def record_attempt(
+    failed: dict,
+    cluster_id: str,
+    *,
+    primary_entities: Iterable[object],
+    story_type: str | None,
+    reason: str,
+    now: dt.datetime | None = None,
+) -> dict:
+    """Record a writer-produced-article failure for a story.
+
+    Keyed by the story key (primary entities plus story type), which survives the
+    membership-hash cluster id changing when the story gains or loses a source.
+    Increments ``attempt_count``, stamps ``last_attempt`` and stores the failure
+    ``reason`` (``article_rejected``, ``verifier_output_invalid`` or
+    ``gate failure``).
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+    key = _story_key(primary_entities, story_type)
+    entry = failed.setdefault("stories", {}).setdefault(key, {})
+    entry["attempt_count"] = int(entry.get("attempt_count") or 0) + 1
+    entry["last_attempt"] = now.isoformat()
+    entry["failure_reason"] = str(reason)
+    entry["cluster_id"] = str(cluster_id)
+    entry["primary_entities"] = _normalized_entities(primary_entities)
+    entry["story_type"] = story_type
+    return failed
+
+
+def clear_attempt(
+    failed: dict,
+    *,
+    primary_entities: Iterable[object],
+    story_type: str | None,
+) -> dict:
+    """Remove a story from the failed list once it later passes."""
+    key = _story_key(primary_entities, story_type)
+    (failed.get("stories") or {}).pop(key, None)
+    return failed
+
+
 def mark_seen(
     seen: dict,
     cluster_id: str,
@@ -617,7 +690,10 @@ def cluster_items(
     *,
     now: dt.datetime | None = None,
     seen: dict | None = None,
+    failed: dict | None = None,
     cooldown: dt.timedelta = SEEN_COOLDOWN,
+    failed_cooldown: dt.timedelta | None = None,
+    failed_cooldown_hours: int | None = None,
     threshold: float = SIMILARITY_THRESHOLD,
 ) -> list[dict]:
     """Group items into stories, newest first, skipping already-covered stories.
@@ -636,6 +712,12 @@ def cluster_items(
     """
     now = now or dt.datetime.now(dt.timezone.utc)
     seen = seen or {"clusters": {}}
+    failed = failed or {"stories": {}}
+    if failed_cooldown_hours is not None:
+        failed_cooldown = dt.timedelta(hours=failed_cooldown_hours)
+    if failed_cooldown is None:
+        failed_cooldown = dt.timedelta(hours=DEFAULT_FAILED_COOLDOWN_HOURS)
+    failed = failed or {"stories": {}}
     ordered = sorted(items, key=lambda item: str(item.get("published") or ""), reverse=True)
 
     buckets: list[dict] = []
@@ -660,6 +742,15 @@ def cluster_items(
         member_urls = _normalized_urls(str(member.get("link") or "") for member in members)
         primary = _normalized_entities(_entities(members))
         cluster_type = story_type(str(bucket["seed"].get("title") or ""))
+        story_key = _story_key(primary, cluster_type)
+        failed_entry = (failed.get("stories") or {}).get(story_key)
+        if failed_entry is not None:
+            attempt_count = int(failed_entry.get("attempt_count") or 0)
+            last_attempt = _parse_time(failed_entry.get("last_attempt"))
+            if attempt_count >= 2 and last_attempt is not None:
+                if (now - last_attempt) < failed_cooldown:
+                    logger.info("skipping cluster %s: failed attempts within cooldown", cluster_id)
+                    continue
         if _seen_url_overlap(seen, member_urls) or _seen_entity_type_match(
             seen,
             primary_entities=primary,
@@ -698,6 +789,8 @@ def cluster_items(
 __all__ = [
     "DEFAULT_POOL_PATH",
     "DEFAULT_SEEN_PATH",
+    "DEFAULT_FAILED_PATH",
+    "DEFAULT_FAILED_COOLDOWN_HOURS",
     "SEEN_COOLDOWN",
     "FINGERPRINT_FORMAT",
     "cluster_id_for_urls",
@@ -718,5 +811,10 @@ __all__ = [
     "stage_fingerprint",
     "stored_fingerprint",
     "story_type",
+    "record_attempt",
+    "clear_attempt",
+    "load_failed",
+    "save_failed",
+    "_story_key",
     "tokens",
 ]

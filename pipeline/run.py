@@ -100,6 +100,7 @@ class Paths:
 
     pool: Path
     seen: Path
+    failed: Path
     breaker: Path
     log: Path
     reports_dir: Path
@@ -142,6 +143,7 @@ def default_paths(dry_run: bool = False, dry_run_dir: str | Path | None = None) 
         return Paths(
             pool=data / "pool.json",
             seen=data / "seen.json",
+            failed=data / "failed.json",
             breaker=data / "breaker.json",
             log=data / "published-log.json",
             reports_dir=data / "reports",
@@ -170,6 +172,7 @@ def default_paths(dry_run: bool = False, dry_run_dir: str | Path | None = None) 
     return Paths(
         pool=base / "pool.json",
         seen=base / "seen.json",
+        failed=base / "failed.json",
         breaker=base / "breaker.json",
         log=base / "published-log.json",
         reports_dir=base / "reports",
@@ -288,6 +291,7 @@ def run(
     gather_fn: Callable[..., dict] | None = None,
     facts_fn: Callable[..., dict] | None = None,
     write_fn: Callable[..., Generation] | None = None,
+    repair_fn: Callable[..., Generation] | None = None,
     verify_fn: Callable[..., Any] | None = None,
     seo_fn: Callable[..., dict] | None = None,
     link_fn: Callable[..., Any] | None = None,
@@ -325,6 +329,7 @@ def run(
     gather_fn = gather_fn or gather_stage.gather
     facts_fn = facts_fn or facts_stage.facts
     write_fn = write_fn or write_stage.write
+    repair_fn = repair_fn or write_stage.repair
     verify_fn = verify_fn or verify_stage.verify
     seo_fn = seo_fn or seo_stage.generate_seo
     link_fn = link_fn or link_stage.add_links
@@ -377,10 +382,22 @@ def run(
         cluster.save_pool(pool, now=now, path=paths.pool)
 
         seen = cluster.load_seen(paths.seen)
+        failed = cluster.load_failed(paths.failed)
+        cluster_section = raw_config.get("cluster") or {}
         seen_cooldown = dt.timedelta(
-            days=float((raw_config.get("cluster") or {}).get("seen_cooldown_days", cluster.SEEN_COOLDOWN.days))
+            days=float(cluster_section.get("seen_cooldown_days", cluster.SEEN_COOLDOWN.days))
         )
-        clusters = cluster.cluster_items(pool.get("items"), now=now, seen=seen, cooldown=seen_cooldown)
+        failed_cooldown_hours = int(
+            cluster_section.get("failed_cooldown_hours", cluster.DEFAULT_FAILED_COOLDOWN_HOURS)
+        )
+        clusters = cluster.cluster_items(
+            pool.get("items"),
+            now=now,
+            seen=seen,
+            failed=failed,
+            cooldown=seen_cooldown,
+            failed_cooldown_hours=failed_cooldown_hours,
+        )
         if not clusters:
             return finish("nothing", "no new stories to cover")
         chosen = score_stage.pick(
@@ -406,24 +423,64 @@ def run(
 
         writer = write_fn(facts, run_state=run_state, generate=generate)
 
+        # The writer produced an article, so a later verify or gate failure counts
+        # as an attempt against this story; skips and provider outages never reach
+        # this point and so are not counted.
+        def _record_attempt(reason: str) -> None:
+            cluster.record_attempt(
+                failed, cluster_id,
+                primary_entities=chosen.get("entities"),
+                story_type=chosen.get("story_type"),
+                reason=reason, now=now,
+            )
+            cluster.save_failed(failed, paths.failed)
+
+        provisional_slug = seo_stage.slugify(chosen.get("title") or cluster_id)
+        draft = writer.value
         verify_report = verify_fn(
-            writer.value, facts, run_state=run_state, generate=generate,
+            draft, facts, run_state=run_state, generate=generate,
             report_dir=paths.reports_dir, id=cluster_id,
         )
 
-        provisional_slug = seo_stage.slugify(chosen.get("title") or cluster_id)
+        # One repair attempt: an article_rejected verdict with unsupported clauses
+        # gets a single writer call to delete or re-ground them, then a full
+        # re-verification. A verifier_output_invalid verdict (no usable verdict)
+        # is never repaired, and no article is ever repaired twice.
+        if verify_report.failure_reason == "article_rejected" and verify_report.unsupported:
+            changed_clauses = list(verify_report.unsupported)
+            repaired = repair_fn(
+                draft, changed_clauses, facts, run_state=run_state, generate=generate,
+            )
+            publish_stage.save_repair(
+                draft, repaired.value, slug=provisional_slug, drafts_dir=paths.drafts_dir,
+                changed_clauses=changed_clauses,
+            )
+            draft = repaired.value
+            verify_report = verify_fn(
+                draft, facts, run_state=run_state, generate=generate,
+                report_dir=paths.reports_dir, id=cluster_id,
+                repair={
+                    "attempted": True,
+                    "changed_clauses": changed_clauses,
+                    "original_chars": len(writer.value),
+                    "repaired_chars": len(repaired.value),
+                },
+            )
+
         if not verify_report.passed:
+            reason = verify_report.failure_reason or "unknown"
+            _record_attempt(reason)
             return _fail(
                 self_finish=finish, breaker=breaker, paths=paths, threshold=threshold, now=now,
                 status="failed", exit_code=EXIT_FAIL,
-                error="verification failed",
+                error=f"verification failed ({reason})",
                 slug=provisional_slug, cluster_id=cluster_id, chosen=chosen,
-                article=writer.value, cover_path=None,
+                article=draft, cover_path=None,
                 failures=list(verify_report.unsupported) + list(verify_report.unmatched_numbers) or ["verify failed"],
             )
 
         seo = seo_fn(
-            writer.value, facts, run_state=run_state, generate=generate,
+            draft, facts, run_state=run_state, generate=generate,
             entities_path=paths.entities, articles_dir=paths.articles_dir,
             drafts_dir=paths.drafts_dir, config=verify_config,
         )
@@ -437,7 +494,7 @@ def run(
             )
 
             index = link_stage.build_index(_article_records(paths.articles_dir))
-            linked = link_fn(writer.value, index, self_id=slug, now=now)
+            linked = link_fn(draft, index, self_id=slug, now=now)
             body = _body_of(linked.article)
             front = publish_stage.build_front_matter(facts, seo, cover)
             article = publish_stage.assemble_article(body, front)
@@ -449,6 +506,7 @@ def run(
                 link_checker=link_checker, site_checks=site_checks,
             )
             if not gate_result.passed:
+                _record_attempt("gate failure")
                 return _fail(
                     self_finish=finish, breaker=breaker, paths=paths, threshold=threshold, now=now,
                     status="failed", exit_code=EXIT_FAIL, error="publish gates failed",
@@ -466,6 +524,10 @@ def run(
         finally:
             shutil.rmtree(cover_staging, ignore_errors=True)
 
+        cluster.clear_attempt(
+            failed, primary_entities=chosen.get("entities"), story_type=chosen.get("story_type")
+        )
+        cluster.save_failed(failed, paths.failed)
         reset_breaker(breaker)
         save_breaker(breaker, paths.breaker)
         logger.info("run completed: slug=%s mode=%s", slug, publish_mode)

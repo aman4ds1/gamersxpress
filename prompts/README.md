@@ -7,6 +7,7 @@ the model receives.
 | File | Role | Used by |
 |---|---|---|
 | `writer.md` | `writer` | `pipeline/write.py` |
+| `writer-repair.md` | `writer` (repair pass) | `pipeline/write.py` |
 
 `verify.py` (verifier) and `facts.py` (fast role) still carry short system
 instructions inline; they move here when they grow enough to need review.

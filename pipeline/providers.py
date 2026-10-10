@@ -91,6 +91,25 @@ class ProviderError(Exception):
 
 
 @dataclass
+class Completion:
+    """One provider response plus metadata used for retry and reporting.
+
+    ``text`` is the raw output text. ``finish_reason`` says why generation
+    stopped; ``"length"`` (Gemini's ``MAX_TOKENS``) means the response is
+    truncated and must not be parsed. ``usage`` and ``raw`` carry the provider's
+    token usage and the full response object so verify reports can show them.
+    ``value`` holds parsed JSON when a ``json_schema`` was requested (set by the
+    retry helper, not by the provider).
+    """
+
+    text: str
+    finish_reason: str | None = None
+    usage: dict | None = None
+    raw: dict | None = None
+    value: Any = None
+
+
+@dataclass
 class Generation:
     """The result of one successful ``generate`` call.
 
@@ -98,7 +117,8 @@ class Generation:
     ``family`` is the underlying model family (from config.yaml), which is what
     guarantees the writer and verifier stay on different model families.
     ``fallbacks`` lists the providers that were skipped or failed before this
-    one succeeded.
+    one succeeded. ``finish_reason``, ``usage`` and ``raw`` come from the serving
+    provider's response and are recorded so the verify report can save them.
     """
 
     role: str
@@ -107,6 +127,9 @@ class Generation:
     family: str
     value: Any
     fallbacks: list[str] = field(default_factory=list)
+    finish_reason: str | None = None
+    usage: dict | None = None
+    raw: Any = None
 
     @property
     def text(self) -> Any:
@@ -124,8 +147,16 @@ class RunState:
 
     generations: dict[str, Generation] = field(default_factory=dict)
     failures: list[str] = field(default_factory=list)
+    writers: list[Generation] = field(default_factory=list)
 
     def record(self, generation: Generation) -> None:
+        # Keep every writer call: the original draft and, when the verifier
+        # rejects it, the repair. ``generations["writer"]`` stays the most
+        # recent one, so ``writer_family`` is the family of the text currently
+        # being verified (the repaired draft), and the report can still list
+        # every writer family.
+        if generation.role == "writer":
+            self.writers.append(generation)
         self.generations[generation.role] = generation
 
     def add_failures(self, messages: list[str]) -> None:
@@ -135,6 +166,16 @@ class RunState:
     def writer_family(self) -> str | None:
         writer = self.generations.get("writer")
         return writer.family if writer else None
+
+    @property
+    def writer_families(self) -> list[str]:
+        """Model families of every writer call this run, oldest first.
+
+        The last entry is ``writer_family``: the family that produced the text
+        the verifier is checking. After a repair that fell back to another
+        family the list has two entries (the original and the repair).
+        """
+        return [writer.family for writer in self.writers]
 
     @property
     def verifier_family(self) -> str | None:
@@ -161,6 +202,7 @@ class RunState:
             "writer": describe(self.generations.get("writer")),
             "verifier": describe(self.generations.get("verifier")),
             "writer_family": self.writer_family,
+            "writer_families": self.writer_families,
             "verifier_family": self.verifier_family,
             "fallbacks": self.fallbacks(),
         }
@@ -235,10 +277,11 @@ class Provider:
         prompt: str,
         api_key: str,
         json_schema: dict | None,
+        options: Mapping[str, Any] | None = None,
     ) -> tuple[str, dict, dict]:
         raise NotImplementedError
 
-    def extract(self, data: dict) -> str:
+    def extract(self, data: dict) -> Completion:
         raise NotImplementedError
 
     def complete(
@@ -248,10 +291,11 @@ class Provider:
         *,
         api_key: str,
         json_schema: dict | None = None,
+        options: Mapping[str, Any] | None = None,
         transport: Callable[..., dict] | None = None,
-    ) -> str:
+    ) -> Completion:
         transport = transport or http_post_json
-        url, payload, headers = self.prepare(model, prompt, api_key, json_schema)
+        url, payload, headers = self.prepare(model, prompt, api_key, json_schema, options)
         return self.extract(transport(url, payload, headers))
 
 
@@ -259,6 +303,10 @@ class OpenAICompatibleProvider(Provider):
     """Base for OpenAI chat-completions compatible services."""
 
     base_url = ""
+    #: Documented request options this provider understands. Only these keys are
+    #: ever copied into the payload; unknown option keys are dropped with a
+    #: warning, so a mistyped key can never silently reach the API.
+    OPTION_KEYS = frozenset({"max_completion_tokens", "reasoning_effort", "response_format"})
 
     def prepare(
         self,
@@ -266,6 +314,7 @@ class OpenAICompatibleProvider(Provider):
         prompt: str,
         api_key: str,
         json_schema: dict | None,
+        options: Mapping[str, Any] | None = None,
     ) -> tuple[str, dict, dict]:
         url = self.base_url.rstrip("/") + "/chat/completions"
         headers = {
@@ -276,21 +325,48 @@ class OpenAICompatibleProvider(Provider):
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
         }
+        options = dict(options or {})
+        unknown = set(options) - self.OPTION_KEYS
+        if unknown:
+            logger.warning(
+                "provider=%s dropping undocumented option(s) %s",
+                self.__class__.__name__, sorted(unknown),
+            )
         if json_schema is not None:
+            # Structured output wins over the response_format option: a strict
+            # json_schema already forces JSON through response_format.
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {"name": "output", "schema": json_schema, "strict": True},
             }
+        elif options.get("response_format") == "json_object":
+            # Documented as {"type": "json_object"}: guarantees a JSON object
+            # (only applied when the role needs JSON output, never the writer).
+            payload["response_format"] = {"type": "json_object"}
+        if "max_completion_tokens" in options:
+            # Groq reasoning-model docs: max_completion_tokens caps output,
+            # including reasoning tokens; the 1024 default truncates complex
+            # reasoning with finish_reason="length".
+            payload["max_completion_tokens"] = int(options["max_completion_tokens"])
+        if options.get("reasoning_effort") in ("low", "medium", "high"):
+            # Groq reasoning-model docs: reasoning_effort low/medium/high.
+            payload["reasoning_effort"] = options["reasoning_effort"]
         return url, payload, headers
 
-    def extract(self, data: dict) -> str:
+    def extract(self, data: dict) -> Completion:
         try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
+            choice = data["choices"][0]
+            content = choice.get("message", {}).get("content")
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
             raise ProviderError(f"unexpected response shape: {exc}", retryable=True) from exc
         if content is None:
             raise ProviderError("empty content in response", retryable=True)
-        return content
+        return Completion(
+            text=content,
+            finish_reason=str(choice.get("finish_reason")) or None,
+            usage=data.get("usage"),
+            raw=data,
+        )
 
 
 class MistralProvider(OpenAICompatibleProvider):
@@ -321,24 +397,44 @@ class GeminiProvider(Provider):
     env_key = "GEMINI_API_KEY"
     base_url = "https://generativelanguage.googleapis.com/v1beta/models"
 
+    #: Documented request options for generateContent. Only these are sent.
+    OPTION_KEYS = frozenset({"response_mime_type", "max_output_tokens"})
+
     def prepare(
         self,
         model: str,
         prompt: str,
         api_key: str,
         json_schema: dict | None,
+        options: Mapping[str, Any] | None = None,
     ) -> tuple[str, dict, dict]:
         url = f"{self.base_url}/{model}:generateContent"
         headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
         payload: dict[str, Any] = {"contents": [{"parts": [{"text": prompt}]}]}
+        options = dict(options or {})
+        unknown = set(options) - self.OPTION_KEYS
+        if unknown:
+            logger.warning(
+                "provider=%s dropping undocumented option(s) %s",
+                self.__class__.__name__, sorted(unknown),
+            )
+        generation_config: dict[str, Any] = {}
         if json_schema is not None:
-            payload["generationConfig"] = {
+            generation_config = {
                 "responseMimeType": "application/json",
                 "responseSchema": _to_gemini_schema(json_schema),
             }
+        elif options.get("response_mime_type"):
+            # Documented generationConfig.responseMimeType, e.g. "application/json".
+            generation_config["responseMimeType"] = options["response_mime_type"]
+        if "max_output_tokens" in options:
+            # Documented generationConfig.maxOutputTokens output-token cap.
+            generation_config["maxOutputTokens"] = int(options["max_output_tokens"])
+        if generation_config:
+            payload["generationConfig"] = generation_config
         return url, payload, headers
 
-    def extract(self, data: dict) -> str:
+    def extract(self, data: dict) -> Completion:
         candidates = data.get("candidates") or []
         if not candidates:
             feedback = data.get("promptFeedback") or {}
@@ -346,12 +442,29 @@ class GeminiProvider(Provider):
         candidate = candidates[0]
         parts = candidate.get("content", {}).get("parts") or []
         text = "".join(part.get("text", "") for part in parts)
-        if not text:
+        finish_reason = _gemini_finish_reason(candidate.get("finishReason"))
+        # A MAX_TOKENS stop is a truncation, handled (and reported) as
+        # finish_reason="length"; anything else with no text is a failure.
+        if not text and finish_reason != "length":
             raise ProviderError(
                 f"empty response (finishReason={candidate.get('finishReason')})",
                 retryable=True,
             )
-        return text
+        return Completion(
+            text=text,
+            finish_reason=finish_reason,
+            usage=data.get("usageMetadata"),
+            raw=data,
+        )
+
+
+def _gemini_finish_reason(reason: Any) -> str | None:
+    if reason is None:
+        return None
+    name = str(reason)
+    if name.upper() in ("MAX_TOKENS", "MAX_OUTPUT_TOKENS"):
+        return "length"
+    return name.lower() or None
 
 
 class MockProvider(Provider):
@@ -367,11 +480,12 @@ class MockProvider(Provider):
         *,
         api_key: str = "",
         json_schema: dict | None = None,
+        options: Mapping[str, Any] | None = None,
         transport: Callable[..., dict] | None = None,
-    ) -> str:
+    ) -> Completion:
         if json_schema is not None:
-            return json.dumps(_sample_from_schema(json_schema))
-        return f"[mock:{model}] {prompt}"
+            return Completion(text=json.dumps(_sample_from_schema(json_schema)), finish_reason="stop")
+        return Completion(text=f"[mock:{model}] {prompt}", finish_reason="stop")
 
 
 def _to_gemini_schema(schema: Any) -> Any:
@@ -470,6 +584,24 @@ def _env_flag(value: str | None) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _bump_token_budget(options: dict, multiplier: int, cap: int) -> dict | None:
+    """Return options with the token budget scaled for a truncated-output retry.
+
+    Grows whichever budget key the provider uses (max_completion_tokens for
+    OpenAI-compatible services, max_output_tokens for Gemini), clamped to ``cap``.
+    Returns None when no budget key is set, the multiplier is invalid, or the
+    cap would not grow the budget (so a retry would not help).
+    """
+    key = "max_completion_tokens" if "max_completion_tokens" in options else "max_output_tokens"
+    if key not in options or multiplier <= 0:
+        return None
+    current = int(options[key])
+    grown = min(int(current * multiplier), cap)
+    if grown <= current:
+        return None
+    return {**options, key: grown}
+
+
 def _complete_with_retry(
     provider: Provider,
     model: str,
@@ -481,12 +613,29 @@ def _complete_with_retry(
     max_delay: float,
     sleep: Callable[[float], None],
     role: str,
-) -> Any:
+    options: Mapping[str, Any] | None = None,
+    length_retries: int = 1,
+    length_budget_multiplier: int = 2,
+    length_budget_cap: int = 0,
+) -> Completion:
+    """Call ``provider.complete`` with backoff, returning a :class:`Completion`.
+
+    Transient errors retry ``max_attempts`` times with exponential backoff.
+    A ``finish_reason="length"`` response is truncated output, which must never
+    be parsed: it retries up to ``length_retries`` times with a larger token
+    budget. If it stays truncated, a ``json_schema`` request raises
+    :class:`ProviderError` (so the next provider is tried), while a schema-less
+    call (the verifier) returns the truncated :class:`Completion` unchanged so
+    the caller fails the run without parsing it.
+    """
     attempt = 0
+    budget = dict(options or {})
+    length_remaining = max(0, int(length_retries))
     while True:
         try:
-            result = provider.complete(model, prompt, api_key=api_key, json_schema=json_schema)
-            return _parse_json(result) if json_schema is not None else result
+            completion = provider.complete(
+                model, prompt, api_key=api_key, json_schema=json_schema, options=budget
+            )
         except ProviderError as exc:
             if not exc.retryable or attempt >= max_attempts - 1:
                 raise
@@ -497,6 +646,45 @@ def _complete_with_retry(
             )
             sleep(delay)
             attempt += 1
+            continue
+
+        if completion.finish_reason == "length" and length_remaining > 0:
+            bumped = _bump_token_budget(budget, length_budget_multiplier, length_budget_cap)
+            if bumped is not None:
+                budget = bumped
+                length_remaining -= 1
+                logger.warning(
+                    "role=%s provider=%s model=%s response truncated (finish_reason=length); "
+                    "retrying with a larger token budget",
+                    role, provider.name, model,
+                )
+                continue
+
+        if completion.finish_reason == "length":
+            # Truncated JSON must never be parsed. With a json_schema, fall back
+            # to the next provider; without one (the verifier), propagate the
+            # truncation so the caller fails the run instead of skipping it.
+            if json_schema is not None:
+                raise ProviderError(
+                    f"truncated response from {provider.name}/{model} (finish_reason=length)",
+                    retryable=True,
+                )
+            return Completion(
+                text=completion.text,
+                finish_reason="length",
+                usage=completion.usage,
+                raw=completion.raw,
+                value=completion.text,
+            )
+
+        value = _parse_json(completion.text) if json_schema is not None else completion.text
+        return Completion(
+            text=completion.text,
+            finish_reason=completion.finish_reason,
+            usage=completion.usage,
+            raw=completion.raw,
+            value=value,
+        )
 
 
 def _chain_is_mock(chain: list[dict], providers: Mapping[str, Provider]) -> bool:
@@ -589,6 +777,12 @@ def generate(
         and not dry_run
         and not _chain_is_mock(role_chain, providers)
     ):
+        # ``writer_family`` is the family of the most recent writer output, i.e.
+        # the text the verifier is checking. After a repair it is the repair's
+        # family (not the original's), so the guard excludes the family that
+        # actually produced the draft. A recorded family with no eligible
+        # verifier leaves ``_select_chain`` to raise SkipRun (publish nothing);
+        # MissingWriterFamilyError is only for a not-recorded writer family.
         writer_family = run_state.writer_family if run_state is not None else None
         if writer_family is None:
             message = (
@@ -606,11 +800,13 @@ def generate(
 
     if dry_run:
         entry = chain[0]
-        result = MockProvider().complete(entry["model"], prompt, json_schema=json_schema)
-        value = _parse_json(result) if json_schema is not None else result
+        result = MockProvider().complete(
+            entry["model"], prompt, json_schema=json_schema, options=entry.get("options")
+        )
+        value = _parse_json(result.text) if json_schema is not None else result.text
         generation = Generation(
             role=role, provider="mock", model=entry["model"], family=entry["family"],
-            value=value, fallbacks=fallbacks,
+            value=value, fallbacks=fallbacks, finish_reason=result.finish_reason,
         )
         logger.info(
             "role=%s dry-run provider=mock model=%s family=%s",
@@ -627,6 +823,9 @@ def generate(
     max_attempts = int(retry.get("max_attempts", 3))
     base_delay = float(retry.get("base_delay_seconds", 1))
     max_delay = float(retry.get("max_delay_seconds", 30))
+    length_retries = int(retry.get("length_retries", 1))
+    length_budget_multiplier = int(retry.get("length_budget_multiplier", 2))
+    length_budget_cap = int(retry.get("length_budget_cap", 0))
 
     for entry in chain:
         name = entry.get("provider")
@@ -643,9 +842,13 @@ def generate(
             logger.warning("fallback role=%s: missing env %s for provider %s", role, provider.env_key, name)
             continue
         try:
-            value = _complete_with_retry(
+            completion = _complete_with_retry(
                 provider, model, prompt, json_schema, api_key,
                 max_attempts, base_delay, max_delay, sleep, role,
+                options=entry.get("options"),
+                length_retries=length_retries,
+                length_budget_multiplier=length_budget_multiplier,
+                length_budget_cap=length_budget_cap,
             )
         except ProviderError as exc:
             fallbacks.append(f"role={role} {name} ({model}, family={family}): {exc}")
@@ -654,7 +857,10 @@ def generate(
 
         generation = Generation(
             role=role, provider=name, model=model, family=family,
-            value=value, fallbacks=list(fallbacks),
+            value=completion.value, fallbacks=list(fallbacks),
+            finish_reason=completion.finish_reason,
+            usage=completion.usage,
+            raw=completion.raw,
         )
         logger.info(
             "role=%s provider=%s model=%s family=%s fallbacks=%d",
@@ -673,6 +879,7 @@ __all__ = [
     "SkipRun",
     "MissingWriterFamilyError",
     "ProviderError",
+    "Completion",
     "Generation",
     "RunState",
     "Provider",

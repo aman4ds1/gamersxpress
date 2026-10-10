@@ -295,3 +295,82 @@ def test_same_story_headlines_from_different_outlets_still_cluster():
     assert len(clusters) == 3
     owners = {c["id"]: c["owners"] for c in clusters}
     assert ["co-a", "co-b"] in owners.values()
+
+
+# --- failed-story tracking ---------------------------------------------------
+
+
+def _failed_story_items():
+    return [
+        item("Nvidia announces RTX 5090", "https://a.example/1", owner="a"),
+        item("Nvidia announces RTX 5090 details", "https://b.example/1", owner="b", tier=2),
+    ]
+
+
+def test_failed_twice_is_skipped_for_24h_then_allowed_again():
+    items = _failed_story_items()
+    story = cluster.cluster_items(items, now=NOW)[0]
+    failed = {"stories": {}}
+    for _ in range(2):
+        cluster.record_attempt(
+            failed, story["id"], primary_entities=story["entities"],
+            story_type=story["story_type"], reason="gate failure", now=NOW,
+        )
+
+    assert cluster.cluster_items(items, now=NOW, failed=failed) == []
+    just_before = NOW + dt.timedelta(hours=23, minutes=59)
+    assert cluster.cluster_items(items, now=just_before, failed=failed) == []
+    after_cooldown = NOW + dt.timedelta(hours=24, minutes=1)
+    assert len(cluster.cluster_items(items, now=after_cooldown, failed=failed)) == 1
+
+
+def test_failed_once_is_still_eligible():
+    items = _failed_story_items()
+    story = cluster.cluster_items(items, now=NOW)[0]
+    failed = {"stories": {}}
+    cluster.record_attempt(
+        failed, story["id"], primary_entities=story["entities"],
+        story_type=story["story_type"], reason="article_rejected", now=NOW,
+    )
+    assert len(cluster.cluster_items(items, now=NOW, failed=failed)) == 1
+
+
+def test_passing_story_is_removed_from_failed_list():
+    failed = {"stories": {}}
+    cluster.record_attempt(
+        failed, "abc123", primary_entities=["Nvidia"], story_type="announcement",
+        reason="verifier_output_invalid", now=NOW,
+    )
+    assert failed["stories"]
+    cluster.clear_attempt(failed, primary_entities=["Nvidia"], story_type="announcement")
+    assert failed["stories"] == {}
+
+
+def test_failed_cooldown_hours_is_configurable():
+    items = _failed_story_items()
+    story = cluster.cluster_items(items, now=NOW)[0]
+    failed = {"stories": {}}
+    for _ in range(2):
+        cluster.record_attempt(
+            failed, story["id"], primary_entities=story["entities"],
+            story_type=story["story_type"], reason="gate failure", now=NOW,
+        )
+    # A zero-hour cooldown disables the skip: the story is eligible again at once.
+    assert len(cluster.cluster_items(items, now=NOW, failed=failed, failed_cooldown_hours=0)) == 1
+
+
+def test_failed_json_round_trip(tmp_path):
+    path = tmp_path / "failed.json"
+    failed = cluster.load_failed(path)
+    cluster.record_attempt(
+        failed, "abc123", primary_entities=["Nvidia"], story_type="announcement",
+        reason="gate failure", now=NOW,
+    )
+    cluster.save_failed(failed, path)
+    reloaded = cluster.load_failed(path)
+    entry = reloaded["stories"][cluster._story_key(["Nvidia"], "announcement")]
+    assert entry["attempt_count"] == 1
+    assert entry["last_attempt"] == NOW.isoformat()
+    assert entry["failure_reason"] == "gate failure"
+    assert entry["cluster_id"] == "abc123"
+

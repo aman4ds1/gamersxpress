@@ -22,10 +22,10 @@ from providers import Generation, RunState
 
 SAMPLE_TITLE = "Nvidia confirms next graphics card launch window"
 SAMPLE_DESCRIPTION = (
-    "Nvidia has confirmed the launch window for its next graphics card line, "
-    "according to the facts sheet."
+    "Nvidia has confirmed the launch window for its next graphics card line "
+    "during its latest briefing."
 )
-SAMPLE_SLUG = "nvidia-graphics-card-launch-window"
+SAMPLE_SLUG = "nvidia-confirms-next-graphics-card-launch-window"
 
 SCENARIOS = ("pass", "fail-verify", "fail-gate")
 
@@ -129,7 +129,7 @@ def _claims_json() -> dict:
                 "value": "the launch window was confirmed for the next graphics card line",
                 "source_url": "https://a.example/1",
                 "confidence": 0.9,
-                "is_rumor": False,
+                "kind": "confirmed",
             }
         ]
     }
@@ -150,16 +150,19 @@ def _seo_json() -> dict:
 def _verifier_json(scenario: str) -> str:
     unsupported = ["Nvidia will ship next month"] if scenario == "fail-verify" else []
     payload = {
-        "sentences": [
+        "clauses": [
             {
-                "sentence": "Nvidia confirmed the launch window for its next graphics card line.",
+                "clause": "Nvidia confirmed the launch window for its next graphics card line.",
                 "supported": scenario != "fail-verify",
-                "fact": "Nvidia confirmed the launch window for its next graphics card line",
+                "fact_id": "F1",
             }
         ],
         "unsupported_claims": unsupported,
         "rumors_stated_as_fact": [],
         "unsupported_regional": [],
+        "costs_described_as_received": [],
+        "invented_labels": [],
+        "category_claims": [],
     }
     return json.dumps(payload)
 

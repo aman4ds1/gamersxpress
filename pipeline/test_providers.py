@@ -12,16 +12,24 @@ class FakeProvider(providers.Provider):
         self.results = list(results or [])
         self.calls = []
 
-    def complete(self, model, prompt, *, api_key, json_schema=None, transport=None):
+    def complete(self, model, prompt, *, api_key, json_schema=None, options=None, transport=None):
         self.calls.append(
-            {"model": model, "prompt": prompt, "api_key": api_key, "json_schema": json_schema}
+            {
+                "model": model,
+                "prompt": prompt,
+                "api_key": api_key,
+                "json_schema": json_schema,
+                "options": options,
+            }
         )
         if self.results:
             item = self.results.pop(0)
             if isinstance(item, BaseException):
                 raise item
-            return item
-        return "ok"
+            if isinstance(item, providers.Completion):
+                return item
+            return providers.Completion(text=item, finish_reason="stop")
+        return providers.Completion(text="ok", finish_reason="stop")
 
 
 def make_config(role_chain, max_attempts=3, role="writer"):
@@ -272,7 +280,78 @@ def test_verifier_normal_case_uses_different_family():
     assert writer.family != verifier.family
 
 
-# --- shipped-config family pairings (PLAN.md principle 4) --------------------
+# --- repair pass changes the writer family -----------------------------------
+# The repair is a second writer call. If it falls back to a different family,
+# RunState must report that family, the verifier must be kept off it, and when
+# no other-family verifier exists the run must skip (never MissingWriterFamily).
+
+
+def repair_family_config(verifier_chain):
+    return {
+        "roles": {
+            "writer": chain(("gemini", "g", "google"), ("groq", "o", "openai")),
+            "verifier": verifier_chain,
+        },
+        "retry": {"max_attempts": 1, "base_delay_seconds": 1, "max_delay_seconds": 30},
+    }
+
+
+def test_repair_family_change_updates_state_and_forces_verifier_off_it():
+    config = repair_family_config(chain(("groq", "o", "openai"), ("mistral", "m", "mistral")))
+    # Original writer served by google; the repair's google call fails, so it
+    # falls back to groq (openai) and produces the repaired text.
+    gemini = FakeProvider("gemini", ["original draft", providers.ProviderError("down", retryable=False)])
+    groq = FakeProvider("groq", ["repaired draft"])
+    mistral = FakeProvider("mistral", ["verdict"])
+    pool = {"gemini": gemini, "groq": groq, "mistral": mistral}
+    env = keyed("gemini", "groq", "mistral")
+    run = providers.RunState()
+
+    original = providers.generate(
+        "writer", "p", config=config, providers=pool, env=env, run_state=run, sleep=lambda _d: None,
+    )
+    repaired = providers.generate(
+        "writer", "p", config=config, providers=pool, env=env, run_state=run, sleep=lambda _d: None,
+    )
+
+    # (1) the repair's family is the one recorded, and both are remembered.
+    assert original.family == "google"
+    assert repaired.family == "openai"
+    assert run.writer_family == "openai"
+    assert run.writer_families == ["google", "openai"]
+
+    verifier = providers.generate(
+        "verifier", "p", config=config, providers=pool, env=env, run_state=run, sleep=lambda _d: None,
+    )
+    # (2) the verifier avoids the repaired text's family, not the original's.
+    assert verifier.family == "mistral"
+    assert verifier.family != repaired.family
+    assert len(groq.calls) == 1  # groq wrote the repair only; skipped for the verifier
+    assert len(mistral.calls) == 1
+
+
+def test_repair_family_change_skips_when_only_the_new_family_verifies():
+    config = repair_family_config(chain(("groq", "o", "openai")))
+    gemini = FakeProvider("gemini", ["original draft", providers.ProviderError("down", retryable=False)])
+    groq = FakeProvider("groq", ["repaired draft"])
+    pool = {"gemini": gemini, "groq": groq}
+    env = keyed("gemini", "groq")
+    run = providers.RunState()
+
+    providers.generate("writer", "p", config=config, providers=pool, env=env, run_state=run, sleep=lambda _d: None)
+    providers.generate("writer", "p", config=config, providers=pool, env=env, run_state=run, sleep=lambda _d: None)
+    assert run.writer_family == "openai"
+
+    # (3) with only the repaired text's family available the run must skip, and
+    # the failure must be a skip (publish nothing), not a missing-family bug.
+    with pytest.raises(providers.SkipRun) as excinfo:
+        providers.generate("verifier", "p", config=config, providers=pool, env=env, run_state=run, sleep=lambda _d: None)
+    assert not isinstance(excinfo.value, providers.MissingWriterFamilyError)
+    assert "different model families" in str(excinfo.value)
+    assert len(groq.calls) == 1  # the verifier never called the repair's family
+
+
+
 # These mirror the configure chains: gemini(google) + groq(openai) + mistral.
 # Every writer family must leave the verifier a different-family model.
 
@@ -530,7 +609,9 @@ def test_gemini_payload_and_extract():
     assert "additionalProperties" not in generation["responseSchema"]
 
     data = {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}
-    assert provider.extract(data) == "hello"
+    completion = provider.extract(data)
+    assert completion.text == "hello"
+    assert completion.finish_reason is None
 
 
 def test_gemini_extract_handles_blocked_response():
@@ -552,7 +633,7 @@ def test_mistral_payload_and_extract():
     assert payload["response_format"]["json_schema"]["strict"] is True
 
     data = {"choices": [{"message": {"content": "hello"}}]}
-    assert provider.extract(data) == "hello"
+    assert provider.extract(data).text == "hello"
 
 
 def test_groq_is_registered_with_groq_key():
@@ -571,7 +652,26 @@ def test_groq_payload_and_extract():
     assert payload["messages"] == [{"role": "user", "content": "hi"}]
 
     data = {"choices": [{"message": {"content": "hello"}}]}
-    assert provider.extract(data) == "hello"
+    assert provider.extract(data).text == "hello"
+
+
+def test_groq_extract_reports_finish_reason_and_usage():
+    provider = providers.GroqProvider()
+    completion = provider.extract(
+        {
+            "choices": [{"message": {"content": "grow"}, "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+    )
+    assert completion.text == "grow"
+    assert completion.finish_reason == "length"
+    assert completion.usage["completion_tokens"] == 5
+
+
+def test_groq_empty_content_is_a_provider_error():
+    provider = providers.GroqProvider()
+    with pytest.raises(providers.ProviderError, match="empty content"):
+        provider.extract({"choices": [{"message": {"content": None}}]})
 
 
 def test_http_post_json_sends_identifying_user_agent(monkeypatch):
@@ -609,7 +709,7 @@ def test_complete_uses_injected_transport():
         captured["url"] = url
         return {"candidates": [{"content": {"parts": [{"text": "x"}]}}]}
 
-    assert provider.complete("m", "p", api_key="k", transport=transport) == "x"
+    assert provider.complete("m", "p", api_key="k", transport=transport).text == "x"
     assert captured["url"].endswith(":generateContent")
 
 
@@ -619,6 +719,185 @@ def test_complete_uses_injected_transport():
 )
 def test_retryable_status_classification(status, expected):
     assert providers._is_retryable_status(status) is expected
+
+
+# --- per-model provider options and finish_reason="length" --------------------
+
+
+def test_groq_options_land_in_payload():
+    provider = providers.GroqProvider()
+    url, payload, headers = provider.prepare(
+        "openai/gpt-oss-120b", "hi", "KEY", None,
+        options={"max_completion_tokens": 8192, "reasoning_effort": "low", "response_format": "json_object"},
+    )
+    assert payload["max_completion_tokens"] == 8192
+    assert payload["reasoning_effort"] == "low"
+    assert payload["response_format"] == {"type": "json_object"}
+
+
+def test_json_schema_takes_precedence_over_response_format_option():
+    provider = providers.GroqProvider()
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    _url, payload, _headers = provider.prepare(
+        "openai/gpt-oss-120b", "hi", "KEY", schema, options={"response_format": "json_object"}
+    )
+    assert payload["response_format"]["type"] == "json_schema"
+    assert payload["response_format"]["json_schema"]["schema"] == schema
+
+
+def test_gemini_response_mime_type_option():
+    provider = providers.GeminiProvider()
+    _url, payload, _headers = provider.prepare(
+        "gemini-x", "hi", "KEY", None, options={"response_mime_type": "application/json"}
+    )
+    assert payload["generationConfig"]["responseMimeType"] == "application/json"
+
+
+def test_gemini_max_output_tokens_option():
+    provider = providers.GeminiProvider()
+    _url, payload, _headers = provider.prepare(
+        "gemini-x", "hi", "KEY", None, options={"max_output_tokens": 4096}
+    )
+    assert payload["generationConfig"]["maxOutputTokens"] == 4096
+
+
+def test_undocumented_options_are_not_sent(caplog):
+    provider = providers.GroqProvider()
+    _url, payload, _headers = provider.prepare(
+        "openai/gpt-oss-120b", "hi", "KEY", None, options={"temperature": 2.0, "max_completion_tokens": 100}
+    )
+    assert "temperature" not in payload
+    assert payload["max_completion_tokens"] == 100
+    assert any("temperature" in record.getMessage() for record in caplog.records)
+
+
+def test_generate_passes_entry_options_to_provider():
+    options = {"max_completion_tokens": 8192, "reasoning_effort": "low"}
+    provider = FakeProvider("a", ["text"])
+    result = providers.generate(
+        "writer", "p", config=make_config([{"provider": "a", "model": "m", "family": "fam", "options": options}]),
+        providers={"a": provider}, env=keyed("a"),
+    )
+    assert result.value == "text"
+    assert provider.calls[0]["options"] == options
+
+
+def test_generation_reports_finish_reason_and_usage():
+    provider = FakeProvider(
+        "a", [providers.Completion(text="hey", finish_reason="stop", usage={"a": 1}, raw={"choices": []})]
+    )
+    result = providers.generate(
+        "writer", "p", config=make_config(chain(("a", "m", "fam"))),
+        providers={"a": provider}, env=keyed("a"),
+    )
+    assert result.value == "hey"
+    assert result.finish_reason == "stop"
+    assert result.usage == {"a": 1}
+    assert result.raw == {"choices": []}
+
+
+def test_length_truncation_retries_with_larger_budget_once():
+    options = {"max_completion_tokens": 8192}
+    provider = FakeProvider(
+        "a",
+        [
+            providers.Completion(text='{"partial', finish_reason="length"),
+            providers.Completion(text="full", finish_reason="stop"),
+        ],
+    )
+    config = make_config([{"provider": "a", "model": "m", "family": "fam", "options": options}])
+    config["retry"].update(
+        {"length_retries": 1, "length_budget_multiplier": 2, "length_budget_cap": 20000}
+    )
+    result = providers.generate("writer", "p", config=config, providers={"a": provider}, env=keyed("a"))
+    assert result.value == "full"
+    assert result.finish_reason == "stop"
+    assert provider.calls[0]["options"]["max_completion_tokens"] == 8192
+    assert provider.calls[1]["options"]["max_completion_tokens"] == 16384
+
+
+def test_length_truncation_budget_is_clamped_to_cap():
+    options = {"max_completion_tokens": 8192}
+    provider = FakeProvider(
+        "a",
+        [
+            providers.Completion(text="trunc", finish_reason="length"),
+            providers.Completion(text="full", finish_reason="stop"),
+        ],
+    )
+    config = make_config([{"provider": "a", "model": "m", "family": "fam", "options": options}])
+    config["retry"].update(
+        {"length_retries": 1, "length_budget_multiplier": 2, "length_budget_cap": 9000}
+    )
+    result = providers.generate("writer", "p", config=config, providers={"a": provider}, env=keyed("a"))
+    assert result.value == "full"
+    assert provider.calls[1]["options"]["max_completion_tokens"] == 9000  # 16384 clamped to 9000
+
+
+def test_length_truncation_stops_when_cap_cannot_grow_budget():
+    options = {"max_completion_tokens": 8192}
+    provider = FakeProvider("a", [providers.Completion(text="trunc", finish_reason="length")])
+    config = make_config([{"provider": "a", "model": "m", "family": "fam", "options": options}])
+    config["retry"].update(
+        {"length_retries": 1, "length_budget_multiplier": 2, "length_budget_cap": 8192}
+    )
+    result = providers.generate("writer", "p", config=config, providers={"a": provider}, env=keyed("a"))
+    assert result.value == "trunc"
+    assert result.finish_reason == "length"
+    assert len(provider.calls) == 1  # cap does not exceed the current budget, so no retry
+
+
+def test_length_truncation_after_retries_returns_truncated_for_verifier():
+    options = {"max_completion_tokens": 8192}
+    provider = FakeProvider(
+        "a",
+        [
+            providers.Completion(text="v1-trunc", finish_reason="length"),
+            providers.Completion(text="v2-trunc", finish_reason="length"),
+        ],
+    )
+    config = make_config([{"provider": "a", "model": "m", "family": "fam", "options": options}], role="verifier")
+    config["retry"].update(
+        {"length_retries": 1, "length_budget_multiplier": 2, "length_budget_cap": 20000}
+    )
+    result = providers.generate(
+        "verifier", "p", config=config, providers={"a": provider}, env=keyed("a"),
+        run_state=_run_with_writer_family("google"),
+    )
+    assert result.finish_reason == "length"
+    assert result.value == "v2-trunc"  # truncated output is never parsed
+    assert len(provider.calls) == 2
+
+
+def test_length_truncation_with_json_schema_falls_back():
+    first = FakeProvider("a", [providers.Completion(text="nope", finish_reason="length")])
+    second = FakeProvider("b", ['{"ok": true}'])
+    config = {
+        "roles": {"writer": chain(("a", "m1", "fa"), ("b", "m2", "fb"))},
+        "retry": {
+            "max_attempts": 1,
+            "base_delay_seconds": 1,
+            "max_delay_seconds": 30,
+            "length_retries": 1,
+            "length_budget_multiplier": 2,
+            "length_budget_cap": 20000,
+        },
+    }
+    result = providers.generate(
+        "writer", "p", {"type": "object"}, config=config,
+        providers={"a": first, "b": second}, env=keyed("a", "b"),
+        sleep=lambda _delay: None,
+    )
+    # No budget key was set, so no length retry happened; the truncated output
+    # never reached the JSON parser, and the next provider served instead.
+    assert result.value == {"ok": True}
+    assert len(first.calls) == 1
+
+
+def _run_with_writer_family(family):
+    run = providers.RunState()
+    run.record(providers.Generation("writer", "stub", "s", family, "DRAFT"))
+    return run
 
 
 # --- config and env ----------------------------------------------------------

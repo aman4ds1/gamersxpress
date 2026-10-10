@@ -33,7 +33,7 @@ def test_make_generate_writer_body_length_by_scenario():
 
 def test_make_generate_verifier_pass_and_fail():
     ok = json.loads(dryrun.make_generate("pass")("verifier", "prompt").value)
-    assert ok["sentences"][0]["supported"] is True
+    assert ok["clauses"][0]["supported"] is True
     assert ok["unsupported_claims"] == []
 
     bad = json.loads(dryrun.make_generate("fail-verify")("verifier", "prompt").value)

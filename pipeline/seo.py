@@ -13,8 +13,8 @@ Validation is code-only and independent of the model:
   check (:func:`verify.extract_values`) is run over the title, description and
   alt text; a value that is not in the facts sheet -- or that the article body
   does not carry -- is a failure.
-* **No unconfirmed claims.** A value the sheet marks as a rumor (``is_rumor``)
-  must not appear in the title or description.
+* **No unconfirmed claims.** A value the sheet marks as a rumor (``kind``
+  ``"rumor"``) must not appear in the title or description.
 
 If the first answer is invalid the model is asked once more with the validation
 errors attached; if that also fails the story is dropped with :class:`SeoError`.
@@ -79,6 +79,17 @@ BANNED_PHRASES = (
     "gamers everywhere",
 )
 
+# Filler and internal terms from the writer rules that must not appear in the
+# search snippet (title and description). "facts sheet" appears here because it
+# is a pipeline term, not reader language.
+SNIPPET_BANNED_PHRASES = (
+    "unlocks additional gear and opportunities",
+    "mid-tier",
+    "low confidence",
+    "high confidence",
+    "facts sheet",
+)
+
 logger = logging.getLogger("gamersxpress.pipeline.seo")
 
 SEO_SCHEMA: dict[str, Any] = {
@@ -110,7 +121,18 @@ SYSTEM_INSTRUCTION = (
     "- entities: organization, product or game names that appear in the facts sheet.\n"
     "- imageAlt: one honest sentence describing the cover image (its headline and category).\n"
     "Never invent a number, price, date, percentage, spec or version: use only "
-    "values that appear in the facts sheet, and never state a rumor as fact."
+    "values that appear in the facts sheet, and never state a rumor as fact. "
+    "Every sentence must be supported by a claim in the facts sheet; omit "
+    "anything unsupported rather than padding, and never write filler such as "
+    "'unlocks additional gear and opportunities'. Never describe a cost as "
+    "something players receive: a price is what players pay. Never invent "
+    "labels such as 'mid-tier'. Never print confidence numbers or words like "
+    "'low confidence'. Never use internal terms such as 'facts sheet' in the "
+    "title or description; when a detail is not in the sheet, write 'no other "
+    "details are confirmed'. Name in-game currencies wherever an amount "
+    "appears: '100,000 in-game DMZ Cash', never a bare dollar figure. The "
+    "slug is generated in code from the final title; do not copy a source "
+    "headline."
 )
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -338,6 +360,29 @@ def _values_in(text: str, config: dict, entities: list[dict]) -> list[dict]:
     return verify.extract_values(_mask_entities(text, entities), config)
 
 
+_DOLLAR_RE = re.compile(r"(?<![\w])(?:US\$|USD|\$)\s?\d", re.IGNORECASE)
+_IN_GAME_VALUE_RE = re.compile(
+    r"\b([A-Z][A-Za-z0-9 ]*?(?:Cash|Credits|Coins|Points|Gold|Tokens|Bucks))\b"
+)
+
+
+def _in_game_currency_names(facts: dict) -> list[str]:
+    """Currency names tied to in-game amounts in the sheet's claim values.
+
+    A claim value that mentions in-game currency (for example "100,000 in-game
+    DMZ Cash") names a currency that any matching dollar figure in the snippet
+    must carry (rule: name in-game currencies everywhere).
+    """
+    names: set[str] = set()
+    for claim in facts.get("claims") or []:
+        value = str(claim.get("value", "") or "")
+        if "in-game" not in value.lower():
+            continue
+        for match in _IN_GAME_VALUE_RE.finditer(value):
+            names.add(re.sub(r"\s+", " ", match.group(1)).strip())
+    return sorted(name for name in names if name)
+
+
 def validate(
     data: dict,
     *,
@@ -368,10 +413,11 @@ def validate(
             errors.append("title must not contain an exclamation mark")
         if any(ch.isalpha() for ch in title) and title == title.upper():
             errors.append("title must not be ALL CAPS")
-        lowered = title.lower()
-        for phrase in BANNED_PHRASES:
-            if phrase in lowered:
-                errors.append(f"title contains banned hype phrase: {phrase!r}")
+
+    snippet = f"{title}\n{description}".lower()
+    for phrase in BANNED_PHRASES + SNIPPET_BANNED_PHRASES:
+        if phrase in snippet:
+            errors.append(f"title or description contains banned phrase: {phrase!r}")
 
     if not isinstance(description, str):
         errors.append("description is not a string")
@@ -422,8 +468,21 @@ def validate(
     title_desc = f"{title}\n{description}".lower()
     for claim in facts.get("claims") or []:
         value = str(claim.get("value", "")).strip()
-        if claim.get("is_rumor") and len(value) >= 3 and value.lower() in title_desc:
+        if claim.get("kind") == "rumor" and len(value) >= 3 and value.lower() in title_desc:
             errors.append(f"title or description states a rumor as fact: {value!r}")
+
+    # In-game currency amounts must name the currency: a bare dollar figure in
+    # the snippet that the sheet ties to an in-game currency fails.
+    currency_names = _in_game_currency_names(facts)
+    for field in ("title", "description"):
+        text = str(data.get(field) or "")
+        if not _DOLLAR_RE.search(text):
+            continue
+        for name in currency_names:
+            if name.lower() not in text.lower():
+                errors.append(
+                    f"{field} uses a dollar amount for the in-game currency {name!r} without naming it"
+                )
 
     return errors
 
@@ -475,11 +534,13 @@ def generate_seo(
             continue
 
         data = dict(data)
-        data["slug"] = slugify(data.get("slug", ""))
-        data["entities"], new_entities = canonicalize_entities(data.get("entities", []), sheet, entities)
         for field in ("title", "description", "imageAlt"):
             if isinstance(data.get(field), str):
                 data[field] = canonicalize_text(data[field], entities)
+        # The slug comes from the final title, never from the model's slug or a
+        # source headline.
+        data["slug"] = slugify(data.get("title") or "") or slugify(data.get("slug") or "")
+        data["entities"], new_entities = canonicalize_entities(data.get("entities", []), sheet, entities)
 
         errors = validate(data, article=article, facts=sheet, entities=entities, config=config)
         if errors:
@@ -512,6 +573,7 @@ __all__ = [
     "MAX_TITLE",
     "MIN_DESC",
     "SEO_SCHEMA",
+    "SNIPPET_BANNED_PHRASES",
     "SeoError",
     "build_prompt",
     "canonicalize_entities",

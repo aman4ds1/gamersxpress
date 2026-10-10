@@ -23,7 +23,7 @@ The flagship card costs $1,999 for high-end gaming PCs.
 """
 
 
-def make_facts(claim="The GeForce RTX 5090 launches at $1,999.", value="$1,999", is_rumor=False):
+def make_facts(claim="The GeForce RTX 5090 launches at $1,999.", value="$1,999", kind="confirmed"):
     return {
         "id": "story-1",
         "claims": [
@@ -32,7 +32,7 @@ def make_facts(claim="The GeForce RTX 5090 launches at $1,999.", value="$1,999",
                 "value": value,
                 "source_url": "https://nvidia.example/5090",
                 "confidence": 0.95,
-                "is_rumor": is_rumor,
+                "kind": kind,
             }
         ],
         "sources": [
@@ -119,8 +119,72 @@ def test_validate_rejects_value_missing_from_body():
 
 
 def test_validate_rejects_rumor_stated_as_fact():
-    errors = seo.validate(seo_data(), article=ARTICLE, facts=make_facts(is_rumor=True), entities=seo.load_entities())
+    errors = seo.validate(seo_data(), article=ARTICLE, facts=make_facts(kind="rumor"), entities=seo.load_entities())
     assert any("rumor" in e for e in errors)
+
+
+def test_validate_rejects_padded_filler_in_snippet():
+    data = seo_data(description="The mode unlocks additional gear and opportunities for everyone who preorders it now.")
+    errors = seo.validate(data, article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert any("unlocks additional gear and opportunities" in e for e in errors)
+
+
+def test_validate_rejects_invented_label_mid_tier_in_snippet():
+    data = seo_data(description="A mid-tier card with more memory and a higher price for high-end gaming PCs and creators.")
+    errors = seo.validate(data, article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert any("mid-tier" in e for e in errors)
+
+
+def test_validate_rejects_confidence_words_in_snippet():
+    data = seo_data(description="A low confidence launch claim about more memory for high-end gaming PCs and creators.")
+    errors = seo.validate(data, article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert any("low confidence" in e for e in errors)
+
+
+def test_validate_rejects_internal_term_facts_sheet_in_snippet():
+    data = seo_data(description="The facts sheet confirms more memory and a higher price for high-end gaming PCs and creators.")
+    errors = seo.validate(data, article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert any("facts sheet" in e for e in errors)
+
+
+def dmz_facts():
+    return {
+        "id": "dmz-1",
+        "claims": [
+            {
+                "claim": "DMZ jet pack deployments cost 100,000 in-game DMZ Cash each.",
+                "value": "100,000 in-game DMZ Cash per deployment",
+                "source_url": "https://eurogamer.example/dmz",
+                "confidence": 0.98,
+                "kind": "confirmed",
+            }
+        ],
+        "sources": [
+            {"source_name": "Eurogamer", "link": "https://eurogamer.example/dmz", "tier": 2, "owner": "ign-entertainment", "region": "uk"}
+        ],
+    }
+
+
+def dmz_article():
+    return "## What happened\n\nThe DMZ jet pack costs 100,000 DMZ Cash per deployment."
+
+
+def test_validate_rejects_dollar_amount_for_in_game_currency_without_name():
+    bad = seo_data(
+        title="DMZ jet pack costs $100,000 to deploy",
+        description="The DMZ jet pack costs $100,000 per deployment, the most expensive paid spawn option available.",
+    )
+    errors = seo.validate(bad, article=dmz_article(), facts=dmz_facts(), entities=seo.load_entities())
+    assert any("DMZ Cash" in e and "without naming it" in e for e in errors)
+
+
+def test_validate_accepts_dollar_amount_for_in_game_currency_when_named():
+    good = seo_data(
+        title="DMZ jet pack costs 100,000 DMZ Cash per deployment",
+        description="The DMZ jet pack costs $100,000 in DMZ Cash per deployment, the most expensive paid spawn option available.",
+    )
+    errors = seo.validate(good, article=dmz_article(), facts=dmz_facts(), entities=seo.load_entities())
+    assert errors == []
 
 
 # --- entities ----------------------------------------------------------------
@@ -130,7 +194,7 @@ def test_canonicalize_entities_maps_aliases_and_keeps_supported_new():
     entities = [{"canonical": "PlayStation 5", "aliases": ["PS5"]}]
     facts = {
         "claims": [
-            {"claim": "Arc Raiders launches on PS5.", "value": "PS5", "source_url": "https://x", "confidence": 0.9, "is_rumor": False}
+            {"claim": "Arc Raiders launches on PS5.", "value": "PS5", "source_url": "https://x", "confidence": 0.9, "kind": "confirmed"}
         ]
     }
     names, new_entities = seo.canonicalize_entities(["PS5", "Arc Raiders", "Totally Fake Game"], facts, entities)
@@ -183,6 +247,31 @@ def test_build_prompt_includes_categories_facts_and_errors():
     assert "title too long" in prompt
 
 
+def test_snippet_banned_phrases_cover_new_writer_rules():
+    for required in (
+        "unlocks additional gear and opportunities",
+        "mid-tier",
+        "low confidence",
+        "high confidence",
+        "facts sheet",
+    ):
+        assert required in seo.SNIPPET_BANNED_PHRASES
+
+
+def test_seo_instruction_covers_snippet_rules():
+    for required in [
+        "Every sentence must be supported by a claim",
+        "unlocks additional gear and opportunities",
+        "cost as something players receive",
+        "mid-tier",
+        "low confidence",
+        "facts sheet",
+        "100,000 in-game DMZ Cash",
+        "slug is generated in code from the final title",
+    ]:
+        assert required in seo.SYSTEM_INSTRUCTION
+
+
 # --- generate_seo ------------------------------------------------------------
 
 
@@ -193,9 +282,9 @@ def test_generate_seo_canonicalizes_and_uniquifies(tmp_path, monkeypatch):
     drafts = tmp_path / "drafts"
     articles.mkdir()
     drafts.mkdir()
-    (articles / "geforce-rtx-5090-launch.md").write_text("---\n---\n", encoding="utf-8")
+    (articles / "nvidia-announces-its-flagship-gpu.md").write_text("---\n---\n", encoding="utf-8")
 
-    generate = make_generate(seo_data())
+    generate = make_generate(seo_data(title="NVIDIA announces its flagship GPU"))
     result = seo.generate_seo(
         ARTICLE,
         make_facts(),
@@ -204,7 +293,7 @@ def test_generate_seo_canonicalizes_and_uniquifies(tmp_path, monkeypatch):
         articles_dir=articles,
         drafts_dir=drafts,
     )
-    assert result["slug"] == "geforce-rtx-5090-launch-2"
+    assert result["slug"] == "nvidia-announces-its-flagship-gpu-2"
     assert result["entities"] == ["NVIDIA", "GeForce RTX 5090"]
     assert result["generator"] == {"provider": "mock", "model": "m", "family": "f"}
 
@@ -224,9 +313,28 @@ def test_generate_seo_retries_once_with_errors(tmp_path):
         articles_dir=articles,
         drafts_dir=drafts,
     )
-    assert result["slug"] == "geforce-rtx-5090-launch"
+    assert result["slug"] == "nvidia-launches-geforce-rtx-5090-at-1-999"
     assert len(generate.calls) == 2
     assert "previous answer was invalid" in generate.calls[1]
+
+
+def test_generate_seo_derives_slug_from_final_title_ignoring_model_slug(tmp_path):
+    articles = tmp_path / "articles"
+    drafts = tmp_path / "drafts"
+    articles.mkdir()
+    drafts.mkdir()
+    data = seo_data(slug="call-of-duty-modern-warfare-4-five-features-to-get-excited-for")
+    generate = make_generate(data)
+    result = seo.generate_seo(
+        ARTICLE,
+        make_facts(),
+        generate=generate,
+        entities_path=tmp_path / "entities.json",
+        articles_dir=articles,
+        drafts_dir=drafts,
+    )
+    assert result["slug"] == "nvidia-launches-geforce-rtx-5090-at-1-999"
+    assert result["slug"] != data["slug"]
 
 
 def test_generate_seo_raises_after_two_failures(tmp_path):
