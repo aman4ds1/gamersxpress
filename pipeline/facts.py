@@ -25,8 +25,17 @@ Output is written to ``data/facts/<id>.json``:
       "sources": [{"source_name", "link", "title", "tier", "owner", "region"}],
       "claims": [{"claim", "value", "source_url", "confidence", "is_rumor"}],
       "coherence": {"checked": true, "primary_entities": [...], "dropped_claims": [...]},
-      "extractor": {"provider", "model", "family"}
+"extractor": {"provider", "model", "family"},
+      "fingerprint": {"format": 1, "value": "<hash of id + model chain + prompt settings>"}
     }
+
+When the file already exists and its stored fingerprint still matches the
+current one (the cluster id, the enabled "fast" role chain from config.yaml,
+and the extraction prompt/schema), the cached sheet is returned without calling
+the model; any mismatch -- including a sheet written before fingerprints
+existed -- means claims are re-extracted and the file overwritten, so stale
+facts are never reused. Bump :data:`PROMPT_VERSION` when extraction output
+rules change so cached sheets invalidate automatically.
 """
 
 from __future__ import annotations
@@ -40,7 +49,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import cluster
-from providers import Generation, RunState, generate as default_generate
+from providers import Generation, RunState, generate as default_generate, load_config
 from json_schema import schema_errors
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -51,6 +60,9 @@ MAX_SOURCE_CHARS = 4000
 # verbatim passage copied from a source, so they are clipped before the sheet is
 # saved (PLAN.md principle 3: facts, not source prose).
 MAX_FIELD_CHARS = 300
+# Bump when the extraction prompt or the claim schema changes, so previously
+# written facts sheets are treated as stale and re-extracted.
+PROMPT_VERSION = "facts-v1"
 
 logger = logging.getLogger("gamersxpress.pipeline.facts")
 
@@ -86,6 +98,20 @@ SYSTEM_INSTRUCTION = (
     "as speculative, unconfirmed or a rumor). Extract only what the text says; "
     "never infer, fill gaps, or invent URLs."
 )
+
+
+def _extraction_chain() -> list[dict]:
+    """The enabled 'fast' role entries from config.yaml: they pick the extractor.
+
+    This is what actually changes which model extracts claims, so a config edit
+    must invalidate already-written facts sheets.
+    """
+    roles = load_config().get("roles") or {}
+    return [
+        {"provider": entry.get("provider"), "model": entry.get("model"), "family": entry.get("family")}
+        for entry in (roles.get("fast") or [])
+        if entry.get("enabled", True)
+    ]
 
 
 class FactsError(Exception):
@@ -281,6 +307,16 @@ def facts(
         logger.warning("%s", message)
         raise UnconfirmedStory(message)
 
+    fingerprint = cluster.stage_fingerprint(
+        name, "facts", PROMPT_VERSION, SYSTEM_INSTRUCTION, CLAIM_SCHEMA,
+        _extraction_chain(), MAX_SOURCE_CHARS, MAX_FIELD_CHARS,
+    )
+    path = output_dir / f"{name}.json"
+    if cluster.stored_fingerprint(path) == fingerprint:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        logger.info("facts reused cached sheet %s (fingerprint match)", path)
+        return payload
+
     generation = extract_claims(gathered, generate=generate, run_state=run_state, **kwargs)
     claims = validate_claims(generation.value)
 
@@ -320,6 +356,7 @@ def facts(
             "model": generation.model,
             "family": generation.family,
         },
+        "fingerprint": {"format": cluster.FINGERPRINT_FORMAT, "value": fingerprint},
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{name}.json"
@@ -331,6 +368,7 @@ def facts(
 __all__ = [
     "CLAIM_SCHEMA",
     "MAX_FIELD_CHARS",
+    "PROMPT_VERSION",
     "FactsError",
     "UnconfirmedStory",
     "build_prompt",

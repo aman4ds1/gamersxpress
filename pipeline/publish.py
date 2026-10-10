@@ -157,6 +157,7 @@ def publish(
     mode: str,
     cover_path: str | Path | None = None,
     cluster_id: str | None = None,
+    cluster: dict | None = None,
     articles_dir: str | Path | None = None,
     covers_dir: str | Path | None = None,
     log_path: str | Path | None = None,
@@ -185,7 +186,7 @@ def publish(
         now=now,
     )
     if cluster_id:
-        _mark_seen(cluster_id, seen_path, now)
+        _mark_seen(cluster_id, seen_path, now, cluster_data=cluster or {})
 
     logger.info("published slug=%s mode=%s -> %s", slug, mode, article_path)
     return {
@@ -219,11 +220,19 @@ def save_draft(
     return {"published": False, "slug": slug, "draft_path": str(article_path)}
 
 
-def _mark_seen(cluster_id: str, seen_path: str | Path | None, now: dt.datetime | None) -> None:
+def _mark_seen(cluster_id: str, seen_path: str | Path | None, now: dt.datetime | None, *, cluster_data: dict) -> None:
     import cluster
 
     seen = cluster.load_seen(seen_path)
-    cluster.mark_seen(seen, cluster_id, now=now)
+    items = cluster_data.get("items") or []
+    cluster.mark_seen(
+        seen,
+        cluster_id,
+        now=now,
+        member_urls=[str(item.get("link") or "") for item in items] if items else None,
+        primary_entities=cluster_data.get("entities"),
+        story_type=cluster_data.get("story_type"),
+    )
     cluster.save_seen(seen, seen_path)
 
 

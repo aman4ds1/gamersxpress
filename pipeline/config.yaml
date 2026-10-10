@@ -95,6 +95,14 @@ freshness:
     3: 24 hours
   stale_after: 7 days
 
+# Cluster stage (pipeline/cluster.py). How long a covered story stays seen: a
+# new cluster is skipped when it shares a member URL with a seen cluster, or
+# when it matches a seen cluster's primary entities AND story type within this
+# window. The membership-hash id is only the cache key for gathered/facts files
+# now; seen/cooldown decisions are based on the coverage fields stored above.
+cluster:
+  seen_cooldown_days: 7
+
 # Verifier stage (pipeline/verify.py; PLAN.md principle 4 / stage 6).
 # `list_markers` is stripped from the start of each body line before values are
 # extracted, so list numbering (for example "1." or "-") is not read as a fact.

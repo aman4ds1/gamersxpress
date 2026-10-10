@@ -11,6 +11,7 @@ Output is written to ``data/gathered/<cluster-id>.json``:
     {
       "id": "<cluster-id>",
       "gathered_at": "...",
+      "fingerprint": {"format": 1, "value": "<hash of id + settings>"},
       "sources": [
         {
           "link": "...", "title": "...", "source_name": "...", "tier": 1,
@@ -19,6 +20,12 @@ Output is written to ``data/gathered/<cluster-id>.json``:
         }
       ]
     }
+
+When the file already exists and its stored :data:`fingerprint` still matches
+the current one (the cluster id plus the settings that shape extraction), the
+cached payload is returned without fetching anything; any mismatch -- including
+a file written before fingerprints existed -- means the text is re-fetched and
+the file overwritten, so stale gathered output is never reused.
 
 Source text is used ONLY by the facts stage (PLAN.md pipeline stage 5); it is
 never passed to the writer.
@@ -42,12 +49,17 @@ from typing import Callable, Optional
 import trafilatura
 from trafilatura.downloads import DEFAULT_CONFIG as TRAFILATURA_DEFAULT_CONFIG
 
+from cluster import FINGERPRINT_FORMAT, stage_fingerprint, stored_fingerprint
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "gathered"
 
 USER_AGENT = "GamersXpress/0.1 (+https://gamersxpress.com; news-pipeline)"
 FETCH_TIMEOUT_SECONDS = 20
 REQUEST_DELAY_SECONDS = 1.0
+# Bump when fetch/extract handling that can change the stored text is tuned, so
+# previously-gathered files read as stale and are re-fetched.
+GATHER_SETTINGS_VERSION = 1
 
 logger = logging.getLogger("gamersxpress.pipeline.gather")
 
@@ -135,6 +147,19 @@ def gather(
     name = re.sub(r"[^0-9A-Za-z._-]", "-", str(id or cluster.get("id") or "unnamed"))
     now = now or dt.datetime.now(dt.timezone.utc)
 
+    fingerprint = stage_fingerprint(
+        name, "gather", GATHER_SETTINGS_VERSION, FETCH_TIMEOUT_SECONDS, USER_AGENT,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{name}.json"
+    if stored_fingerprint(path) == fingerprint:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        logger.info(
+            "gather reused %s (fingerprint match): %d source(s) in cache",
+            path, len(payload.get("sources") or []),
+        )
+        return payload
+
     sources: list[dict] = []
     for item in cluster.get("items") or []:
         url = item.get("link")
@@ -154,7 +179,12 @@ def gather(
         sources.append(source)
         sleep(delay)
 
-    payload = {"id": name, "gathered_at": now.isoformat(), "sources": sources}
+    payload = {
+        "id": name,
+        "gathered_at": now.isoformat(),
+        "fingerprint": {"format": FINGERPRINT_FORMAT, "value": fingerprint},
+        "sources": sources,
+    }
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{name}.json"
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

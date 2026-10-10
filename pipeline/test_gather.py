@@ -107,11 +107,11 @@ def test_gather_fetch_error_does_not_crash(tmp_path):
 
 
 def test_gather_empty_body_and_empty_text(tmp_path):
-    result = run_gather(tmp_path, fetcher=lambda url: None)
+    result = run_gather(tmp_path, id="no-body", fetcher=lambda url: None)
     assert result["sources"][0]["status"] == "fetch-error"
     assert result["sources"][0]["error"] == "no response body"
 
-    result = run_gather(tmp_path, fetcher=lambda url: "<html>x</html>", extractor=lambda html: None)
+    result = run_gather(tmp_path, id="no-text", fetcher=lambda url: "<html>x</html>", extractor=lambda html: None)
     assert result["sources"][0]["status"] == "empty"
 
 
@@ -122,6 +122,60 @@ def test_gather_preserves_source_metadata(tmp_path):
     assert source["owner"] == "co-a"
     assert source["region"] == "us"
     assert source["source_name"] == "Source A"
+
+
+def test_gather_reuses_file_when_fingerprint_matches(tmp_path):
+    calls = []
+
+    def fetcher(url):
+        calls.append(url)
+        return "<html>body</html>"
+
+    first = run_gather(tmp_path, fetcher=fetcher, extractor=lambda html: "text")
+    assert calls == ["https://a.example/1"]
+
+    second = run_gather(tmp_path, fetcher=fetcher, extractor=lambda html: "text")
+    assert second == first
+    assert second["fingerprint"]["value"] == first["fingerprint"]["value"]
+    assert calls == ["https://a.example/1"], "fetcher must not run again on a fingerprint match"
+
+
+def test_gather_regenerates_when_fingerprint_mismatches(tmp_path):
+    calls = []
+
+    def fetcher(url):
+        calls.append(url)
+        return "<html>body</html>"
+
+    run_gather(tmp_path, fetcher=fetcher, extractor=lambda html: "text")
+    path = tmp_path / "story-1.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["fingerprint"]["value"] = "stale"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    calls.clear()
+    run_gather(tmp_path, fetcher=fetcher, extractor=lambda html: "text")
+    assert calls == ["https://a.example/1"], "a stale fingerprint must not be reused"
+    rewritten = json.loads(path.read_text(encoding="utf-8"))
+    assert rewritten["fingerprint"]["value"] != "stale"
+
+
+def test_gather_regenerates_when_file_has_no_fingerprint(tmp_path):
+    callers = []
+
+    def fetcher(url):
+        callers.append(url)
+        return "<html>body</html>"
+
+    run_gather(tmp_path, fetcher=fetcher, extractor=lambda html: "text")
+    path = tmp_path / "story-1.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["fingerprint"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    callers.clear()
+    run_gather(tmp_path, fetcher=fetcher, extractor=lambda html: "text")
+    assert callers == ["https://a.example/1"], "a pre-fingerprint file must be re-fetched"
 
 
 def test_extract_text_uses_trafilatura_on_real_html():

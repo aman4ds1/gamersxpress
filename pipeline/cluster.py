@@ -3,9 +3,12 @@
 The pool at ``data/pool.json`` is the running list of candidate items across
 runs; :func:`merge_items` folds a fresh ingest batch into it (deduping by
 normalized link and dropping anything past the stale window). :func:`cluster_items`
-groups the pool into stories, and skips any story whose id is inside the
-cooldown window recorded in ``data/seen.json`` (so the same story is not covered
-twice).
+groups the pool into stories, and skips any story that is already covered: it
+shares a member URL with a covered story, or its primary entities and story
+type match a covered story inside the cooldown window recorded in
+``data/seen.json``. The skip is decided by that stored coverage content, not by
+the membership-hash id, so a story that gains a new outlet's article later is
+still recognized as covered.
 
 Two items may only be merged when ALL of these hold (regression cluster
 e3b478ab26ee mixed unrelated games because generic capitalized words like
@@ -21,9 +24,14 @@ e3b478ab26ee mixed unrelated games because generic capitalized words like
    which founded the bucket). Membership is never transitive: an item similar
    to some other member but not to the seed starts its own cluster.
 
-A cluster id is a stable hash of its newest item's normalized title, so a
-re-ingested story keeps the same id across runs and the same gathered/facts
-files line up.
+A cluster id is a digest of its members' normalized, sorted URLs, so a changed
+set of sources always produces a new id (a story re-ingested from the same
+sources keeps its id, and any membership change makes it a new story). Cached
+stage files (``data/gathered/<id>.json``, ``data/facts/<id>.json``) are never
+reused blindly: each payload stores a fingerprint (see :func:`stage_fingerprint`)
+and the gather/facts stages regenerate a file when its stored fingerprint no
+longer matches, so a model or prompt-version change cannot leave a stale sheet
+in use.
 """
 
 from __future__ import annotations
@@ -340,9 +348,64 @@ def _single_subject_merge(shared: set[str], a_title: str, b_title: str, score: f
     return False
 
 
-def cluster_id_for(title: str) -> str:
-    digest = hashlib.sha1(normalize_title(title).encode("utf-8")).hexdigest()
-    return digest[:12]
+def _digest(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _normalized_urls(urls: Iterable[str]) -> list[str]:
+    """Deduped, normalized, sorted member URLs (the canonical form everywhere)."""
+    return sorted({normalize_url(str(url or "")) for url in urls if (url or "").strip()})
+
+
+def _normalized_entities(entities: Iterable[object]) -> list[str]:
+    """Lowercased, deduped, sorted primary-entity names for stable comparison."""
+    return sorted({str(entity).strip().lower() for entity in entities if str(entity).strip()})
+
+
+def cluster_id_for_urls(urls: Iterable[str]) -> str:
+    """Cluster id: a digest of the members' normalized, sorted, deduped URLs.
+
+    Same membership always hashes to the same id; adding, removing or changing
+    any member URL produces a different id, so a changed cluster writes under a
+    new name and can never reuse another story's gathered/facts output.
+    """
+    return _digest("\n".join(_normalized_urls(urls)))
+
+
+#: Bump whenever the fingerprint algorithm or stored shape changes; files from
+#: an older format then read as mismatched and are regenerated.
+FINGERPRINT_FORMAT = 1
+
+
+def stage_fingerprint(*parts: object) -> str:
+    """Deterministic digest of everything a stage's output depends on.
+
+    Callers pass the cluster id plus the stage's config inputs (model chain,
+    prompt version, schema text, constants that shape extraction). Any change
+    to those inputs yields a new digest, so a cached file whose stored value
+    differs is stale and must be regenerated.
+    """
+    canonical = json.dumps([*parts], ensure_ascii=False, sort_keys=True, default=str)
+    return _digest(canonical)
+
+
+def stored_fingerprint(path: str | Path) -> str | None:
+    """Return the fingerprint stored in ``path``, or None when it is absent.
+
+    Missing files, unreadable/corrupt files and files written by an older
+    fingerprint format all read as None so callers treat them as a mismatch.
+    """
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    stored = data.get("fingerprint")
+    if not isinstance(stored, dict) or stored.get("format") != FINGERPRINT_FORMAT:
+        return None
+    value = stored.get("value")
+    return value if isinstance(value, str) and value else None
 
 
 # --- pool --------------------------------------------------------------------
@@ -440,9 +503,28 @@ def save_seen(seen: dict, path: str | Path | None = None) -> Path:
     return path
 
 
-def mark_seen(seen: dict, cluster_id: str, *, now: dt.datetime | None = None) -> None:
+def mark_seen(
+    seen: dict,
+    cluster_id: str,
+    *,
+    member_urls: Iterable[str] | None = None,
+    primary_entities: Iterable[object] | None = None,
+    story_type: str | None = None,
+    now: dt.datetime | None = None,
+) -> None:
+    """Record a covered cluster. The entry is keyed by the membership-hash id
+    (so re-covering the same story overwrites its slot) but stores the coverage
+    facts coverage decisions are based on: member URLs, primary entities, story
+    type, and the seen dates. Content fields are stored normalized.
+    """
     now = now or dt.datetime.now(dt.timezone.utc)
     entry = seen.setdefault("clusters", {}).setdefault(cluster_id, {})
+    if member_urls is not None:
+        entry["member_urls"] = _normalized_urls(member_urls)
+    if primary_entities is not None:
+        entry["primary_entities"] = _normalized_entities(primary_entities)
+    if story_type is not None:
+        entry["story_type"] = str(story_type)
     entry.setdefault("first_seen", now.isoformat())
     entry["last_seen"] = now.isoformat()
 
@@ -457,12 +539,66 @@ def _parse_time(value: Any) -> dt.datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
 
 
-def _in_cooldown(seen: dict, cluster_id: str, now: dt.datetime, cooldown: dt.timedelta) -> bool:
-    entry = (seen.get("clusters") or {}).get(cluster_id)
-    if not entry:
+def _entry_member_urls(entry: dict) -> set[str]:
+    value = entry.get("member_urls")
+    return set(_normalized_urls(value)) if isinstance(value, list) else set()
+
+
+def _entry_primary_entities(entry: dict) -> set[str]:
+    value = entry.get("primary_entities")
+    return set(_normalized_entities(value)) if isinstance(value, list) else set()
+
+
+def _seen_url_overlap(seen: dict, member_urls: Iterable[str]) -> bool:
+    """(a) The cluster shares at least one member URL with a seen cluster.
+
+    Rule (a) has no cooldown: a specific source URL that was already covered
+    never gets covered again, regardless of how the cluster around it changed.
+    Old-format entries (no ``member_urls``) carry no coverage data and never
+    match.
+    """
+    urls = set(_normalized_urls(member_urls))
+    if not urls:
         return False
-    last = _parse_time(entry.get("last_seen"))
-    return last is not None and (now - last) < cooldown
+    for entry in (seen.get("clusters") or {}).values():
+        if urls & _entry_member_urls(entry):
+            logger.info("cluster shares a member URL with a seen story")
+            return True
+    return False
+
+
+def _seen_entity_type_match(
+    seen: dict,
+    *,
+    primary_entities: Iterable[object],
+    story_type: str,
+    now: dt.datetime,
+    cooldown: dt.timedelta,
+) -> bool:
+    """(b) Same primary entities AND same story type, seen within cooldown.
+
+    A review and a sales story about the same game share entities but have
+    different story types, so they are never treated as the same coverage
+    decision. Differs in either field, or a cooldown that has lapsed, is not a
+    match. Old-format entries (no ``primary_entities``/``story_type``) never
+    match.
+    """
+    entities = set(_normalized_entities(primary_entities))
+    if not entities or not story_type:
+        return False
+    for entry in (seen.get("clusters") or {}).values():
+        if str(entry.get("story_type") or "") != str(story_type):
+            continue
+        if _entry_primary_entities(entry) != entities:
+            continue
+        last = _parse_time(entry.get("last_seen"))
+        if last is not None and (now - last) < cooldown:
+            logger.info(
+                "cluster matches a seen story (entities=%s type=%s) within cooldown %s",
+                sorted(entities), story_type, cooldown,
+            )
+            return True
+    return False
 
 
 # --- clustering --------------------------------------------------------------
@@ -484,12 +620,19 @@ def cluster_items(
     cooldown: dt.timedelta = SEEN_COOLDOWN,
     threshold: float = SIMILARITY_THRESHOLD,
 ) -> list[dict]:
-    """Group items into stories, newest first, skipping recently-seen stories.
+    """Group items into stories, newest first, skipping already-covered stories.
 
     Each bucket is anchored to its seed (the newest item). An item joins a
     bucket only when :func:`same_story` holds against that seed, so clusters
     never chain item-to-item. Items are compared newest-first; an item that
     matches no seed founds a new bucket.
+
+    A cluster is treated as already covered (and skipped) when it shares a
+    member URL with a seen cluster, or when it matches a seen cluster's primary
+    entities AND story type within the cooldown window. The skip is decided by
+    content, not by the membership-hash id: a story that grows by one outlet
+    gets a new id but still shares URLs with the covered story, so it is not
+    written again.
     """
     now = now or dt.datetime.now(dt.timezone.utc)
     seen = seen or {"clusters": {}}
@@ -504,7 +647,6 @@ def cluster_items(
         else:
             buckets.append(
                 {
-                    "id": cluster_id_for(item.get("title", "")),
                     "title": item.get("title", ""),
                     "seed": item,
                     "items": [item],
@@ -513,18 +655,29 @@ def cluster_items(
 
     clusters: list[dict] = []
     for bucket in buckets:
-        if _in_cooldown(seen, bucket["id"], now, cooldown):
-            logger.info("skipping cluster %s: seen within %s", bucket["id"], cooldown)
-            continue
         members = bucket["items"]
+        cluster_id = cluster_id_for_urls(str(member.get("link") or "") for member in members)
+        member_urls = _normalized_urls(str(member.get("link") or "") for member in members)
+        primary = _normalized_entities(_entities(members))
+        cluster_type = story_type(str(bucket["seed"].get("title") or ""))
+        if _seen_url_overlap(seen, member_urls) or _seen_entity_type_match(
+            seen,
+            primary_entities=primary,
+            story_type=cluster_type,
+            now=now,
+            cooldown=cooldown,
+        ):
+            logger.info("skipping cluster %s: already covered", cluster_id)
+            continue
         ages = [age for age in (_age_hours(item, now) for item in members) if age is not None]
         newest = max((str(item.get("published") or "") for item in members), default="")
         clusters.append(
             {
-                "id": bucket["id"],
+                "id": cluster_id,
                 "title": bucket["seed"].get("title", ""),
                 "items": members,
                 "entities": _entities(members),
+                "story_type": cluster_type,
                 "newest": newest or None,
                 "age_hours": min(ages) if ages else None,
                 "tiers": sorted({item.get("tier") for item in members if item.get("tier") is not None}),
@@ -546,7 +699,8 @@ __all__ = [
     "DEFAULT_POOL_PATH",
     "DEFAULT_SEEN_PATH",
     "SEEN_COOLDOWN",
-    "cluster_id_for",
+    "FINGERPRINT_FORMAT",
+    "cluster_id_for_urls",
     "cluster_items",
     "contains_entity",
     "load_pool",
@@ -561,6 +715,8 @@ __all__ = [
     "save_seen",
     "shared_entities",
     "similarity",
+    "stage_fingerprint",
+    "stored_fingerprint",
     "story_type",
     "tokens",
 ]

@@ -377,7 +377,10 @@ def run(
         cluster.save_pool(pool, now=now, path=paths.pool)
 
         seen = cluster.load_seen(paths.seen)
-        clusters = cluster.cluster_items(pool.get("items"), now=now, seen=seen)
+        seen_cooldown = dt.timedelta(
+            days=float((raw_config.get("cluster") or {}).get("seen_cooldown_days", cluster.SEEN_COOLDOWN.days))
+        )
+        clusters = cluster.cluster_items(pool.get("items"), now=now, seen=seen, cooldown=seen_cooldown)
         if not clusters:
             return finish("nothing", "no new stories to cover")
         chosen = score_stage.pick(
@@ -456,7 +459,7 @@ def run(
 
             result = publish_stage.publish(
                 article, slug=slug, title=seo["title"], category=seo["category"], mode=publish_mode,
-                cover_path=cover.get("path"), cluster_id=cluster_id,
+                cover_path=cover.get("path"), cluster_id=cluster_id, cluster=chosen,
                 articles_dir=paths.articles_dir, covers_dir=paths.covers_dir,
                 log_path=paths.log, seen_path=paths.seen, now=now,
             )

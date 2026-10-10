@@ -184,8 +184,19 @@ def test_unknown_writer_family_exits_3_and_increments_breaker(tmp_path):
 
 def test_nothing_to_cover_when_cluster_seen(tmp_path):
     paths = make_paths(tmp_path)
-    cluster_id = run_module.cluster.cluster_id_for(dryrun.SAMPLE_TITLE)
-    run_module.cluster.save_seen({"clusters": {cluster_id: {"last_seen": NOW.isoformat()}}}, paths.seen)
+    cluster_id = run_module.cluster.cluster_id_for_urls(["https://a.example/1", "https://b.example/1"])
+    run_module.cluster.save_seen(
+        {
+            "clusters": {
+                cluster_id: {
+                    "first_seen": NOW.isoformat(),
+                    "last_seen": NOW.isoformat(),
+                    "member_urls": ["https://a.example/1", "https://b.example/1"],
+                }
+            }
+        },
+        paths.seen,
+    )
     result = run_module.run(paths=paths, now=NOW, env={}, dry_run=True,
                             link_checker=lambda url: 200, site_checks=STUB_CHECKS)
     assert result.status == "nothing"

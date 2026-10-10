@@ -178,6 +178,64 @@ def test_facts_custom_id_and_output_dir(tmp_path):
     assert (tmp_path / "custom-id.json").exists()
 
 
+def test_facts_reuses_sheet_when_fingerprint_matches(tmp_path):
+    calls = []
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        calls.append(role)
+        return Generation(role=role, provider="mock", model="m", family="f", value={"claims": [claim()]})
+
+    data = gathered(sources=[source(tier=1)])
+    first = facts.facts(data, output_dir=tmp_path, now=NOW, generate=generate)
+    assert calls == ["fast"]
+
+    second = facts.facts(data, output_dir=tmp_path, now=NOW, generate=generate)
+    assert second == first
+    assert second["fingerprint"]["value"] == first["fingerprint"]["value"]
+    assert calls == ["fast"], "the model must not be called again on a fingerprint match"
+
+
+def test_facts_regenerates_when_fingerprint_mismatches(tmp_path):
+    calls = []
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        calls.append(role)
+        return Generation(role=role, provider="mock", model="m", family="f", value={"claims": [claim()]})
+
+    data = gathered(sources=[source(tier=1)])
+    facts.facts(data, output_dir=tmp_path, now=NOW, generate=generate)
+
+    path = tmp_path / "story-1.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["fingerprint"]["value"] = "stale"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    calls.clear()
+    facts.facts(data, output_dir=tmp_path, now=NOW, generate=generate)
+    assert calls == ["fast"], "a stale fingerprint must be re-extracted, not reused"
+    rewritten = json.loads(path.read_text(encoding="utf-8"))
+    assert rewritten["fingerprint"]["value"] != "stale"
+
+
+def test_facts_regenerates_when_file_has_no_fingerprint(tmp_path):
+    calls = []
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        calls.append(role)
+        return Generation(role=role, provider="mock", model="m", family="f", value={"claims": [claim()]})
+
+    data = gathered(sources=[source(tier=1)])
+    facts.facts(data, output_dir=tmp_path, now=NOW, generate=generate)
+    path = tmp_path / "story-1.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["fingerprint"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    calls.clear()
+    facts.facts(data, output_dir=tmp_path, now=NOW, generate=generate)
+    assert calls == ["fast"], "a pre-fingerprint sheet must be re-extracted, not reused"
+
+
 # --- prompt ------------------------------------------------------------------
 
 

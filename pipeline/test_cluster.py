@@ -35,8 +35,21 @@ def test_same_story_matches_near_duplicates():
     assert cluster.same_story(a, c) is False
 
 
-def test_cluster_id_is_stable():
-    assert cluster.cluster_id_for("Hello World") == cluster.cluster_id_for("hello, world!")
+def test_cluster_id_from_member_urls_is_stable():
+    a = ["https://a.example/1", "https://b.example/2"]
+    b = ["https://b.example/2", "https://a.example/1"]
+    assert cluster.cluster_id_for_urls(a) == cluster.cluster_id_for_urls(b)
+
+
+def test_cluster_id_changes_when_member_changes():
+    base = ["https://a.example/1", "https://b.example/2"]
+    assert cluster.cluster_id_for_urls(base) != cluster.cluster_id_for_urls(base[:-1])
+    assert cluster.cluster_id_for_urls(base) != cluster.cluster_id_for_urls(
+        ["https://a.example/1", "https://b.example/2", "https://c.example/3"]
+    )
+    assert cluster.cluster_id_for_urls(base) != cluster.cluster_id_for_urls(
+        ["https://a.example/1", "https://b.example/2-changed"]
+    )
 
 
 def test_merge_items_dedupes_by_link_and_drops_stale():
@@ -76,19 +89,80 @@ def test_cluster_items_groups_and_skips_seen():
     nvidia = next(c for c in clusters if "nvidia" in c["title"].lower())
     assert len(nvidia["items"]) == 2
     assert nvidia["owners"] == ["a", "b"]
+    assert nvidia["story_type"] == "announcement"
 
-    seen = {"clusters": {nvidia["id"]: {"last_seen": NOW.isoformat()}}}
+    seen = {"clusters": {}}
+    cluster.mark_seen(
+        seen, nvidia["id"], now=NOW, member_urls=[m["link"] for m in nvidia["items"]],
+        primary_entities=nvidia["entities"], story_type=nvidia["story_type"],
+    )
     remaining = cluster.cluster_items(items, now=NOW, seen=seen)
-    assert all(c["id"] != nvidia["id"] for c in remaining)
+    assert len(remaining) == 1
+    assert remaining[0]["id"] != nvidia["id"]
 
 
-def test_cooldown_expires():
+def test_seen_story_gaining_a_member_is_still_seen():
+    first = item("Nvidia announces RTX 5090", "https://a.com/1", owner="a")
+    second = item("Nvidia announces RTX 5090 details", "https://b.com/1", owner="b", tier=2)
+    later = item("Nvidia announces RTX 5090 Canadian pricing", "https://c.com/1", owner="c")
+    covered = cluster.cluster_items([first, second], now=NOW)[0]
+    seen = {"clusters": {}}
+    cluster.mark_seen(
+        seen, covered["id"], now=NOW, member_urls=[m["link"] for m in covered["items"]],
+        primary_entities=covered["entities"], story_type=covered["story_type"],
+    )
+
+    grew = cluster.cluster_items([first, second, later], now=NOW, seen=seen)
+    assert grew == []
+
+
+def test_same_entities_but_different_story_type_is_not_seen():
+    sales = item("Gears of War: E-Day tops sales charts", "https://e.com/1")
+    review = item("Gears of War: E-Day review: a tense return", "https://d.com/1")
+    sales_cluster = cluster.cluster_items([sales], now=NOW)[0]
+    assert sales_cluster["story_type"] == "sales"
+    seen = {"clusters": {}}
+    cluster.mark_seen(
+        seen, sales_cluster["id"], now=NOW, member_urls=[sales["link"]],
+        primary_entities=sales_cluster["entities"], story_type=sales_cluster["story_type"],
+    )
+
+    clusters = cluster.cluster_items([review], now=NOW, seen=seen)
+    assert len(clusters) == 1
+    assert clusters[0]["story_type"] == "review"
+
+
+def test_entity_type_match_allowed_after_cooldown():
     older = NOW - dt.timedelta(days=8)
-    cid = cluster.cluster_id_for("Nvidia announces RTX 5090")
-    seen = {"clusters": {cid: {"last_seen": older.isoformat()}}}
-    items = [item("Nvidia announces RTX 5090", "https://a.com/1")]
-    clusters = cluster.cluster_items(items, now=NOW, seen=seen)
-    assert clusters and clusters[0]["id"] == cid
+    covered = cluster.cluster_items([item("Nvidia announces RTX 5090", "https://a.com/1")], now=older)[0]
+    seen = {"clusters": {}}
+    cluster.mark_seen(
+        seen, covered["id"], now=older, member_urls=["https://a.com/1"],
+        primary_entities=covered["entities"], story_type=covered["story_type"],
+    )
+
+    new = item("Nvidia announces RTX 5090 full details", "https://f.com/2")
+    clusters = cluster.cluster_items([new], now=NOW, seen=seen)
+    assert len(clusters) == 1
+    assert clusters[0]["id"] != covered["id"]
+
+
+def test_old_format_seen_json_loads_without_error(tmp_path):
+    old = {
+        "clusters": {
+            "abc123": {
+                "first_seen": "2026-10-01T00:00:00+00:00",
+                "last_seen": "2026-10-01T08:00:00+00:00",
+            }
+        }
+    }
+    path = tmp_path / "seen.json"
+    path.write_text(json.dumps(old), encoding="utf-8")
+
+    seen = cluster.load_seen(path)
+    assert seen["clusters"]["abc123"]["last_seen"] == "2026-10-01T08:00:00+00:00"
+    clusters = cluster.cluster_items([item("Nvidia announces RTX 5090", "https://a.com/1")], now=NOW, seen=seen)
+    assert len(clusters) == 1
 
 
 def test_load_pool_tolerates_bad_file(tmp_path):
@@ -168,7 +242,10 @@ def test_cluster_items_regression_keeps_gears_sales_cluster_only():
              published="2026-10-10T04:00:00+00:00", age_hours=7.0),
     ]
     clusters = cluster.cluster_items(items, now=NOW)
-    earliest = cluster_items_by_id(clusters, cluster.cluster_id_for(GEARS_SALES))
+    gears_id = cluster.cluster_id_for_urls(
+        ["https://a.example/sales", "https://b.example/courts", "https://c.example/selling"]
+    )
+    earliest = cluster_items_by_id(clusters, gears_id)
     titles = [member["title"] for member in earliest["items"]]
     assert set(titles) == {GEARS_SALES, GEARS_COURTS, GEARS_SELLING}
     count_by_id = {}
@@ -192,12 +269,14 @@ def test_cluster_members_must_match_the_seed_not_any_member():
         item(GEARS_REVIEW, "https://c.example/review", published="2026-10-10T08:00:00+00:00", age_hours=3.0),
     ]
     clusters = cluster.cluster_items(items, now=NOW)
-    buckets = {cluster.cluster_id_for(GEARS_SALES): set(), cluster.cluster_id_for(GEARS_REVIEW): set()}
+    sales_id = cluster.cluster_id_for_urls(["https://a.example/sales", "https://b.example/selling"])
+    review_id = cluster.cluster_id_for_urls(["https://c.example/review"])
+    buckets = {sales_id: set(), review_id: set()}
     for c in clusters:
         for member in c["items"]:
             buckets.setdefault(c["id"], set()).add(member["title"])
-    assert buckets[cluster.cluster_id_for(GEARS_SALES)] == {GEARS_SALES, GEARS_SELLING}
-    assert buckets[cluster.cluster_id_for(GEARS_REVIEW)] == {GEARS_REVIEW}
+    assert buckets[sales_id] == {GEARS_SALES, GEARS_SELLING}
+    assert buckets[review_id] == {GEARS_REVIEW}
 
 
 def test_same_story_headlines_from_different_outlets_still_cluster():
