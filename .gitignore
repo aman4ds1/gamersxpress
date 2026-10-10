@@ -9,3 +9,5 @@ venv/
 __pycache__/
 *.pyc
 data/gathered/
+data/candidates/
+data/reports/feed-health.json
