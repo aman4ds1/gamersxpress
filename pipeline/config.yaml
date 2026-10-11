@@ -221,21 +221,148 @@ gates:
     - "without further ado"
 
 # Scoring stage (pipeline/score.py; PLAN.md section 7.4). A story is only
-# covered when its score reaches min_score; recency, tier and outlet count are
-# the inputs, plus an optional per-category boost.
+# covered when it is eligible AND reaches min_score; recency, tier, corroboration
+# and outlet count are the inputs, plus an optional per-category boost.
+#
+# Eligibility (code-only, runs before any model call): a cluster needs a tier-1
+# source, or sources from at least two different owners (two origins inside one
+# article never confirm a story; several articles from the same owner count as
+# one voice). On top of that, a headline matching any format-exclusion pattern
+# is never covered. Each entry is a case-insensitive regex matched against the
+# whole headline; word-boundary anchors (\b) make entries match whole words or
+# phrases, not substrings, so "deal" no longer hits "deal with Sony" while
+# "\b% off\b" still matches "40% off" right next to the percent sign. Editable
+# through ``score.exclude_title_patterns`` in config.yaml.
 score:
-  min_score: 50
+  min_score: 65
+  # Corroborated stories (at least two distinct owners) clear a lower bar:
+  # independent coverage is itself evidence, so min_score_corroborated applies
+  # to them while min_score stays the bar for single-source stories.
+  min_score_corroborated: 55
+  # Each run tries eligible stories in score order and covers the first one
+  # that confirms. max_candidates_per_run caps how many are tried; once
+  # model_call_budget model calls are spent the search stops. Candidates that
+  # fail confirmation are recorded in data/failed.json under "unconfirmed",
+  # keyed by their member-URL hash, and skipped for the same membership until
+  # the failed cooldown lapses.
+  max_candidates_per_run: 3
+  model_call_budget: 12
+  # News value: a headline that matches one of news_verbs (as a whole word or
+  # phrase) earns news_bonus extra points. A borderline single-source story is
+  # then pushed over min_score, while a plain single story without a news signal
+  # profile stays below the bar.
+  news_bonus: 10
+  news_verbs:
+    - launches
+    - release date
+    - price
+    - announces
+    - unveils
+    - acquires
+    - appoints
+    - leadership
+    - delay
+    - delayed
+    - cancels
+    - cancelled
+    - reveals
+    - confirms
+    - launching
+    - arrives
+    - arriving
+    - heading to
+    - coming to
+    - joins
+    - joining
+    - release
+    - released
+    - revealed
+    - officially
+    - pre-order
+    - preorders
+    - update
+    - patch
+  exclude_title_patterns:
+    - '\bpodcast\b'
+    - '\bshare of the week\b'
+    - '\bnext week on xbox\b'
+    - '\bthis week on xbox\b'
+    - '\binto the omniverse\b'
+    - '\bwalkthrough\b'
+    - '\bgiveaway\b'
+    - '\bfree this weekend\b'
+    - '\bfree to play this weekend\b'
+    - '\bfree play days\b'
+    - '\bindie selects\b'
+    - '\bgfn thursday\b'
+    - '\bcoming to xbox game pass\b'
+    - '\bcoming to game pass\b'
+    - '\bto report (?:first|second|third|fourth|fiscal)\b'
+    - '\bconference call\b'
+    - '\bsale ends\b'
+    - '\bdeals\b'
+    - '\bbest deals\b'
+    - '\b% off\b'
+    - '\bprice drop\b'
+    - '\bon sale\b'
+    - '\bdiscount code\b'
+    - '\bon geforce now\b'
+    - '\bplayers'' choice\b'
   weights:
     tier1: 40
     tier2: 15
     owner: 10
     max_owners: 4
+    # Small corroboration bonus: confirmable clusters (a tier-1 source, or two
+    # or more distinct owners) rank above single-source, single-owner stories.
+    corroboration: 10
     fresh_hours: 6
     fresh_bonus: 30
     day_hours: 24
     day_bonus: 20
     two_day_hours: 48
     two_day_bonus: 10
+
+# Topical relevance gate. A cluster is on-topic when any of its member items
+# comes from a source whose `topic` is "gaming". Otherwise it is on-topic only
+# when the seed title or the cluster's named entities contain one of these
+# keywords as a whole word or phrase (word-boundary anchored). Every source in
+# the `sources` block carries a topic, "gaming" or "mixed"; a story that is
+# neither gaming-source nor keyword-bearing is off-topic, annotated as such in
+# the score stage, and never gathered.
+relevance:
+  keywords:
+    - game
+    - games
+    - gaming
+    - gamer
+    - console
+    - playstation
+    - ps5
+    - xbox
+    - nintendo
+    - switch
+    - steam
+    - pc
+    - gpu
+    - geforce
+    - rtx
+    - radeon
+    - ryzen
+    - handheld
+    - vr
+    - esports
+    - dlss
+    - fsr
+    # Product-category phrases: hardware articles that name the product rather
+    # than the company stay on-topic without requiring a brand keyword.
+    - graphics card
+    - graphics cards
+    - video card
+    - cpu
+    - processor
+    - vram
+    - gddr6
 
 # Safety layer (PLAN.md section 11). The kill switch reads PAUSED from the
 # environment; the daily cap reads DAILY_CAP (falling back to this default).
@@ -253,6 +380,7 @@ sources:
   - name: NVIDIA Gaming News
     site: https://nvidianews.nvidia.com
     feed_url: https://nvidianews.nvidia.com/cats/gaming.xml
+    topic: mixed
     tier: 1
     owner: nvidia
     region: global
@@ -260,6 +388,7 @@ sources:
   - name: NVIDIA Blog
     site: https://blogs.nvidia.com
     feed_url: https://feeds.feedburner.com/nvidiablog
+    topic: mixed
     tier: 1
     owner: nvidia
     region: global
@@ -267,6 +396,7 @@ sources:
   - name: PlayStation Blog
     site: https://blog.playstation.com
     feed_url: http://feeds.feedburner.com/psblog
+    topic: gaming
     tier: 1
     owner: sony
     region: global
@@ -274,6 +404,7 @@ sources:
   - name: Xbox Wire
     site: https://news.xbox.com
     feed_url: https://news.xbox.com/en-us/feed/
+    topic: gaming
     tier: 1
     owner: microsoft
     region: global
@@ -281,6 +412,7 @@ sources:
   - name: AMD Newsroom
     site: https://newsroom.amd.com
     feed_url: https://newsroom.amd.com/rss.xml
+    topic: mixed
     tier: 1
     owner: amd
     region: global
@@ -289,6 +421,7 @@ sources:
   - name: Intel Newsroom
     site: https://newsroom.intel.com
     feed_url: https://newsroom.intel.com/feed/
+    topic: mixed
     tier: 1
     owner: intel
     region: global
@@ -299,6 +432,7 @@ sources:
   - name: Tom's Hardware
     site: https://www.tomshardware.com
     feed_url: https://www.tomshardware.com/feeds.xml
+    topic: mixed
     tier: 2
     owner: future
     region: global
@@ -306,6 +440,7 @@ sources:
   - name: TechPowerUp News
     site: https://www.techpowerup.com
     feed_url: https://www.techpowerup.com/rss/news
+    topic: mixed
     tier: 2
     owner: techpowerup
     region: global
@@ -313,6 +448,7 @@ sources:
   - name: GamersNexus
     site: https://gamersnexus.net
     feed_url: https://gamersnexus.net/rss.xml
+    topic: mixed
     tier: 2
     owner: gamersnexus
     region: us
@@ -320,6 +456,7 @@ sources:
   - name: PC Gamer
     site: https://www.pcgamer.com
     feed_url: https://www.pcgamer.com/feeds.xml
+    topic: gaming
     tier: 2
     owner: future
     region: global
@@ -327,6 +464,7 @@ sources:
   - name: Eurogamer
     site: https://www.eurogamer.net
     feed_url: https://www.eurogamer.net/feed
+    topic: gaming
     tier: 2
     owner: ign-entertainment
     region: uk
@@ -335,6 +473,7 @@ sources:
   - name: Rock Paper Shotgun
     site: https://www.rockpapershotgun.com
     feed_url: https://www.rockpapershotgun.com/feed
+    topic: gaming
     tier: 2
     owner: ign-entertainment
     region: uk
@@ -343,6 +482,7 @@ sources:
   - name: VG247
     site: https://www.vg247.com
     feed_url: https://www.vg247.com/feed
+    topic: gaming
     tier: 2
     owner: ign-entertainment
     region: uk
@@ -351,6 +491,7 @@ sources:
   - name: Push Square
     site: https://www.pushsquare.com
     feed_url: https://www.pushsquare.com/feeds/latest
+    topic: gaming
     tier: 2
     owner: hookshot-media
     region: uk
@@ -359,6 +500,7 @@ sources:
   - name: GameSpot
     site: https://www.gamespot.com
     feed_url: https://www.gamespot.com/feeds/mashup/
+    topic: gaming
     tier: 2
     owner: fandom
     region: us
@@ -367,6 +509,7 @@ sources:
   - name: Dot Esports
     site: https://dotesports.com
     feed_url: https://dotesports.com/feed
+    topic: gaming
     tier: 2
     owner: dot-esports
     region: us
@@ -375,6 +518,7 @@ sources:
   - name: Esports News UK
     site: https://esports-news.co.uk
     feed_url: https://esports-news.co.uk/feed
+    topic: gaming
     tier: 2
     owner: esports-news-uk
     region: uk
@@ -382,6 +526,7 @@ sources:
   - name: The Bridge Esports
     site: https://thebridge.in
     feed_url: https://thebridge.in/category/esports/google_feeds.xml
+    topic: gaming
     tier: 2
     owner: the-bridge
     region: india
@@ -389,6 +534,7 @@ sources:
   - name: Respawn (Outlook India)
     site: https://respawn.outlookindia.com
     feed_url: https://respawn.outlookindia.com/rss/gaming
+    topic: gaming
     tier: 2
     owner: outlook-india
     region: india

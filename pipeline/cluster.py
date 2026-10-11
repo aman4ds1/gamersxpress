@@ -643,6 +643,33 @@ def clear_attempt(
     return failed
 
 
+def record_unconfirmed(
+    failed: dict,
+    cluster_id: str,
+    *,
+    now: dt.datetime | None = None,
+) -> dict:
+    """Record a cluster that failed confirmation (``UnconfirmedStory``).
+
+    Keyed by the membership-hash cluster id, so the entry only blocks the exact
+    same source set: when the story gains or loses a member the id changes and
+    the cluster is re-evaluated. Within the failed cooldown the unchanged
+    cluster is skipped by :func:`cluster_items`; afterwards it is retried.
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+    entry = failed.setdefault("unconfirmed", {}).setdefault(str(cluster_id), {})
+    entry["reason"] = "unconfirmed"
+    entry["last_attempt"] = now.isoformat()
+    entry["attempts"] = int(entry.get("attempts") or 0) + 1
+    return failed
+
+
+def clear_unconfirmed(failed: dict, cluster_id: str) -> dict:
+    """Forget an unconfirmed entry (used once the story is covered)."""
+    (failed.get("unconfirmed") or {}).pop(str(cluster_id), None)
+    return failed
+
+
 def mark_seen(
     seen: dict,
     cluster_id: str,
@@ -819,6 +846,12 @@ def cluster_items(
                 if (now - last_attempt) < failed_cooldown:
                     logger.info("skipping cluster %s: failed attempts within cooldown", cluster_id)
                     continue
+        unconfirmed = failed.get("unconfirmed") or {}
+        if str(cluster_id) in unconfirmed:
+            last_attempt = _parse_time(unconfirmed[str(cluster_id)].get("last_attempt"))
+            if last_attempt is not None and (now - last_attempt) < failed_cooldown:
+                logger.info("skipping cluster %s: unconfirmed within cooldown", cluster_id)
+                continue
         if _seen_url_overlap(seen, member_urls) or _seen_entity_type_match(
             seen,
             primary_entities=primary,
@@ -837,6 +870,7 @@ def cluster_items(
                 "items": members,
                 "entities": _entities(members),
                 "story_type": cluster_type,
+                "category": category_of(bucket["seed"].get("title", ""), _entities(members)),
                 "newest": newest or None,
                 "age_hours": min(ages) if ages else None,
                 "tiers": sorted({item.get("tier") for item in members if item.get("tier") is not None}),
@@ -854,6 +888,76 @@ def cluster_items(
     return clusters
 
 
+def confirmable(cluster: dict) -> bool:
+    """A cluster can be confirmed, before any model call, when it has a tier-1
+    source or sources from at least two different owners.
+
+    This mirrors the facts stage's confirmation rules conservatively: two
+    origins inside one article never confirm a story, and several articles
+    from the same owner count as one voice, so a single non-tier-1 outlet
+    cannot confirm on its own. Clusters that fail here are never gathered.
+    """
+    tiers = {int(tier) for tier in (cluster.get("tiers") or []) if tier not in (None, "")}
+    if 1 in tiers:
+        return True
+    owners = {str(owner).strip().lower() for owner in (cluster.get("owners") or []) if str(owner).strip()}
+    return len(owners) >= 2
+
+
+def excluded_title_pattern(title: str, patterns: Iterable[str] | None = None) -> str | None:
+    """The first format pattern a headline matches, else None.
+
+    Patterns are matched case-insensitively. A pattern that does not compile
+    as a regex is treated as a plain case-insensitive substring, so simple
+    words and phrases (``podcast``, ``free weekend``) and real regexes work
+    from the same editable list.
+    """
+    title = str(title or "").lower()
+    if not title:
+        return None
+    for pattern in patterns or ():
+        pattern = str(pattern or "")
+        if not pattern:
+            continue
+        try:
+            if re.search(pattern, title, re.IGNORECASE) is not None:
+                return pattern
+        except re.error:
+            if pattern.lower() in title:
+                return pattern
+    return None
+
+
+#: Ordered: the first category whose keyword matches wins. More specific before
+#: the generic "gaming-news" fallback.
+_CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("playstation", ("playstation", "ps5")),
+    ("xbox", ("xbox", "game pass")),
+    ("nintendo", ("nintendo", "switch")),
+    ("hardware", ("gpu", "geforce", "rtx", "radeon", "ryzen", "intel core")),
+    ("esports", ("esports",)),
+]
+DEFAULT_CATEGORY = "gaming-news"
+
+
+def category_of(title: str, entities: Iterable[str] = ()) -> str:
+    """Classify a cluster from content alone, never from its feed.
+
+    Categories are assigned from ``title`` and ``entities`` by a fixed keyword
+    map (ordered, first match wins): ``playstation``/``ps5`` -> playstation,
+    ``xbox``/``game pass`` -> xbox, ``nintendo``/``switch`` -> nintendo,
+    ``gpu``/``geforce``/``rtx``/``radeon``/``ryzen``/``intel core`` -> hardware,
+    ``esports`` -> esports, anything else -> gaming-news. Keywords match whole
+    words or phrases (word-boundary anchored) so a headline from any feed lands
+    in the same category.
+    """
+    haystack = " ".join([str(title or ""), *[str(entity) for entity in entities or []]]).lower()
+    for category, keywords in _CATEGORY_KEYWORDS:
+        if any(re.search(rf"\b{re.escape(keyword)}\b", haystack) for keyword in keywords):
+            return category
+    return DEFAULT_CATEGORY
+
+
 __all__ = [
     "DEFAULT_POOL_PATH",
     "DEFAULT_SEEN_PATH",
@@ -864,9 +968,11 @@ __all__ = [
     "FINGERPRINT_FORMAT",
     "cluster_id_for_urls",
     "cluster_items",
+    "confirmable",
     "contains_entity",
     "event_overlap",
     "event_words",
+    "excluded_title_pattern",
     "load_pool",
     "load_seen",
     "mark_seen",
@@ -884,8 +990,12 @@ __all__ = [
     "story_type",
     "record_attempt",
     "clear_attempt",
+    "record_unconfirmed",
+    "clear_unconfirmed",
     "load_failed",
     "save_failed",
+    "category_of",
+    "DEFAULT_CATEGORY",
     "_story_key",
     "tokens",
 ]

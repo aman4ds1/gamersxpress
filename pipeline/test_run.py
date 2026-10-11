@@ -1,7 +1,9 @@
 import datetime as dt
 import json
+from pathlib import Path
 
 import pytest
+import yaml
 
 import dryrun
 import providers
@@ -11,6 +13,29 @@ import score
 
 NOW = dt.datetime(2026, 10, 9, 12, tzinfo=dt.timezone.utc)
 STUB_CHECKS = lambda text, slug: (True, "stub")  # noqa: E731
+
+
+def item(title, link, *, owner, tier=1, age_hours=1):
+    """An ingest item in the same shape :func:`dryrun.sample_pool` emits."""
+    return {
+        "title": title,
+        "link": link,
+        "source_name": f"{owner} outlet",
+        "tier": tier,
+        "owner": owner,
+        "region": "us",
+        "published": (NOW - dt.timedelta(hours=age_hours)).isoformat(),
+        "age_hours": float(age_hours),
+    }
+
+
+def ingest_fn_for(items):
+    """Stub ingest stage that returns ``items`` instead of running feeds."""
+
+    def ingest_fn(config_path=None, output_dir=None, cache_path=None, health_path=None):
+        return {"items": items}
+
+    return ingest_fn
 
 
 def make_paths(tmp_path):
@@ -285,6 +310,281 @@ def test_later_pass_removes_story_from_failed_list(tmp_path):
     run_module.run(paths=paths, now=NOW, env={}, dry_run=True, scenario="pass",
                    link_checker=lambda url: 200, site_checks=STUB_CHECKS)
     assert failed_entries(paths) == {}
+
+
+# --- candidate search ---------------------------------------------------------
+
+
+def run_with_items(tmp_path, items, *, now=None, config_path=None, **overrides):
+    kwargs = dict(
+        paths=make_paths(tmp_path),
+        now=now or NOW,
+        env={},
+        ingest_fn=ingest_fn_for(items),
+        gather_fn=lambda chosen, output_dir=None, id=None: dryrun.sample_gathered(id, now or NOW),
+        generate=dryrun.make_generate("pass"),
+        link_checker=lambda url: 200,
+        site_checks=STUB_CHECKS,
+    )
+    if config_path is not None:
+        kwargs["config_path"] = str(config_path)
+    kwargs.update(overrides)
+    return run_module.run(**kwargs)
+
+
+def latest_candidates_report(paths):
+    files = sorted(paths.reports_dir.glob("candidates-*.json"))
+    assert files, "expected a candidates report under data/reports"
+    return json.loads(files[-1].read_text(encoding="utf-8"))
+
+
+def test_unconfirmed_first_then_confirmed_publishes_second(tmp_path):
+    paths = make_paths(tmp_path)
+    first = [
+        item("Call of Duty game returns to a modern campaign", "https://a.example/1", owner="owner-a"),
+        item("Call of Duty game returns to a modern campaign", "https://a.example/2", owner="owner-b"),
+    ]
+    second = [
+        item(dryrun.SAMPLE_TITLE, "https://b.example/1", owner="owner-c", age_hours=2),
+    ]
+
+    def facts_fn(gathered, *, id, output_dir, generate, run_state, now, title, entities, **kwargs):
+        if str(title).startswith("Call of Duty"):
+            raise run_module.facts_stage.UnconfirmedStory(f"single voice: {title}")
+        return run_module.facts_stage.facts(
+            gathered, id=id, output_dir=output_dir, generate=generate,
+            run_state=run_state, now=now, title=title, entities=entities,
+        )
+
+    result = run_with_items(
+        tmp_path, first + second,
+        facts_fn=facts_fn,
+    )
+    assert result.status == "completed"
+    assert result.exit_code == 0
+    assert list(paths.articles_dir.glob("*.md"))
+
+    # The unconfirmed candidate is recorded keyed by its member-URL hash, not
+    # as a writer/failed story attempt.
+    failed = json.loads(paths.failed.read_text(encoding="utf-8"))
+    assert failed["stories"] == {}
+    first_id = run_module.cluster.cluster_id_for_urls(["https://a.example/1", "https://a.example/2"])
+    assert first_id in failed["unconfirmed"]
+    assert failed["unconfirmed"][first_id]["reason"] == "unconfirmed"
+    assert failed["unconfirmed"][first_id]["last_attempt"] == NOW.isoformat()
+
+    report = latest_candidates_report(paths)
+    assert report["outcome"] == "story chosen"
+    assert [c["title"] for c in report["candidates"]] == [
+        first[0]["title"], second[0]["title"],
+    ]
+    assert report["candidates"][0]["confirmed"] is False
+    assert report["candidates"][0]["reason"] == "unconfirmed"
+    assert report["candidates"][1]["confirmed"] is True
+    assert report["candidates"][1]["reason"] is None
+
+
+def test_all_candidates_unconfirmed_is_nothing_without_breaker_change(tmp_path):
+    paths = make_paths(tmp_path)
+    items = [
+        item("Gears of War game film casting announced", "https://c.example/1", owner="owner-c1", age_hours=1),
+        item("The Legend of Zelda game movie adds a director", "https://c.example/2", owner="owner-c2", age_hours=2),
+        item("Rocket League introduces a new game mode", "https://c.example/3", owner="owner-c3", age_hours=3),
+    ]
+
+    def always_unconfirmed(gathered, *, id=None, output_dir=None, generate=None,
+                           run_state=None, now=None, title=None, entities=None, **kwargs):
+        raise run_module.facts_stage.UnconfirmedStory(f"not confirmed: {title}")
+
+    result = run_with_items(tmp_path, items, facts_fn=always_unconfirmed)
+    assert result.status == "nothing"
+    assert result.exit_code == 0
+    assert not list(paths.articles_dir.glob("*.md"))
+
+    # Nothing-to-cover never touches the breaker.
+    if paths.breaker.exists():
+        breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
+        assert breaker["consecutive_failures"] == 0
+        assert breaker["open"] is False
+
+    failed = json.loads(paths.failed.read_text(encoding="utf-8"))
+    assert len(failed["unconfirmed"]) == 3
+    assert all(entry["reason"] == "unconfirmed" for entry in failed["unconfirmed"].values())
+    assert failed["stories"] == {}
+
+    report = latest_candidates_report(paths)
+    assert report["outcome"] == "no confirmed story"
+    assert len(report["candidates"]) == 3
+    assert all(c["confirmed"] is False for c in report["candidates"])
+    assert all(c["reason"] == "unconfirmed" for c in report["candidates"])
+
+
+def test_unconfirmed_cluster_skipped_until_membership_changes(tmp_path):
+    paths = make_paths(tmp_path)
+    base = [
+        item("Nintendo Switch 2 passes 20 million sold", "https://n.example/1", owner="owner-n1"),
+        item("Nintendo Switch 2 passes 20 million sold", "https://n.example/2", owner="owner-n2"),
+    ]
+    calls = {"gather": 0, "facts": 0}
+
+    def gather_fn(chosen, *, output_dir=None, id=None):
+        calls["gather"] += 1
+        return dryrun.sample_gathered(id, NOW)
+
+    def always_unconfirmed(gathered, *, id=None, output_dir=None, generate=None,
+                           run_state=None, now=None, title=None, entities=None, **kwargs):
+        calls["facts"] += 1
+        raise run_module.facts_stage.UnconfirmedStory(f"not confirmed: {title}")
+
+    def run_ingest(items, now=NOW):
+        return run_with_items(tmp_path, items, now=now, gather_fn=gather_fn,
+                              facts_fn=always_unconfirmed)
+
+    result = run_ingest(base)
+    assert result.status == "nothing"
+    first_id = run_module.cluster.cluster_id_for_urls(["https://n.example/1", "https://n.example/2"])
+    failed = json.loads(paths.failed.read_text(encoding="utf-8"))
+    assert first_id in failed["unconfirmed"]
+    assert calls["gather"] == 1
+
+    # Same membership within the failed cooldown: skipped, no model call.
+    result = run_ingest(base, now=NOW + dt.timedelta(hours=1))
+    assert result.status == "nothing"
+    assert calls["gather"] == 1, "an unchanged unconfirmed cluster must not be retried"
+
+    # A new member changes the membership hash, so the story is re-evaluated.
+    grew = base + [item("Nintendo Switch 2 passes 20 million sold", "https://n.example/3", owner="owner-n3")]
+    result = run_ingest(grew, now=NOW + dt.timedelta(hours=2))
+    assert result.status == "nothing"
+    assert calls["gather"] == 2
+    second_id = run_module.cluster.cluster_id_for_urls(
+        ["https://n.example/1", "https://n.example/2", "https://n.example/3"]
+    )
+    assert second_id != first_id
+    failed = json.loads(paths.failed.read_text(encoding="utf-8"))
+    assert first_id in failed["unconfirmed"]
+    assert second_id in failed["unconfirmed"]
+
+
+def test_model_call_budget_stops_candidate_attempts(tmp_path):
+    paths = make_paths(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    source_config = Path(run_module.__file__).resolve().parent / "config.yaml"
+    config = yaml.safe_load(source_config.read_text(encoding="utf-8"))
+    config.setdefault("score", {})["model_call_budget"] = 1
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    items = [
+        item("Halo returns to Xbox Game Pass", "https://h.example/1", owner="owner-h1", age_hours=1),
+        item("A new Titanfall game campaign is in development", "https://t.example/1", owner="owner-t1", age_hours=2),
+    ]
+    calls = {"gather": 0}
+
+    def gather_fn(chosen, *, output_dir=None, id=None):
+        calls["gather"] += 1
+        return dryrun.sample_gathered(id, NOW)
+
+    def unconfirmed_after_one_call(gathered, *, id=None, output_dir=None, generate=None,
+                                   run_state=None, now=None, title=None, entities=None, **kwargs):
+        generation = providers.Generation("fast", "mock", "mock-fast", "google", "{}")
+        (run_state or providers.RunState()).record(generation)
+        raise run_module.facts_stage.UnconfirmedStory(f"not confirmed: {title}")
+
+    result = run_with_items(
+        tmp_path, items, config_path=config_path,
+        gather_fn=gather_fn, facts_fn=unconfirmed_after_one_call,
+    )
+    assert result.status == "nothing"
+    assert result.exit_code == 0
+    assert calls["gather"] == 1, "the second candidate must not be gathered once the budget is spent"
+
+    failed = json.loads(paths.failed.read_text(encoding="utf-8"))
+    assert len(failed["unconfirmed"]) == 1, "only the first candidate was attempted"
+
+    report = latest_candidates_report(paths)
+    assert report["outcome"] == "no confirmed story"
+    assert [c["reason"] for c in report["candidates"]] == ["unconfirmed", "model budget spent"]
+    assert report["candidates"][0]["model_calls"] == 1
+    assert report["candidates"][0]["confirmed"] is False
+    assert report["candidates"][1]["confirmed"] is None
+    assert report["candidates"][1]["model_calls"] == 1
+    assert report["candidates"][1]["title"] == items[1]["title"]
+
+
+def test_corroborated_cluster_below_min_score_is_tried(tmp_path):
+    paths = make_paths(tmp_path)
+    # Two tier-2 owners, 48h old: 15 + 2*10 (owners) + 10 (corroboration)
+    # + 10 (two-day) = 55. That clears min_score_corroborated (55) but sits
+    # below the 65 min_score a single-source story would need.
+    items = [
+        item("A quiet game story from two outlets", "https://p.example/1",
+             owner="owner-p1", tier=2, age_hours=48),
+        item("A quiet game story from two outlets", "https://p.example/2",
+             owner="owner-p2", tier=2, age_hours=48),
+    ]
+    calls = {"gather": 0}
+
+    def gather_fn(chosen, *, output_dir=None, id=None):
+        calls["gather"] += 1
+        return dryrun.sample_gathered(id, NOW)
+
+    def always_unconfirmed(gathered, *, id=None, output_dir=None, generate=None,
+                           run_state=None, now=None, title=None, entities=None, **kwargs):
+        raise run_module.facts_stage.UnconfirmedStory(f"not confirmed: {title}")
+
+    result = run_with_items(tmp_path, items, gather_fn=gather_fn, facts_fn=always_unconfirmed)
+
+    assert result.status == "nothing"
+    assert calls["gather"] == 1, "a corroborated cluster scoring 55 must be tried"
+    report = latest_candidates_report(paths)
+    assert [c["title"] for c in report["candidates"]] == [items[0]["title"]]
+    assert report["candidates"][0]["score"] == 55
+    assert report["candidates"][0]["owners"] == ["owner-p1", "owner-p2"]
+
+
+def test_single_source_below_min_score_is_not_tried(tmp_path):
+    paths = make_paths(tmp_path)
+    # One tier-1 source, 50h old: 40 + 10 (owner) + 10 (corroboration) = 60,
+    # below the 65 a single-source story needs, so it is never gathered.
+    items = [
+        item("A quiet game story from one outlet", "https://s.example/1",
+             owner="owner-s1", age_hours=50),
+    ]
+    calls = {"gather": 0}
+
+    def gather_fn(chosen, *, output_dir=None, id=None):
+        calls["gather"] += 1
+        return dryrun.sample_gathered(id, NOW)
+
+    result = run_with_items(tmp_path, items, gather_fn=gather_fn)
+
+    assert result.status == "nothing"
+    assert result.exit_code == 0
+    assert calls["gather"] == 0, "a single-source story scoring 60 must not be tried"
+    assert not list(paths.reports_dir.glob("candidates-*.json"))
+
+
+def test_only_below_threshold_clusters_is_nothing_to_cover(tmp_path):
+    paths = make_paths(tmp_path)
+    items = [
+        item("A quiet game story from one outlet", "https://s.example/1",
+             owner="owner-s1", age_hours=50),
+        item("Rocket League introduces a new game mode", "https://s.example/2",
+             owner="owner-s2", age_hours=52),
+    ]
+    calls = {"gather": 0}
+
+    def gather_fn(chosen, *, output_dir=None, id=None):
+        calls["gather"] += 1
+        return dryrun.sample_gathered(id, NOW)
+
+    result = run_with_items(tmp_path, items, gather_fn=gather_fn)
+
+    assert result.status == "nothing"
+    assert result.exit_code == 0
+    assert result.error == "no story scored high enough"
+    assert calls["gather"] == 0
+    assert not list(paths.articles_dir.glob("*.md"))
 
 
 # --- one repair attempt ------------------------------------------------------

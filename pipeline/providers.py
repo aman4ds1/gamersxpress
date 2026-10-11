@@ -148,8 +148,12 @@ class RunState:
     generations: dict[str, Generation] = field(default_factory=dict)
     failures: list[str] = field(default_factory=list)
     writers: list[Generation] = field(default_factory=list)
+    # Total recorded generations this run; gates the candidate search's model
+    # budget (``score.model_call_budget``) in run.py.
+    calls: int = 0
 
     def record(self, generation: Generation) -> None:
+        self.calls += 1
         # Keep every writer call: the original draft and, when the verifier
         # rejects it, the repair. ``generations["writer"]`` stays the most
         # recent one, so ``writer_family`` is the family of the text currently

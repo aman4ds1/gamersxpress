@@ -2,7 +2,11 @@
 
 One run does, in order: pause/cap checks, ingest (merged into
 ``data/pool.json``), cluster, score, gather, facts, write, verify, SEO, internal
-links, cover, publish gates and publish. At most one story is covered per run.
+links, cover, publish gates and publish. Eligible stories are tried in score
+order (up to ``score.max_candidates_per_run``, gated by the model budget) and
+the first one whose facts confirm is covered. At most one story is covered per
+run, and unconfirmed candidates land in ``data/failed.json`` instead of being
+immediately forgotten.
 
 A single :class:`~providers.RunState` is created per run and threaded through
 every stage that calls ``providers.generate`` (facts, writer, verifier, SEO), so
@@ -404,26 +408,145 @@ def run(
         )
         if not clusters:
             return finish("nothing", "no new stories to cover")
-        chosen = score_stage.pick(
-            clusters,
-            min_score=float(score_section.get("min_score", score_stage.DEFAULT_MIN_SCORE)),
-            weights=score_section.get("weights"),
-            performance=performance,
+        min_score = float(score_section.get("min_score", score_stage.DEFAULT_MIN_SCORE))
+        min_score_corroborated = float(
+            score_section.get("min_score_corroborated", score_stage.DEFAULT_MIN_SCORE_CORROBORATED)
+        )
+        max_candidates = int(
+            score_section.get("max_candidates_per_run", score_stage.DEFAULT_MAX_CANDIDATES_PER_RUN)
+        )
+        budget = int(
+            score_section.get("model_call_budget", score_stage.DEFAULT_MODEL_CALL_BUDGET)
+        )
+        weights = score_section.get("weights")
+        # Build the candidate list with score.pick(): it returns the highest
+        # eligible story that reaches its own threshold via score.min_score_for,
+        # so a cluster with two or more distinct owners clears
+        # min_score_corroborated while a single-source story must reach
+        # min_score. Picked stories are removed and the search repeats until it
+        # has max_candidates_per_run of them (or none are left).
+        candidates: list[dict] = []
+        remaining = list(clusters)
+        while len(candidates) < max_candidates:
+            candidate = score_stage.pick(
+                remaining,
+                min_score=min_score,
+                min_score_corroborated=min_score_corroborated,
+                weights=weights,
+                performance=performance,
+            )
+            if candidate is None:
+                break
+            candidates.append(candidate)
+            remaining = [
+                cluster_dict for cluster_dict in remaining
+                if cluster_dict.get("id") != candidate.get("id")
+            ]
+        if not candidates:
+            return finish("nothing", "no story scored high enough")
+
+        # Eligible stories are tried in score order and the first one whose
+        # facts confirm is covered. Each attempt costs model calls (one per
+        # source) so the search stops once the recorded budget is spent. An
+        # unconfirmed candidate is recorded in data/failed.json keyed by its
+        # member-URL hash: the same membership is not retried within the failed
+        # cooldown, but when the story gains or loses a source it gets a fresh
+        # chance. Candidates are written to a per-run report.
+        candidates_report: list[dict] = []
+
+        def _candidate_entry(cluster_dict: dict, **overrides: Any) -> dict:
+            entry: dict[str, Any] = {
+                "cluster_id": cluster_dict.get("id"),
+                "title": cluster_dict.get("title"),
+                "story_type": cluster_dict.get("story_type"),
+                "category": cluster_dict.get("category"),
+                "score": cluster_dict.get("score"),
+                "tiers": cluster_dict.get("tiers"),
+                "owners": cluster_dict.get("owners"),
+                "source_count": len(cluster_dict.get("items") or []),
+                "confirmed": None,
+                "reason": None,
+                "outcome": None,
+                "model_calls": run_state.calls,
+            }
+            entry.update(overrides)
+            return entry
+
+        def _write_candidates_report(outcome: str) -> None:
+            payload = {
+                "generated_at": now.isoformat(),
+                "outcome": outcome,
+                "max_candidates_per_run": max_candidates,
+                "model_call_budget": budget,
+                "candidates": candidates_report,
+            }
+            file_name = f"candidates-{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+            paths.reports_dir.mkdir(parents=True, exist_ok=True)
+            (paths.reports_dir / file_name).write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            logger.info(
+                "candidate search: outcome=%s models_called=%d/%d candidates=%d",
+                outcome, run_state.calls, budget, len(candidates_report),
+            )
+            for entry in candidates_report:
+                tiers = ",".join(str(tier) for tier in entry.get("tiers") or []) or "-"
+                owners = ",".join(str(owner) for owner in entry.get("owners") or []) or "-"
+                logger.info(
+                    "candidate: %r sources(tiers=%s owners=%s source_count=%s) "
+                    "confirmed=%s reason=%s calls=%d",
+                    entry.get("title"), tiers, owners, entry.get("source_count"),
+                    entry.get("confirmed"), entry.get("reason"), entry.get("model_calls"),
+                )
+
+        chosen = None
+        cluster_id = None
+        gathered = None
+        facts = None
+        for candidate in candidates:
+            cluster_id = candidate["id"]
+            if run_state.calls >= budget:
+                candidates_report.append(
+                    _candidate_entry(candidate, reason="model budget spent", outcome="skipped")
+                )
+                logger.info(
+                    "model budget spent (%d/%d); stopping candidate search",
+                    run_state.calls, budget,
+                )
+                break
+            if dry_run:
+                gathered = dryrun_stage.sample_gathered(cluster_id, now)
+            else:
+                gathered = gather_fn(candidate, output_dir=paths.gathered_dir, id=cluster_id)
+            try:
+                facts = facts_fn(
+                    gathered, id=cluster_id, output_dir=paths.facts_dir,
+                    generate=generate, run_state=run_state, now=now,
+                    title=candidate.get("title"), entities=candidate.get("entities"),
+                )
+            except facts_stage.UnconfirmedStory:
+                cluster.record_unconfirmed(failed, cluster_id, now=now)
+                cluster.save_failed(failed, paths.failed)
+                candidates_report.append(
+                    _candidate_entry(candidate, confirmed=False, reason="unconfirmed", outcome="dropped")
+                )
+                logger.warning("candidate %s not covered: unconfirmed", cluster_id)
+                gathered = None
+                facts = None
+                continue
+            chosen = candidate
+            candidates_report.append(
+                _candidate_entry(candidate, confirmed=True, outcome="selected")
+            )
+            break
+
+        _write_candidates_report(
+            "story chosen" if chosen is not None else "no confirmed story"
         )
         if chosen is None:
-            return finish("nothing", "no story scored high enough")
-        cluster_id = chosen["id"]
-
-        if dry_run:
-            gathered = dryrun_stage.sample_gathered(cluster_id, now)
-        else:
-            gathered = gather_fn(chosen, output_dir=paths.gathered_dir, id=cluster_id)
-
-        facts = facts_fn(
-            gathered, id=cluster_id, output_dir=paths.facts_dir,
-            generate=generate, run_state=run_state, now=now,
-            title=chosen.get("title"), entities=chosen.get("entities"),
-        )
+            if not candidates_report:
+                return finish("nothing", "model budget spent before any candidate could be tried")
+            return finish("nothing", "no eligible candidate confirmed itself")
 
         writer = write_fn(facts, run_state=run_state, generate=generate)
 
@@ -531,6 +654,7 @@ def run(
         cluster.clear_attempt(
             failed, primary_entities=chosen.get("entities"), story_type=chosen.get("story_type")
         )
+        cluster.clear_unconfirmed(failed, cluster_id)
         cluster.save_failed(failed, paths.failed)
         reset_breaker(breaker)
         save_breaker(breaker, paths.breaker)
@@ -546,6 +670,8 @@ def run(
         logger.warning("run skipped: %s", exc)
         return finish("skipped", str(exc))
     except (facts_stage.UnconfirmedStory, facts_stage.FactsError) as exc:
+        if candidates_report:
+            _write_candidates_report("facts error")
         save_breaker(breaker, paths.breaker)
         logger.warning("story dropped: %s", exc)
         return finish("nothing", str(exc))

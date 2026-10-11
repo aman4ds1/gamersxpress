@@ -4,11 +4,13 @@ import json
 import cluster
 
 
-def item(title, link, *, tier=1, owner="o1", published="2026-10-09T10:00:00+00:00", age_hours=2.0):
+def item(
+    title, link, *, tier=1, owner="o1", published="2026-10-09T10:00:00+00:00", age_hours=2.0, source_name=None
+):
     return {
         "title": title,
         "link": link,
-        "source_name": owner,
+        "source_name": source_name if source_name is not None else owner,
         "tier": tier,
         "owner": owner,
         "region": "us",
@@ -447,4 +449,27 @@ def test_failed_json_round_trip(tmp_path):
     assert entry["last_attempt"] == NOW.isoformat()
     assert entry["failure_reason"] == "gate failure"
     assert entry["cluster_id"] == "abc123"
+
+
+# --- feed-independent category derivation ------------------------------------
+
+
+def test_category_of_maps_content_keywords():
+    assert cluster.category_of("PS5 Pro restock date", []) == "playstation"
+    assert cluster.category_of("A Game Pass subscriber", []) == "xbox"
+    assert cluster.category_of("Nintendo Switch 2 price", []) == "nintendo"
+    assert cluster.category_of("A cloudy week", ["RTX 5090"]) == "hardware"
+    assert cluster.category_of("Intel Core Ultra 9 at retail", []) == "hardware"
+    assert cluster.category_of("Esports World Cup finals", []) == "esports"
+    assert cluster.category_of("A quiet news week", []) == "gaming-news"
+
+
+def test_category_is_content_based_not_feed_based():
+    ps = item("PlayStation 5 refresh quietly announced", "https://ps.example/1",
+              owner="sony", source_name="PlayStation Blog")
+    xb = item("PlayStation 5 refresh quietly announced", "https://xb.example/1",
+              owner="microsoft", source_name="Xbox Wire")
+    clusters = cluster.cluster_items([ps, xb], now=NOW)
+    assert len(clusters) == 1
+    assert clusters[0]["category"] == "playstation"
 

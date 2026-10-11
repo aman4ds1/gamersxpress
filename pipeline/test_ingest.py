@@ -57,6 +57,7 @@ def base_source(**overrides) -> dict:
         "owner": "example-media",
         "region": "us",
         "categories": ["gaming-news"],
+        "topic": "gaming",
     }
     source.update(overrides)
     return source
@@ -119,6 +120,18 @@ def test_load_sources_missing_categories_refuses_to_run(tmp_path):
         ingest.load_sources(path)
 
 
+def test_load_sources_missing_topic_refuses_to_run(tmp_path):
+    path = write_sources_config(tmp_path, [base_source(topic=None)])
+    with pytest.raises(ConfigError, match="topic"):
+        ingest.load_sources(path)
+
+
+def test_load_sources_invalid_topic_refuses_to_run(tmp_path):
+    path = write_sources_config(tmp_path, [base_source(topic="fintech")])
+    with pytest.raises(ConfigError, match="invalid topic"):
+        ingest.load_sources(path)
+
+
 def test_load_sources_empty_list_refuses_to_run(tmp_path):
     path = write_sources_config(tmp_path, [])
     with pytest.raises(ConfigError, match="sources"):
@@ -129,6 +142,7 @@ def test_shipped_config_sources_validate():
     sources = ingest.load_sources()
     assert len(sources) >= 19
     assert all(s["tier"] in (1, 2, 3) for s in sources)
+    assert all(s["topic"] in ("gaming", "mixed") for s in sources)
 
 
 # --- URL normalization -------------------------------------------------------

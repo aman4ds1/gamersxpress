@@ -2,7 +2,8 @@
 
 Reads the ``sources`` block from ``pipeline/config.yaml`` and validates it at
 startup (every entry needs name, site, feed_url, tier 1/2/3, owner, region,
-categories). Each feed is fetched once with a GamersXpress User-Agent, a timeout,
+categories, and topic "gaming" or "mixed"). Each feed is fetched once with a
+GamersXpress User-Agent, a timeout,
 and a short delay between requests. Items older than 48 hours are dropped, links
 are normalized, and the kept items are written to
 ``data/candidates/<timestamp>.json``.
@@ -51,7 +52,8 @@ DEFAULT_CACHE_PATH = PROJECT_ROOT / "data" / "feed-cache.json"
 DEFAULT_HEALTH_PATH = PROJECT_ROOT / "data" / "reports" / "feed-health.json"
 
 VALID_TIERS: tuple[int, ...] = (1, 2, 3)
-REQUIRED_FIELDS: tuple[str, ...] = ("name", "site", "feed_url", "tier", "owner", "region", "categories")
+VALID_TOPICS: tuple[str, ...] = ("gaming", "mixed")
+REQUIRED_FIELDS: tuple[str, ...] = ("name", "site", "feed_url", "tier", "owner", "region", "categories", "topic")
 USER_AGENT = "GamersXpress/0.1 (+https://gamersxpress.com; news-pipeline)"
 FETCH_TIMEOUT_SECONDS = 20
 REQUEST_DELAY_SECONDS = 1.0
@@ -152,6 +154,10 @@ def load_sources(path: str | Path | None = None) -> list[dict]:
             )
         if not isinstance(entry.get("categories"), list) or not entry.get("categories"):
             problems.append(f"{path}: {label} categories must be a non-empty list")
+        if entry.get("topic") not in VALID_TOPICS:
+            problems.append(
+                f"{path}: {label} has invalid topic {entry.get('topic')!r}; expected one of {VALID_TOPICS}"
+            )
     if problems:
         raise ConfigError("; ".join(problems))
     return sources
