@@ -390,6 +390,9 @@ def run(
         failed_cooldown_hours = int(
             cluster_section.get("failed_cooldown_hours", cluster.DEFAULT_FAILED_COOLDOWN_HOURS)
         )
+        min_event_overlap = int(
+            cluster_section.get("min_event_overlap", cluster.DEFAULT_EVENT_OVERLAP)
+        )
         clusters = cluster.cluster_items(
             pool.get("items"),
             now=now,
@@ -397,6 +400,7 @@ def run(
             failed=failed,
             cooldown=seen_cooldown,
             failed_cooldown_hours=failed_cooldown_hours,
+            min_event_overlap=min_event_overlap,
         )
         if not clusters:
             return finish("nothing", "no new stories to cover")

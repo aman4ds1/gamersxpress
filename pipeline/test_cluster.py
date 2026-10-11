@@ -297,6 +297,80 @@ def test_same_story_headlines_from_different_outlets_still_cluster():
     assert ["co-a", "co-b"] in owners.values()
 
 
+# --- regression: a shared entity alone must not fuse unrelated stories --------
+#
+# The three Arc Raiders headlines below share only the entity "arc raiders";
+# their event words (split, anti-cheat, player count) do not overlap, so each
+# is its own story. Before the event-key rule they merged through the shared
+# leading subject.
+
+ARC_SPLIT = "Arc Raiders could eventually be split into PvE and PvP, says executive producer"
+ARC_CHEAT = "Arc Raiders publisher developing AI anti-cheat stack in escalating war with cheaters"
+ARC_COUNT = "Arc Raiders Jumps to Six-Month High Player Count With 2.0 Update and Free Weekend"
+ARC_CHEAT_RETELL = "Arc Raiders creator is building an anti-cheat system to fight cheaters"
+
+COD_DMZ_GUIDE = "Everything you need to know about DMZ mode in Call of Duty: Modern Warfare 4"
+COD_DMZ_FEATURES = "DMZ — 5 Features to Get Excited for in Call of Duty: Modern Warfare 4’s New Mode"
+COD_EARLY_ACCESS = "Call Of Duty: MW4 Early Access Also Includes DMZ, Here’s How To Get In"
+
+
+def test_shared_entity_alone_does_not_merge_arc_raiders():
+    for left, right in (
+        (ARC_SPLIT, ARC_CHEAT),
+        (ARC_SPLIT, ARC_COUNT),
+        (ARC_CHEAT, ARC_COUNT),
+    ):
+        assert cluster.shared_entities(left, right)
+        assert cluster.event_overlap(left, right) == 0
+        assert cluster.same_story({"title": left}, {"title": right}) is False
+
+
+def test_arc_raiders_headlines_stay_in_separate_clusters():
+    items = [
+        item(ARC_SPLIT, "https://a.example/split", owner="eurogamer", tier=2),
+        item(ARC_CHEAT, "https://b.example/cheat", owner="tomshardware", tier=2),
+        item(ARC_COUNT, "https://c.example/count", owner="techpowerup", tier=2),
+    ]
+    clusters = cluster.cluster_items(items, now=NOW)
+    assert len(clusters) == 3
+    assert all(len(c["items"]) == 1 for c in clusters)
+
+
+def test_same_event_words_still_cluster_across_outlets():
+    # A different outlet's retelling of the anti-cheat story shares the entity
+    # and enough event words, so it must still cluster despite a low similarity.
+    left = {"title": ARC_CHEAT, "link": "https://a.example/1"}
+    right = {"title": ARC_CHEAT_RETELL, "link": "https://b.example/1"}
+    assert cluster.shared_entities(left["title"], right["title"]) == {"arc raiders"}
+    assert cluster.same_story(left, right) is True
+
+
+def test_min_event_overlap_is_configurable():
+    left = {"title": ARC_CHEAT, "link": "https://a.example/1"}
+    right = {"title": ARC_CHEAT_RETELL, "link": "https://b.example/1"}
+    overlap = cluster.event_overlap(left["title"], right["title"])
+    # threshold above 1.0 disables the fuzzy-similarity shortcut so only the
+    # event-key rule decides; the knob then controls the merge.
+    assert cluster.same_story(left, right, threshold=1.1, min_event_overlap=overlap) is True
+    assert cluster.same_story(left, right, threshold=1.1, min_event_overlap=overlap + 1) is False
+
+
+def test_call_of_duty_single_entity_headlines_stay_separate():
+    # Both mention DMZ, but the explainer and the early-access report are
+    # different events, and DMZ is their only shared entity.
+    left = {"title": COD_DMZ_GUIDE, "link": "https://a.example/1"}
+    right = {"title": COD_EARLY_ACCESS, "link": "https://b.example/1"}
+    assert cluster.shared_entities(left["title"], right["title"]) == {"dmz"}
+    assert cluster.same_story(left, right) is False
+
+
+def test_call_of_duty_headlines_sharing_several_entities_still_cluster():
+    left = {"title": COD_DMZ_GUIDE, "link": "https://a.example/1"}
+    right = {"title": COD_DMZ_FEATURES, "link": "https://b.example/1"}
+    assert len(cluster.shared_entities(left["title"], right["title"])) >= 2
+    assert cluster.same_story(left, right) is True
+
+
 # --- failed-story tracking ---------------------------------------------------
 
 

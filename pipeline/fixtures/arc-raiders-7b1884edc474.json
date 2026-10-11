@@ -1,0 +1,20 @@
+{
+  "id": "7b1884edc474",
+  "title": "Arc Raiders could eventually be split into PvE and PvP, says executive producer",
+  "sources": [
+    {"source_name": "Eurogamer", "link": "https://eurogamer.net/arc-raiders-pve-pvp-split-possible-executive-producer", "title": "Arc Raiders could eventually be split into PvE and PvP, says executive producer", "tier": 2, "owner": "ign-entertainment", "region": "uk"},
+    {"source_name": "Tom's Hardware", "link": "https://tomshardware.com/video-games/pc-gaming/arc-raiders-developer-uses-ai-to-detect-cheating-embark-cracks-down-on-cheaters-deploys-harsh-penalties-including-permaban-on-first-time-offenders", "title": "Arc Raiders publisher developing AI anti-cheat stack in escalating war with cheaters", "tier": 2, "owner": "future", "region": "global"},
+    {"source_name": "TechPowerUp News", "link": "https://techpowerup.com/353541/arc-raiders-jumps-to-six-month-high-player-count-with-2-0-update-and-free-weekend", "title": "Arc Raiders Jumps to Six-Month High Player Count With 2.0 Update and Free Weekend", "tier": 2, "owner": "techpowerup", "region": "global"}
+  ],
+  "claims": [
+    {"claim": "Arc Raiders could eventually be split into PvE and PvP modes", "value": "Arc Raiders could eventually be split into PvE and PvP modes", "source_urls": ["https://eurogamer.net/arc-raiders-pve-pvp-split-possible-executive-producer"], "origin": "aleksander grøndal", "confidence": 1.0, "kind": "confirmed"},
+    {"claim": "Limited PvE test timing", "value": "The test runs from 13th to 20th October", "source_urls": ["https://eurogamer.net/arc-raiders-pve-pvp-split-possible-executive-producer"], "origin": "unstated", "confidence": 1.0, "kind": "reported"},
+    {"claim": "Player base playstyle preference breakdown", "value": "37 percent are friendly co-op players, 34 percent are pure PvP players, and 27 percent flit between the two", "source_urls": ["https://eurogamer.net/arc-raiders-pve-pvp-split-possible-executive-producer"], "origin": "embark", "confidence": 1.0, "kind": "confirmed"},
+    {"claim": "Caveats regarding the upcoming test", "value": "It is possible that this will not work, and the test is not a promise that there will be a PvE mode in the future", "source_urls": ["https://eurogamer.net/arc-raiders-pve-pvp-split-possible-executive-producer"], "origin": "embark", "confidence": 1.0, "kind": "confirmed"},
+    {"claim": "Arc Raiders publisher is developing an AI anti-cheat stack", "value": "Developing in-house AI models to detect cheating", "source_urls": ["https://tomshardware.com/video-games/pc-gaming/arc-raiders-developer-uses-ai-to-detect-cheating-embark-cracks-down-on-cheaters-deploys-harsh-penalties-including-permaban-on-first-time-offenders"], "origin": "embark studios", "confidence": 1.0, "kind": "confirmed"},
+    {"claim": "Kernel-level anti-cheat provider", "value": "Using kernel-level anti-cheat from Denuvo", "source_urls": ["https://tomshardware.com/video-games/pc-gaming/arc-raiders-developer-uses-ai-to-detect-cheating-embark-cracks-down-on-cheaters-deploys-harsh-penalties-including-permaban-on-first-time-offenders"], "origin": "embark studios", "confidence": 1.0, "kind": "confirmed"},
+    {"claim": "Arc Raiders player count reaches six-month high with 2.0 update and free weekend", "value": "Six-month high player count achieved on Steam following the 2.0 update and free weekend", "source_urls": ["https://techpowerup.com/353541/arc-raiders-jumps-to-six-month-high-player-count-with-2-0-update-and-free-weekend"], "origin": "unstated", "confidence": 1.0, "kind": "reported"},
+    {"claim": "Upcoming co-op mode testing date", "value": "October 13", "source_urls": ["https://techpowerup.com/353541/arc-raiders-jumps-to-six-month-high-player-count-with-2-0-update-and-free-weekend"], "origin": "embark studios", "confidence": 1.0, "kind": "confirmed"},
+    {"claim": "Peak concurrent players on Steam", "value": "131,388 peak concurrent players on Steam", "source_urls": ["https://techpowerup.com/353541/arc-raiders-jumps-to-six-month-high-player-count-with-2-0-update-and-free-weekend"], "origin": "steamdb", "confidence": 1.0, "kind": "estimate"}
+  ]
+}

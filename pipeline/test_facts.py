@@ -22,10 +22,11 @@ def gathered(id="story-1", sources=None):
     return {"id": id, "gathered_at": NOW.isoformat(), "sources": sources or [source()]}
 
 
-def claim(claim="Announcement happened", value="it happened", source_url="https://a.example/1", confidence=0.9, kind="confirmed", origin="test-origin"):
+def claim(claim="Announcement happened", value="it happened", source_url="https://a.example/1", confidence=0.9, kind="confirmed", origin="test-origin", affiliation=""):
     return {
         "claim": claim, "value": value, "source_url": source_url,
         "confidence": confidence, "origin": origin, "kind": kind,
+        "affiliation": affiliation,
     }
 
 
@@ -47,12 +48,13 @@ def make_generate(payload):
         # one tier-1 source confirms on its own, no origin needed
         ([source(tier=1)], None, False, True),
         ([source(tier=1), source(link="https://a2", name="A2", tier=3)], None, False, True),
-        # two independent attributed origins confirm
+        # two independent attributed origins, both supporting the same claim,
+        # confirm
         (
             [source(), source(link="https://b.example/2", name="Beta", owner="co-b")],
             [
                 claim(claim="A", source_url="https://a.example/1", origin="sony"),
-                claim(claim="B", source_url="https://b.example/2", origin="microsoft"),
+                claim(claim="A", source_url="https://b.example/2", origin="microsoft"),
             ],
             False,
             True,
@@ -62,7 +64,7 @@ def make_generate(payload):
             [source(), source(link="https://b.example/2", name="Beta", owner="co-b")],
             [
                 claim(claim="A", source_url="https://a.example/1", origin="sony"),
-                claim(claim="B", source_url="https://b.example/2", origin="sony"),
+                claim(claim="A", source_url="https://b.example/2", origin="sony"),
             ],
             False,
             False,
@@ -79,7 +81,7 @@ def make_generate(payload):
             [source(tier=3), source(link="https://b.example/2", name="Beta", tier=3, owner="co-b")],
             [
                 claim(claim="A", source_url="https://a.example/1", origin="sony"),
-                claim(claim="B", source_url="https://b.example/2", origin="microsoft"),
+                claim(claim="A", source_url="https://b.example/2", origin="microsoft"),
             ],
             False,
             False,
@@ -99,7 +101,7 @@ def test_confirmation_tier3_never_counts():
         [source(tier=3), source(link="https://b.example/2", name="Beta", tier=3, owner="co-b")],
         claims=[
             claim(claim="A", source_url="https://a.example/1", origin="sony"),
-            claim(claim="B", source_url="https://b.example/2", origin="microsoft"),
+            claim(claim="A", source_url="https://b.example/2", origin="microsoft"),
         ],
     )["confirmed"] is False
 
@@ -151,7 +153,7 @@ def test_two_genuinely_different_named_analysts_confirm():
     ]
     claims = [
         claim(claim="A", origin="Rhys Elliott of Alinea Analytics", kind="estimate", source_url="https://o1.example/1"),
-        claim(claim="B", origin="Sensor Tower", kind="estimate", source_url="https://o2.example/1"),
+        claim(claim="A", origin="Sensor Tower", kind="estimate", source_url="https://o2.example/1"),
     ]
     result = facts.confirmation_from_sources(sources, claims=claims)
     assert result["origins"] == ["alinea analytics", "sensor tower"]
@@ -777,7 +779,7 @@ def test_coherence_drops_claims_from_off_topic_sources(tmp_path):
 
 def test_coherence_logs_dropped_claims(caplog, tmp_path):
     gathered_sources = [
-        source(link="https://a.example/gears", title="Gears of War: E-Day sales", owner="co-a", tier=1),
+        source(link="https://a.example/gears", title="Gears of War: E-Day sales", owner="co-a", tier=1, text="Embark said Gears of War: E-Day Sold 168,000 Copies on Steam."),
         source(link="https://b.example/ace", title="Ace Combat 8 sells a million", owner="co-b", tier=1),
     ]
     result = facts.facts(
@@ -786,11 +788,11 @@ def test_coherence_logs_dropped_claims(caplog, tmp_path):
         output_dir=tmp_path,
         now=NOW,
         generate=per_source_generate([
-            {"claims": []},
+            {"claims": [claim(claim="Gears of War: E-Day Sold 168,000 Copies on Steam", value="168,000 copies", source_url="https://a.example/gears", origin="embark", kind="reported")]},
             {"claims": [claim(source_url="https://b.example/ace", claim="Ace Combat 8 shipped a million")]},
         ])[0],
     )
-    assert result["claims"] == []
+    assert len(result["claims"]) == 1
     assert any("off-topic" in record.message for record in caplog.records)
 
 
@@ -830,3 +832,205 @@ def test_coherence_uses_claim_text_when_source_has_no_title(tmp_path):
     )
     assert len(result["claims"]) == 1
     assert result["coherence"]["checked"] is True
+
+
+# --- old-format fixture: only the central claim's origins may confirm ---------
+
+
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
+ARC_FIXTURE_PATH = FIXTURE_DIR / "arc-raiders-7b1884edc474.json"
+ARC_TITLE = "Arc Raiders could eventually be split into PvE and PvP, says executive producer"
+ARC_CENTRAL_CLAIM = "Arc Raiders could eventually be split into PvE and PvP modes"
+ARC_EUROGAMER = "https://eurogamer.net/arc-raiders-pve-pvp-split-possible-executive-producer"
+ARC_TECHPOWERUP = (
+    "https://techpowerup.com/353541/arc-raiders-jumps-to-six-month-high-player-count-"
+    "with-2-0-update-and-free-weekend"
+)
+
+# Minimal source text so each fixture origin is named in its own source (the
+# current code verifies an origin against the text of the claim's own source).
+ARC_SOURCE_TEXT = {
+    ARC_EUROGAMER: (
+        "Embark executive producer Aleksander Grøndal said Arc Raiders could "
+        "eventually be split into PvE and PvP modes. Embark said the limited PvE "
+        "test runs from 13th to 20th October."
+    ),
+    "https://tomshardware.com/video-games/pc-gaming/arc-raiders-developer-uses-ai-to-detect-cheating-embark-cracks-down-on-cheaters-deploys-harsh-penalties-including-permaban-on-first-time-offenders": (
+        "Embark Studios said it is developing in-house AI models to detect "
+        "cheating in Arc Raiders."
+    ),
+    ARC_TECHPOWERUP: (
+        "Arc Raiders hit a six-month high player count. SteamDB tracked 131,388 "
+        "peak concurrent players. Embark Studios said the co-op test starts October 13."
+    ),
+}
+
+
+def arc_fixture_sources_claims(fixture):
+    """The fixture's sources and claims adapted to the current input shape.
+
+    The fixture is an old facts sheet: one origin string per claim, no central or
+    affiliation fields, and each claim lists its source under ``source_urls``.
+    Current functions read a claim's ``source_url`` (singular) and confirmation
+    runs over the pre-merge central group, so the helper rewrites every claim to
+    that shape (dropping the list) and returns ``(sources, claims)``.
+    """
+    claims = [
+        {
+            "claim": raw["claim"],
+            "value": raw["value"],
+            "source_url": raw["source_urls"][0],
+            "confidence": raw["confidence"],
+            "origin": raw["origin"],
+            "kind": raw["kind"],
+        }
+        for raw in fixture["claims"]
+    ]
+    return fixture["sources"], claims
+
+
+def load_arc_fixture():
+    """Load the old-format fixture and replay it through the current code.
+
+    Returns ``(fixture, gathered, generate)``. ``gathered`` gives each source the
+    text the current pipeline needs, and ``generate`` replays that source's own
+    fixture claims (one model call per source, as extraction does).
+    """
+    fixture = json.loads(ARC_FIXTURE_PATH.read_text(encoding="utf-8"))
+    by_url: dict[str, list[dict]] = {}
+    for raw in fixture["claims"]:
+        url = raw["source_urls"][0]
+        by_url.setdefault(url, []).append(
+            {
+                "claim": raw["claim"],
+                "value": raw["value"],
+                "source_url": url,
+                "confidence": raw["confidence"],
+                "origin": raw["origin"],
+                "kind": raw["kind"],
+            }
+        )
+    sources = []
+    payloads = []
+    for src in fixture["sources"]:
+        sources.append({**src, "status": "ok", "error": None, "text": ARC_SOURCE_TEXT[src["link"]]})
+        payloads.append({"claims": by_url.get(src["link"], [])})
+    gathered = {"id": fixture["id"], "gathered_at": NOW.isoformat(), "sources": sources}
+    generate = per_source_generate(payloads)[0]
+    return fixture, gathered, generate
+
+
+def test_arc_raiders_fixture_is_not_confirmed(tmp_path):
+    fixture, gathered, generate = load_arc_fixture()
+
+    # End to end the current logic rejects the story: only the central claim's
+    # single origin (the executive producer) counts toward confirmation, so the
+    # unrelated anti-cheat/player-count origins never confirm it.
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered,
+            id=fixture["id"],
+            title=ARC_TITLE,
+            output_dir=tmp_path,
+            now=NOW,
+            generate=generate,
+        )
+
+    sources, claims = arc_fixture_sources_claims(fixture)
+    central = facts.central_claim(claims, title=ARC_TITLE)
+    assert central["claim"] == ARC_CENTRAL_CLAIM
+
+    groups = facts._claim_groups(claims)
+    central_group = groups[claims.index(central)]
+    confirmation = facts.confirmation_from_sources(sources, claims=central_group)
+    assert confirmation["origins"] == ["aleksander grøndal"]
+    assert confirmation["confirmed"] is False
+
+
+def test_two_outlets_quoting_one_executive_count_as_one_origin():
+    sources = [
+        source(
+            link="https://a.example/pve",
+            name="Alpha",
+            text="Embark executive producer Aleksander Grøndal said the modes could split.",
+        ),
+        source(
+            link="https://b.example/pve",
+            name="Beta",
+            owner="co-b",
+            text="Arc Raiders executive producer Aleksander Grøndal works at Embark.",
+        ),
+    ]
+    claims = [
+        claim(
+            claim="Arc Raiders could be split into PvE and PvP",
+            value="split possible",
+            kind="confirmed",
+            origin="Aleksander Grøndal",
+            affiliation="Embark",
+            source_url="https://a.example/pve",
+        ),
+        claim(
+            claim="Arc Raiders could be split into PvE and PvP",
+            value="split possible",
+            kind="confirmed",
+            origin="Embark executive producer Aleksander Grøndal",
+            affiliation="Embark",
+            source_url="https://b.example/pve",
+        ),
+    ]
+    resolved = facts.resolve_claim_origins(claims, sources)
+    result = facts.confirmation_from_sources(sources, claims=resolved)
+    assert result["origins"] == ["embark"], "the person and their studio are one origin"
+    assert result["confirmed"] is False
+
+
+def test_statement_kind_never_confirmed_even_after_merging_with_confirmed():
+    merged = facts.merge_claims(
+        [
+            claim(
+                claim="Arc Raiders could be split into PvE and PvP",
+                value="could split",
+                kind="confirmed",
+                origin="embark",
+                source_url="https://a.example/1",
+            ),
+            claim(
+                claim="Arc Raiders could be split into PvE and PvP",
+                value="could split",
+                kind="statement",
+                origin="embark",
+                source_url="https://b.example/2",
+            ),
+        ]
+    )
+    assert len(merged) == 1
+    assert merged[0]["kind"] == "statement"
+    assert merged[0]["kind"] != "confirmed"
+
+    sources = [
+        source(link="https://a.example/1"),
+        source(link="https://b.example/2", name="Beta", owner="co-b"),
+    ]
+    result = facts.confirmation_from_sources(
+        sources,
+        claims=[
+            claim(claim="Modes could split", value="could", kind="statement", origin="embark", source_url="https://a.example/1"),
+            claim(claim="Modes could split", value="could", kind="statement", origin="square", source_url="https://b.example/2"),
+        ],
+    )
+    assert result["confirmed"] is False
+
+
+def test_fixture_test_date_claims_merge_into_one_claim_with_both_source_urls():
+    fixture, _gathered, _generate = load_arc_fixture()
+    _sources, claims = arc_fixture_sources_claims(fixture)
+    merged = facts.merge_claims(claims)
+    combined = [
+        entry
+        for entry in merged
+        if ARC_EUROGAMER in entry["source_urls"] and ARC_TECHPOWERUP in entry["source_urls"]
+    ]
+    assert len(combined) == 1, "the same test written two ways must merge into one claim"
+    assert combined[0]["source_urls"] == [ARC_EUROGAMER, ARC_TECHPOWERUP]
+    assert "13" in combined[0]["value"] and "october" in combined[0]["value"].lower()

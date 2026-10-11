@@ -17,13 +17,16 @@ The extracted JSON is validated against :data:`CLAIM_SCHEMA` in code; anything
 that does not match raises :class:`FactsError` and the story is dropped. Each
 claim's ``kind`` is one of ``confirmed`` (stated by the company or an official
 source), ``reported`` (stated by an outlet citing a named source), ``estimate``
-(a third-party analyst or data estimate, never a confirmation), ``rumor`` (a
-leak or unnamed source) or ``opinion``. ``origin`` names who produced the claim
-(the analyst or firm the source cites, or the company); when the source does
-not say, the extractor stores ``"unstated"`` and the claim is treated as at
-most ``reported``. In-game currency amounts must name their currency (for
-example "100,000 in-game DMZ Cash") and are never stored as a bare dollar
-figure.
+(a third-party analyst or data estimate, never a confirmation), ``statement``
+(a company or person's statement about a plan, possibility, intention or survey
+result, never labeled ``confirmed``), ``rumor`` (a leak or unnamed source) or
+``opinion``. ``origin`` names who produced the claim (the analyst or firm the
+source cites, or the company); ``affiliation`` names the organization a person
+speaks for when the article states one. When the source does not say who
+produced the claim, the extractor stores ``"unstated"`` and the claim is
+treated as at most ``reported``. In-game currency amounts must name their
+currency (for example "100,000 in-game DMZ Cash") and are never stored as a
+bare dollar figure.
 
 A coherence check then keeps every claim honest to the story: each claim's
 source must be about the cluster's primary entity (the named entity shared by
@@ -40,15 +43,21 @@ titles are stripped, and ``data/origins.json`` maps aliases to one canonical
 name ("Alinea", "Alinea Analytics" and "Rhys Elliott of Alinea Analytics" all
 become "alinea analytics", a person named alongside a firm counting as the
 firm) -- and verified against the text of the claim's own source: an origin the
-source never mentions is downgraded to ``"unstated"`` and logged.
+source never mentions is downgraded to ``"unstated"`` and logged. A person's
+claim also keeps the organization they speak for (``affiliation``); that
+organization is what the person counts as, so an executive producer and the
+studio they work for are one origin, and two origins from the same single
+article never count as two.
 
-The story is rejected with :class:`UnconfirmedStory` unless it has at least one
-tier-1 source OR at least two independent attributed origins among the kept
-claims; only claims of kind ``confirmed``/``reported``/``estimate`` count (a
-rumor or an opinion never confirms a story), outlets repeating the same origin
-count as one, and tier 3 never counts toward confirmation. When one canonical
-origin is contained in another from the same cluster ("alinea analytics" inside
-"alinea analytics ltd") they are treated as the same origin.
+The story is confirmed through its central claim: the claim that restates the
+cluster's seed headline. It is confirmed when a tier-1 source states it, or at
+least two independent attributed origins support that same claim; only claims
+of kind ``confirmed``/``reported``/``estimate`` count (a rumor, an opinion or a
+statement never confirms a story), outlets repeating the same origin count as
+one, origins supporting any other claim never count, two origins from the same
+single article never count as two, and tier 3 never counts toward confirmation.
+When one canonical origin is contained in another from the same set ("alinea
+analytics" inside "alinea analytics ltd") they are treated as the same origin.
 ``allow_single_origin_attributed`` (config flag, default false) additionally
 lets a single attributed origin confirm a story. Source text is consumed here
 only; it is never handed to the writer.
@@ -59,7 +68,7 @@ Output is written to ``data/facts/<id>.json``:
       "id": "<id>",
       "confirmation": {"tier1_sources": 1, "tier3_sources": 0, "origins": [...], "rule": "...", "confirmed": true},
       "sources": [{"source_name", "link", "title", "tier", "owner", "region"}],
-      "claims": [{"claim", "value", "source_urls": [...], "origin", "confidence", "kind"}],
+      "claims": [{"claim", "value", "source_urls": [...], "origin", "affiliation", "confidence", "kind", "central"}],
       "coherence": {"checked": true, "primary_entities": [...], "dropped_claims": [...]},
       "extractor": {"provider", "model", "family"},
       "fingerprint": {"format": 1, "value": "<hash of id + model chain + prompt settings>"}
@@ -112,15 +121,17 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v4"
+PROMPT_VERSION = "facts-v5"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
-# never upgraded to confirmed by another source's wording.
+# never upgraded to confirmed by another source's wording, and a plan stated as
+# a possibility (``statement``) is never upgraded to a confirmed fact.
 KIND_STRENGTH: dict[str, int] = {
-    "confirmed": 5,
-    "reported": 4,
-    "estimate": 3,
+    "confirmed": 6,
+    "reported": 5,
+    "estimate": 4,
+    "statement": 3,
     "rumor": 2,
     "opinion": 1,
 }
@@ -132,10 +143,12 @@ UNSTATED_ORIGIN = "unstated"
 
 #: Hedge words a merged fact must keep in its value. When sources state the same
 #: fact with different values, the value carrying the most hedge words wins, so
-#: "estimated 168,000" is never flattened to the unhedged "168,000".
+#: "estimated 168,000" is never flattened to the unhedged "168,000", and a plan
+#: hedged as "may", "could" or "not a promise" keeps that hedge.
 HEDGE_WORDS = (
     "estimated", "estimate", "estimates", "reportedly", "more than", "over",
     "approximately", "about", "around", "roughly", "nearly", "up to", "at least",
+    "could", "may", "might", "possibly", "hopes to", "not a promise",
 )
 
 #: Story-level confirmation is one tier-1 source OR at least two independent
@@ -152,8 +165,8 @@ DEFAULT_ORIGIN_ALIASES_PATH = PROJECT_ROOT / "data" / "origins.json"
 #: role ("the analyst Alinea Analytics") does not split one origin into two.
 _ORIGIN_TITLE_WORDS = frozenset({"the", "a", "an", "analyst", "analysts"})
 
-#: Claim kinds whose origins may count toward confirmation. A rumor or an
-#: opinion never confirms a story, however many outlets repeat it.
+#: Claim kinds whose origins may count toward confirmation. A rumor, an opinion
+#: or a statement never confirms a story, however many outlets repeat it.
 CONFIRMING_KINDS = ("confirmed", "reported", "estimate")
 
 logger = logging.getLogger("gamersxpress.pipeline.facts")
@@ -171,6 +184,7 @@ CLAIM_SCHEMA: dict[str, Any] = {
                     "source_url": {"type": "string"},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     "origin": {"type": "string"},
+                    "affiliation": {"type": "string"},
                     "kind": {"type": "string", "enum": list(KIND_STRENGTH)},
                 },
                 "required": ["claim", "value", "source_url", "confidence", "origin", "kind"],
@@ -193,18 +207,25 @@ SYSTEM_INSTRUCTION = (
     "when the body states other facts first.\n"
     "Return each fact as an object with: claim (a short statement), value (the "
     "concrete value or a one-line summary), source_url (the exact URL given "
-    "for this source), confidence (0 to 1), origin, and kind.\n"
+    "for this source), confidence (0 to 1), origin, affiliation, and kind.\n"
     "origin names who produced the claim: the company or official source, or "
     "the analyst or firm the article cites (for example 'Sony', 'Sensor "
     "Tower'). When the article does not say who produced the claim, set origin "
     "to 'unstated'.\n"
+    "affiliation names the organization a person speaks for, when the article "
+    "states one (for example 'Embark Studios' for that studio's executive "
+    "producer); when the origin is a company itself, or the article names no "
+    "organization, set affiliation to an empty string.\n"
     "kind is exactly one of: 'confirmed' (the company or an official source "
     "states it, with a named origin), 'reported' (an outlet citing a named "
     "source), 'estimate' (a third-party analyst or data estimate; never label "
-    "an estimate 'confirmed'), 'rumor' (a leak or unnamed source), or 'opinion' "
+    "an estimate 'confirmed'), 'statement' (a company or person's statement "
+    "about a plan, possibility, intention or survey result; never label a "
+    "statement 'confirmed'), 'rumor' (a leak or unnamed source), or 'opinion' "
     "(a writer's or source's judgement). origin 'unstated' caps a claim at "
     "'reported'.\n"
-    "Keep hedge words (estimated, reportedly, more than, over) in the value. "
+    "Keep hedge words (estimated, reportedly, more than, over, could, may, "
+    "might, possibly, hopes to, not a promise) in the value. " 
     "For percentages and overlap or audience figures, state the exact "
     "relationship in words (for example 'overlap with players of X'), never a "
     "vague phrase. Any in-game currency amount must name the currency (for "
@@ -290,9 +311,11 @@ def validate_claims(data: Any) -> list[dict]:
     ``claim`` and ``value`` are clipped to :data:`MAX_FIELD_CHARS` so a facts
     sheet never holds a long verbatim passage copied from a source article.
     ``origin`` is normalized (trimmed, lowercased; empty becomes
-    :data:`UNSTATED_ORIGIN`), and a claim whose origin is ``unstated`` is capped
-    at ``reported`` because an unattributed claim is never confirmed and never
-    an estimate (requirement: treat an unstated origin as at most reported).
+    :data:`UNSTATED_ORIGIN`), ``affiliation`` is normalized (trimmed,
+    lowercased; empty stays empty), and a claim whose origin is ``unstated`` is
+    capped at ``reported`` because an unattributed claim is never confirmed and
+    never an estimate (requirement: treat an unstated origin as at most
+    reported).
     """
     errors = schema_errors(data, CLAIM_SCHEMA)
     if errors:
@@ -313,6 +336,7 @@ def validate_claims(data: Any) -> list[dict]:
                 "claim": _clip_field(claim["claim"]),
                 "value": _clip_field(claim["value"]),
                 "origin": origin,
+                "affiliation": _normalize_affiliation(claim.get("affiliation")),
                 "kind": kind,
             }
         )
@@ -322,6 +346,11 @@ def validate_claims(data: Any) -> list[dict]:
 def _normalize_origin(origin: object) -> str:
     value = str(origin or "").strip().lower()
     return value or UNSTATED_ORIGIN
+
+
+def _normalize_affiliation(affiliation: object) -> str:
+    value = str(affiliation or "").strip().lower()
+    return value if value != UNSTATED_ORIGIN else ""
 
 
 # --- origin canonicalization and verification --------------------------------
@@ -467,7 +496,9 @@ def resolve_claim_origins(
     Each ``;``-separated origin token is canonicalized, then checked against the
     text of the claim's own source. A token the text does not mention is removed
     and the downgrade is logged; when no token survives, the origin becomes
-    :data:`UNSTATED_ORIGIN`. No other claim field is touched.
+    :data:`UNSTATED_ORIGIN`. The claim's ``affiliation`` (the organization a
+    person speaks for) is canonicalized the same way and dropped when its own
+    source text never names it. No other claim field is touched.
     """
     aliases = load_origin_aliases() if aliases is None else aliases
     by_url = _sources_by_url(sources)
@@ -493,7 +524,20 @@ def resolve_claim_origins(
                     claim.get("source_url"),
                     UNSTATED_ORIGIN,
                 )
-        resolved.append({**claim, "origin": "; ".join(kept) if kept else UNSTATED_ORIGIN})
+        affiliation = _normalize_affiliation(claim.get("affiliation"))
+        if affiliation and _origin_in_text(affiliation, text, aliases):
+            canonical_affiliation = canonicalize_origin(affiliation, aliases)
+            if canonical_affiliation == UNSTATED_ORIGIN:
+                canonical_affiliation = ""
+        else:
+            canonical_affiliation = ""
+        resolved.append(
+            {
+                **claim,
+                "origin": "; ".join(kept) if kept else UNSTATED_ORIGIN,
+                "affiliation": canonical_affiliation,
+            }
+        )
     return resolved
 
 
@@ -511,6 +555,106 @@ def _claim_key(claim: dict) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+_MONTHS = frozenset({
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+})
+
+_STOP_WORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "been", "being", "by", "does",
+    "for", "from", "in", "into", "is", "it", "its", "not", "of", "on", "or",
+    "says", "said", "say", "that", "the", "this", "to", "was", "were", "will",
+    "with",
+})
+
+
+def _word_tokens(text: str) -> set[str]:
+    """Lowercased alphanumeric word tokens of ``text``."""
+    return set(re.findall(r"[a-z0-9]+", str(text or "").lower()))
+
+
+def _stem(word: str) -> str:
+    """Very light suffix stemmer: testing/test/modes/mode all count together."""
+    for suffix, length in (("ing", 3), ("ed", 2), ("es", 2), ("s", 1)):
+        if len(word) > length and word.endswith(suffix):
+            return word[:-length] or word
+    return word
+
+
+def _topic_words(text: str) -> set[str]:
+    """Stemmed content words of a claim, excluding stop words, months and numbers."""
+    words: set[str] = set()
+    for token in re.findall(r"[a-z0-9]+", str(text or "").lower()):
+        if token in _STOP_WORDS or token in _MONTHS or token.isdigit():
+            continue
+        if re.match(r"^\d", token):
+            continue
+        words.add(_stem(token))
+    return words
+
+
+def _value_key_tokens(value: str) -> set[str]:
+    """Key tokens in a value: month names and numbers, ordinals stripped.
+
+    "13th to 20th October" yields {13, 20, october}; "October 13" yields
+    {october, 13}, so the two values share a figure and can merge, while
+    "October 12" shares only the month with "October 13" and stays separate.
+    """
+    tokens: set[str] = set()
+    for token in re.findall(r"[a-z0-9]+", str(value or "").lower()):
+        if token in _MONTHS:
+            tokens.add(token)
+            continue
+        digits = re.match(r"^\d+", token)
+        if digits:
+            tokens.add(digits.group(0))
+    return tokens
+
+
+def _same_value_fact(a: dict, b: dict) -> bool:
+    """True when two claims share a concrete date or figure and topic words.
+
+    The values must share at least one number, or two key tokens (so "October
+    12" and "October 13" never merge on the month alone), and the claims must
+    share topic words, so two unrelated claims quoting the same date stay apart.
+    """
+    a_keys = _value_key_tokens(str(a.get("value") or ""))
+    b_keys = _value_key_tokens(str(b.get("value") or ""))
+    shared = a_keys & b_keys
+    if not shared:
+        return False
+    if sum(1 for token in shared if token.isdigit()) < 1 and len(shared) < 2:
+        return False
+    return bool(_topic_words(str(a.get("claim") or "")) & _topic_words(str(b.get("claim") or "")))
+
+
+def _same_fact(a: dict, b: dict) -> bool:
+    """True when two claims describe one fact: same claim text or shared value."""
+    if _claim_key(a) == _claim_key(b):
+        return True
+    return _same_value_fact(a, b)
+
+
+def _claim_groups(claims: list[dict]) -> list[list[dict]]:
+    """Group claims that describe one fact.
+
+    Claims group when their normalized claim text matches, or when their values
+    share a live date or figure and their claims share topic words: "The test
+    runs from 13th to 20th October" and "October 13" are the same fact, while a
+    different date ("October 12") stays its own fact.
+    """
+    groups: list[list[dict]] = []
+    for claim in claims or []:
+        for group in groups:
+            if any(_same_fact(claim, other) for other in group):
+                group.append(claim)
+                break
+        else:
+            groups.append([claim])
+    return groups
+
+
 def _hedge_count(value: str) -> int:
     text = str(value or "").lower()
     return sum(1 for word in HEDGE_WORDS if word in text)
@@ -521,7 +665,8 @@ def _merge_score(claim: dict) -> tuple[int, int, int]:
 
     A fact whose sources disagree (one wrote "estimated", another wrote a bare
     figure) must keep the hedged value, and the weakest kind, so an estimate is
-    never flattened into a confirmation.
+    never flattened into a confirmation and a plan stated as a possibility is
+    never upgraded to a fact.
     """
     return (-_hedge_count(str(claim.get("value", ""))), KIND_STRENGTH.get(claim["kind"], 0), -len(str(claim.get("value", ""))))
 
@@ -532,14 +677,25 @@ def _merge_origins(group: list[dict]) -> str:
     return "; ".join(named) if named else UNSTATED_ORIGIN
 
 
+def _merge_affiliations(group: list[dict]) -> str:
+    """One or more named affiliations, or '' when none is named."""
+    named = sorted({
+        str(claim.get("affiliation") or "").strip()
+        for claim in group
+        if str(claim.get("affiliation") or "").strip()
+    })
+    return "; ".join(named)
+
+
 def _merge_group(group: list[dict]) -> dict:
-    """Collapse the claims of one fact (same normalized claim text) into one."""
+    """Collapse the claims of one fact (same fact) into one."""
     best = min(group, key=_merge_score)
     return {
         "claim": str(best["claim"]),
         "value": str(best["value"]),
         "source_urls": sorted({claim["source_url"] for claim in group}),
         "origin": _merge_origins(group),
+        "affiliation": _merge_affiliations(group),
         "confidence": min(float(claim["confidence"]) for claim in group),
         "kind": min((claim["kind"] for claim in group), key=KIND_STRENGTH.get),
     }
@@ -548,15 +704,13 @@ def _merge_group(group: list[dict]) -> dict:
 def merge_claims(claims: list[dict]) -> list[dict]:
     """Merge duplicate claims across sources: one claim per fact.
 
-    A fact groups all claims that share the same normalized claim text and is
+    A fact groups every claim that describes it (:func:`_claim_groups`) -- by
+    shared claim text, or by a shared date/figure plus topic words -- and is
     stored once, listing every source URL that states it (``source_urls``),
     taking the weakest ``kind`` when sources disagree, keeping the hedge words
     in the value, joining the named origins, and keeping the lowest confidence.
     """
-    groups: dict[str, list[dict]] = {}
-    for claim in claims:
-        groups.setdefault(_claim_key(claim), []).append(claim)
-    return [_merge_group(group) for group in groups.values()]
+    return [_merge_group(group) for group in _claim_groups(claims)]
 
 
 def _collapse_contained_origins(names: set[str]) -> list[str]:
@@ -575,6 +729,18 @@ def _collapse_contained_origins(names: set[str]) -> list[str]:
     return sorted(kept)
 
 
+def _claim_source_url_key(claim: dict) -> str:
+    """Match key for the source that states a claim.
+
+    Kept claims carry a single ``source_url``; merged claims carry
+    ``source_urls``. Either form must resolve to the same gathered source.
+    """
+    urls = claim.get("source_urls")
+    if isinstance(urls, list) and urls:
+        return _source_url_key(next((url for url in urls if url), None))
+    return _source_url_key(claim.get("source_url"))
+
+
 def _confirmation_origins(
     claims: list[dict],
     by_url: dict[str, dict],
@@ -584,24 +750,36 @@ def _confirmation_origins(
     """Distinct attributed origins among the claims, tier- and kind-filtered.
 
     An origin counts only when its claim is of a confirming kind
-    (:data:`CONFIRMING_KINDS`) and its source is not tier-3; a rumor or an
-    opinion never counts toward confirmation. Each origin is canonicalized
-    (case, possessives, titles, aliases) and ``;``-separated tokens count
-    separately. When one canonical origin is contained in another from the same
-    set they are treated as one, keeping the shorter name.
+    (:data:`CONFIRMING_KINDS`) and its source is not tier-3; a rumor, an opinion
+    or a statement never counts toward confirmation. Each origin is canonicalized
+    (case, possessives, titles, aliases). A claim whose ``affiliation`` names the
+    organization a person speaks for counts as that organization, so an executive
+    producer and the studio they work for are one origin. One article never
+    counts as two independent origins: whatever canonicals a single source
+    states, it contributes a single name (the longest of them), and when one
+    canonical origin is contained in another they are treated as one, keeping the
+    shorter name.
     """
     aliases = load_origin_aliases() if aliases is None else aliases
-    names: set[str] = set()
+    per_source: dict[str, set[str]] = {}
     for claim in claims or []:
         if claim.get("kind") not in CONFIRMING_KINDS:
             continue
-        source = by_url.get(_source_url_key(claim.get("source_url")))
+        source = by_url.get(_claim_source_url_key(claim))
         if source is None or source.get("tier") == 3:
             continue
+        bucket = per_source.setdefault(_source_url_key(source.get("link")), set())
+        affiliation = str(claim.get("affiliation") or "").strip().lower()
+        if affiliation and affiliation != UNSTATED_ORIGIN:
+            canonical = canonicalize_origin(affiliation, aliases)
+            if canonical and canonical != UNSTATED_ORIGIN:
+                bucket.add(canonical)
+                continue
         for token in str(claim.get("origin") or "").split(";"):
             canonical = canonicalize_origin(token, aliases)
             if canonical and canonical != UNSTATED_ORIGIN:
-                names.add(canonical)
+                bucket.add(canonical)
+    names = {max(bucket, key=len) for bucket in per_source.values() if bucket}
     return _collapse_contained_origins(names)
 
 
@@ -614,21 +792,34 @@ def confirmation_from_sources(
 ) -> dict:
     """Assess the confirmation rule against the cluster's sources and claims.
 
-    Confirmed when there is at least one tier-1 source, OR the extracted claims
-    carry at least two independent attributed origins (outlets repeating the
-    same origin count as one). Origins are canonicalized through ``aliases``
+    Confirmed when at least one tier-1 source states a passed claim, OR the
+    passed claims carry at least two independent attributed origins (outlets
+    repeating the same origin count as one, and two origins from the same single
+    article never count as two). Origins are canonicalized through ``aliases``
     (:func:`load_origin_aliases`), so different spellings of one name collapse,
-    and only claims of kind confirmed/reported/estimate count: a rumor or an
-    opinion never confirms. When ``allow_single_origin_attributed`` is set, a
-    single attributed (named, non-"unstated") origin also confirms. Tier 3 never
-    counts. ``claims`` are the kept, pre-merge claims (``source_url`` still
-    singular); confirmation is about who produced each claim, so duplicates of
-    the same fact across outlets still collapse to one origin.
+    and only claims of kind confirmed/reported/estimate count: a rumor, an
+    opinion or a statement never confirms. When ``allow_single_origin_attributed``
+    is set, a single attributed (named, non-"unstated") origin also confirms.
+    Tier 3 never counts. ``claims`` are the pre-merge claims of the story's
+    central fact (``source_url`` singular, or ``source_urls`` on merged claims);
+    confirmation is about who produced that claim, so the origins of any other
+    claim never count.
     """
     by_url = _sources_by_url(sources)
     origins = _confirmation_origins(claims, by_url, aliases=aliases)
-    tier1 = sum(1 for source in sources if source["tier"] == 1)
-    tier3 = sum(1 for source in sources if source["tier"] == 3)
+    if claims is not None:
+        claim_urls = {_claim_source_url_key(claim) for claim in claims}
+        tier1 = sum(
+            1 for source in sources
+            if source["tier"] == 1 and _source_url_key(source.get("link")) in claim_urls
+        )
+        tier3 = sum(
+            1 for source in sources
+            if source["tier"] == 3 and _source_url_key(source.get("link")) in claim_urls
+        )
+    else:
+        tier1 = sum(1 for source in sources if source["tier"] == 1)
+        tier3 = sum(1 for source in sources if source["tier"] == 3)
     single_origin_attributed = len(origins) == 1
     if tier1 >= 1:
         confirmed, rule = True, "tier1"
@@ -646,6 +837,43 @@ def confirmation_from_sources(
         "rule": rule,
         "confirmed": confirmed,
     }
+
+
+# --- the central claim -------------------------------------------------------
+
+
+def _title_overlap_score(claim: dict, title_tokens: set[str]) -> int:
+    """How many headline words the claim's text and value restate."""
+    text = f"{str(claim.get('claim', ''))} {str(claim.get('value', ''))}"
+    return len(title_tokens & _word_tokens(text))
+
+
+def central_claim(claims: list[dict], *, title: str = "") -> Optional[dict]:
+    """Pick the claim that restates the cluster's seed headline.
+
+    The cluster seed is its newest source; the seed headline becomes the cluster
+    title, passed to ``facts()`` as ``title``. The central claim is the one
+    whose text and value share the most words with that headline -- the claim
+    the headline states is the claim this story must confirm. Returns None when
+    no headline is given or no extracted claim overlaps it; ties break to the
+    longest text.
+    """
+    title = str(title or "").strip()
+    if not title:
+        return None
+    title_tokens = _word_tokens(title)
+    best: Optional[dict] = None
+    best_key = (0, 0, "")
+    for claim in claims or []:
+        score = _title_overlap_score(claim, title_tokens)
+        key = (
+            score,
+            len(str(claim.get("claim", ""))) + len(str(claim.get("value", ""))),
+            str(claim.get("claim", "")),
+        )
+        if score > 0 and key > best_key:
+            best, best_key = claim, key
+    return best
 
 
 def primary_entities(
@@ -738,7 +966,8 @@ def facts(
     Confirmation is assessed after extraction because it now depends on the
     claims' origins (who produced each claim), not just on the outlets. A story
     with no tier-1 source is not rejected before the model runs: a single source
-    can still carry two independent origins.
+    can still carry two independent origins. Only the claim that restates the
+    seed headline (``title``) is confirmed; other claims' origins never count.
     """
     output_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
     name = re.sub(r"[^0-9A-Za-z._-]", "-", str(id or gathered.get("id") or "unnamed"))
@@ -811,20 +1040,42 @@ def facts(
     # text before anything is counted or stored.
     kept = resolve_claim_origins(kept, sources, aliases=aliases, story_id=name)
 
-    # Confirmation uses the kept, pre-merge claims: it is about who produced each
-    # claim, so three outlets repeating one origin still collapse to one origin.
+    # Same facts merge (by shared claim text, or by a shared date/figure plus
+    # topic words) before the central claim is picked.
+    groups = _claim_groups(kept)
+    claims = [_merge_group(group) for group in groups]
+
+    # The cluster seed headline (the cluster title) is restated by one claim;
+    # mark that claim central and confirm only it, so origins supporting any
+    # other claim never confirm the story.
+    central = central_claim(claims, title=title) if title else None
+    for claim in claims:
+        claim["central"] = claim is central
+    central_group = groups[claims.index(central)] if central is not None else None
+    if title and central is None:
+        logger.warning(
+            "story %s: no extracted claim overlaps the seed headline %r; "
+            "confirmation falls back to all claims",
+            name, title,
+        )
+
+    # Confirmation uses the pre-merge claims of the central fact only: it is
+    # about who produced that claim, so three outlets repeating one origin still
+    # collapse to one origin, two origins from the same article never count as
+    # two, and other claims' origins never count.
     confirmation = confirmation_from_sources(
-        sources, claims=kept, allow_single_origin_attributed=allow_single, aliases=aliases
+        sources,
+        claims=central_group if central_group is not None else kept,
+        allow_single_origin_attributed=allow_single,
+        aliases=aliases,
     )
     if not confirmation["confirmed"]:
         message = (
-            f"story {name}: needs one tier-1 source or two independent origins; "
-            f"got {confirmation}"
+            f"story {name}: needs one tier-1 source stating the headline claim "
+            f"or two independent origins supporting it; got {confirmation}"
         )
         logger.warning("%s", message)
         raise UnconfirmedStory(message)
-
-    claims = merge_claims(kept)
 
     # Only sources that contributed at least one claim are listed in the sheet;
     # a source that yielded no claim is never cited by the article.
@@ -884,6 +1135,7 @@ __all__ = [
     "UnconfirmedStory",
     "build_prompt",
     "canonicalize_origin",
+    "central_claim",
     "coherence_check",
     "extract_claims",
     "load_origin_aliases",

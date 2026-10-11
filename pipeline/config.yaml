@@ -160,6 +160,11 @@ freshness:
 cluster:
   seen_cooldown_days: 7
   failed_cooldown_hours: 24
+  # Two headlines joined by only one shared named entity must also share this
+  # many event words (content words left after removing the entity and generic
+  # words) before they may merge, unless they share a specific story type
+  # (review, sales, delay). Raising it makes clustering stricter.
+  min_event_overlap: 1
 
 # Facts stage (pipeline/facts.py). Extraction runs once per source; this caps
 # how many claims a single source may contribute, so a long article cannot

@@ -17,9 +17,16 @@ e3b478ab26ee mixed unrelated games because generic capitalized words like
 1. They share at least one specific named entity -- a game, product, company
    or event name from :func:`named_entities`. Generic news words (sold,
    copies, million, new, update, review, ...) never count.
-2. Their story types match, or the titles are near-identical rewrites of one
-   event (see :func:`story_type`): reviews, sales figures and announcements
-   about the same game are different stories.
+2. They agree on the *event*, not just the subject (regression: three Arc
+   Raiders headlines -- a PvE/PvP split, an anti-cheat stack, and a player
+   count milestone -- must stay separate even though all three share the
+   entity "arc raiders"). A lone shared entity merges only when it leads both
+   titles AND the titles share a specific story type (review, sales, delay)
+   or at least ``min_event_overlap`` event words: the content words left in
+   each title after removing its named entities and the generic words
+   (:func:`event_words`). Reviews, sales figures and announcements about the
+   same game are therefore different stories; near-identical rewrites and
+   titles with several shared entities still merge.
 3. The title is fuzzy-similar to the cluster's *seed* item (the newest item,
    which founded the bucket). Membership is never transitive: an item similar
    to some other member but not to the seed starts its own cluster.
@@ -60,9 +67,11 @@ SIMILARITY_THRESHOLD = 0.6
 # so a shared game/product name is not enough by itself.
 ENTITY_SIMILARITY_FLOOR = 0.3
 SHARED_ENTITIES_REQUIRED = 2
-# One unmistakable shared subject (a game/product name, not a platform) fuses
-# stories only when the titles are at least this similar.
-SINGLE_ENTITY_SIMILARITY_FLOOR = 0.35
+# Two titles joined by a single shared entity must also agree on the event:
+# this many of their event words (content words left after the named entities
+# and generic words are removed) must overlap. Overridable through
+# `cluster.min_event_overlap` in config.yaml.
+DEFAULT_EVENT_OVERLAP = 1
 # Near-identical rewrites of one event may merge even when a keyword classifier
 # disagrees on the story type ("clearly describe the same event").
 SAME_EVENT_SIMILARITY = 0.85
@@ -113,8 +122,8 @@ _SALES_PATTERNS = (
 _STORY_TYPES = ("sales", "review", "delay")  # checked in this order for equal positions
 
 # Platforms, stores and vendor names that preface many unrelated stories. Two
-# titles share at least one named entity, but this alone must not fuse stories.
-# A shared incidental name only merges with a higher similarity score.
+# titles share at least one named entity, but a shared incidental name must
+# never fuse stories on its own.
 _INCIDENTAL_ENTITIES = {
     "xbox game pass", "game pass", "playstation plus", "ps plus",
     "nintendo switch online", "playstation blog", "xbox wire", "nintendo",
@@ -283,24 +292,58 @@ def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, na, nb).ratio()
 
 
+def event_words(title: str) -> set[str]:
+    """Content words that describe *what happened* in a headline.
+
+    Every word of the normalized title that is not part of a named entity
+    (:func:`named_entities` with the leading word included) and not a generic
+    news word (:data:`_GENERIC_WORDS`). These words form a story's event key:
+    two titles that share the subject but not the event ("arc raiders" plus a
+    PvE/PvP split, an anti-cheat stack, or a player-count milestone) leave no
+    event words in common. Bare digits are kept ("patch 8" -> {"8"}) while
+    single letters are dropped.
+    """
+    entity_words: set[str] = set()
+    for entity in named_entities(title, include_leading=True):
+        entity_words.update(normalize_title(entity).split())
+    words: set[str] = set()
+    for word in normalize_title(title).split():
+        if word in _GENERIC_WORDS or word in entity_words:
+            continue
+        if len(word) == 1 and word.isalpha():
+            continue
+        words.add(word)
+    return words
+
+
+def event_overlap(a_title: str, b_title: str) -> int:
+    """Number of shared event words between two headlines (:func:`event_words`)."""
+    return len(event_words(a_title) & event_words(b_title))
+
+
 def same_story(
     a: dict,
     b: dict,
     *,
     threshold: float = SIMILARITY_THRESHOLD,
+    min_event_overlap: int = DEFAULT_EVENT_OVERLAP,
 ) -> bool:
     """True when two items describe the same story.
 
-    Rules (regression cluster e3b478ab26ee mixed unrelated games):
+    Rules (regression cluster e3b478ab26ee mixed unrelated games; regression:
+    three unrelated "arc raiders" headlines must stay separate):
 
     * Two equal titles are always the same story.
     * Otherwise they must share at least one named entity (generic words like
       "sold"/"copies"/"review" never count).
     * Reviews, sales figures and announcements are separate story types unless
       the titles are near-identical rewrites of one event.
-    * The titles must then be similar enough: at or past ``threshold``, or with
-      enough shared entities. A single unmistakable (non-incidental) entity can
-      carry a merge only with a lower similarity floor.
+    * A single shared entity is never enough on its own: the titles must also
+      agree on the event. A lone shared entity merges only when it leads both
+      headlines (see :func:`_single_subject_merge`) AND the titles share a
+      specific story type or at least ``min_event_overlap`` event words
+      (:func:`event_words`). Titles with several shared entities, or titles
+      that are fuzzy-similar at or past ``threshold``, still merge.
     """
     title_a = str(a.get("title") or "")
     title_b = str(b.get("title") or "")
@@ -312,18 +355,34 @@ def same_story(
     if not shared:
         return False
 
+    type_a, type_b = story_type(title_a), story_type(title_b)
     score = similarity(title_a, title_b)
-    if story_type(title_a) != story_type(title_b) and score < SAME_EVENT_SIMILARITY:
+    if type_a != type_b and score < SAME_EVENT_SIMILARITY:
         return False
 
     if score >= threshold:
         return True
     if len(shared) >= SHARED_ENTITIES_REQUIRED and score >= ENTITY_SIMILARITY_FLOOR:
         return True
-    return _single_subject_merge(shared, title_a, title_b, score)
+    return _single_subject_merge(
+        shared,
+        title_a,
+        title_b,
+        same_type=type_a == type_b,
+        story_type=type_a,
+        min_event_overlap=min_event_overlap,
+    )
 
 
-def _single_subject_merge(shared: set[str], a_title: str, b_title: str, score: float) -> bool:
+def _single_subject_merge(
+    shared: set[str],
+    a_title: str,
+    b_title: str,
+    *,
+    same_type: bool,
+    story_type: str,
+    min_event_overlap: int,
+) -> bool:
     """A lone shared entity fuses stories only when it leads both headlines.
 
     The shared entity must be a real multi-word name (not a platform/store and
@@ -332,9 +391,14 @@ def _single_subject_merge(shared: set[str], a_title: str, b_title: str, score: f
     "Gears of War: E-Day - how's it selling?" without fusing unrelated stories
     that merely mention the same brand ("Microsoft workers sued" vs "Microsoft
     launches RTX Spark PCs").
+
+    Leading both headlines is still only agreement on the *subject*. The titles
+    must also agree on the event: either they share a specific story type
+    (review, sales or delay), or they share at least ``min_event_overlap`` event
+    words. Three unrelated "arc raiders" headlines (a PvE/PvP split, an
+    anti-cheat stack, a player-count milestone) share the leading subject but
+    none of these, so they stay separate.
     """
-    if score < SINGLE_ENTITY_SIMILARITY_FLOOR:
-        return False
     leading_a = _ordered_entities(a_title, include_leading=True)
     leading_b = _ordered_entities(b_title, include_leading=True)
     if not leading_a or not leading_b:
@@ -345,8 +409,11 @@ def _single_subject_merge(shared: set[str], a_title: str, b_title: str, score: f
             continue
         if len(entity.split()) < 2:
             continue
-        if contains_entity(first_a, entity) and contains_entity(first_b, entity):
+        if not (contains_entity(first_a, entity) and contains_entity(first_b, entity)):
+            continue
+        if same_type and story_type in _STORY_TYPES:
             return True
+        return event_overlap(a_title, b_title) >= min_event_overlap
     return False
 
 
@@ -695,6 +762,7 @@ def cluster_items(
     failed_cooldown: dt.timedelta | None = None,
     failed_cooldown_hours: int | None = None,
     threshold: float = SIMILARITY_THRESHOLD,
+    min_event_overlap: int = DEFAULT_EVENT_OVERLAP,
 ) -> list[dict]:
     """Group items into stories, newest first, skipping already-covered stories.
 
@@ -723,7 +791,7 @@ def cluster_items(
     buckets: list[dict] = []
     for item in ordered:
         for bucket in buckets:
-            if same_story(item, bucket["seed"], threshold=threshold):
+            if same_story(item, bucket["seed"], threshold=threshold, min_event_overlap=min_event_overlap):
                 bucket["items"].append(item)
                 break
         else:
@@ -791,11 +859,14 @@ __all__ = [
     "DEFAULT_SEEN_PATH",
     "DEFAULT_FAILED_PATH",
     "DEFAULT_FAILED_COOLDOWN_HOURS",
+    "DEFAULT_EVENT_OVERLAP",
     "SEEN_COOLDOWN",
     "FINGERPRINT_FORMAT",
     "cluster_id_for_urls",
     "cluster_items",
     "contains_entity",
+    "event_overlap",
+    "event_words",
     "load_pool",
     "load_seen",
     "mark_seen",
