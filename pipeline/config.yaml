@@ -229,10 +229,11 @@ gates:
 # article never confirm a story; several articles from the same owner count as
 # one voice). On top of that, a headline matching any format-exclusion pattern
 # is never covered. Each entry is a case-insensitive regex matched against the
-# whole headline; word-boundary anchors (\b) make entries match whole words or
-# phrases, not substrings, so "deal" no longer hits "deal with Sony" while
-# "\b% off\b" still matches "40% off" right next to the percent sign. Editable
-# through ``score.exclude_title_patterns`` in config.yaml.
+# whole headline. Most use word-boundary anchors (\b) so they match whole words
+# or phrases, not substrings: a bare "deals" is allowed while the exact phrase
+# "best deals" is not. "\d+\s?% off" and "up to \d+%" catch discounts like
+# "40% off" and "up to 28%". Editable through
+# ``score.exclude_title_patterns`` in config.yaml.
 score:
   min_score: 65
   # Corroborated stories (at least two distinct owners) clear a lower bar:
@@ -300,9 +301,9 @@ score:
     - '\bto report (?:first|second|third|fourth|fiscal)\b'
     - '\bconference call\b'
     - '\bsale ends\b'
-    - '\bdeals\b'
     - '\bbest deals\b'
-    - '\b% off\b'
+    - '\d+\s?% off'
+    - 'up to \d+%'
     - '\bprice drop\b'
     - '\bon sale\b'
     - '\bdiscount code\b'

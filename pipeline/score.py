@@ -54,11 +54,12 @@ DEFAULT_WEIGHTS = {
 }
 
 #: Format/promotional headlines that are never worth covering, regardless of
-#: how confirmable the cluster is. Every entry is a case-insensitive regex with
-#: word-boundary anchors so it matches whole words or phrases, not substrings:
-#: "\bdeals\b" catches "Black Friday deals" but not a singular "deal with Sony",
-#: and "\b% off\b" matches "40% off" right next to the percent sign. Editable
-#: through ``score.exclude_title_patterns`` in config.yaml.
+#: how confirmable the cluster is. Every entry is a case-insensitive regex.
+#: Most use word-boundary anchors so they match whole words or phrases, not
+#: substrings: "\bbest deals\b" catches the exact phrase while a bare "deals"
+#: is allowed, and "\d+\s?% off" / "up to \d+%" match discounts like "40% off"
+#: and "up to 28%". Editable through ``score.exclude_title_patterns`` in
+#: config.yaml.
 DEFAULT_EXCLUDE_TITLE_PATTERNS = [
     r"\bpodcast\b",
     r"\bshare of the week\b",
@@ -77,9 +78,9 @@ DEFAULT_EXCLUDE_TITLE_PATTERNS = [
     r"\bto report (?:first|second|third|fourth|fiscal)\b",
     r"\bconference call\b",
     r"\bsale ends\b",
-    r"\bdeals\b",
     r"\bbest deals\b",
-    r"\b% off\b",
+    r"\d+\s?% off",
+    r"up to \d+%",
     r"\bprice drop\b",
     r"\bon sale\b",
     r"\bdiscount code\b",

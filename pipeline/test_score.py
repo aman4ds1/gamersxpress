@@ -124,9 +124,22 @@ def test_licensing_deal_is_not_excluded():
     assert ranked[0]["eligible"] is True
 
 
-def test_black_friday_deals_is_excluded():
-    c = cluster("Best Black Friday deals on GPUs", tiers=(1,), owners=("a",))
+def test_plural_licensing_deals_is_not_excluded():
+    # The bare "\bdeals\b" pattern used to catch this; only exact promo phrases
+    # like "best deals" are excluded now, so a licensing story is not filtered.
+    c = cluster("Sony and Microsoft sign new licensing deals",
+                tiers=(1,), owners=("a",), source_names=("Eurogamer",))
     ranked = score.rank([c])
+    assert ranked[0]["confirmable"] is True
+    assert ranked[0]["excluded_by"] is None
+    assert ranked[0]["eligible"] is True
+
+
+def test_best_deals_is_excluded():
+    c = cluster("Best deals on gaming PCs", tiers=(1,), owners=("a",))
+    ranked = score.rank([c])
+    assert ranked[0]["excluded_by"] is not None
+    assert "best deals" in ranked[0]["excluded_by"]
     assert ranked[0]["eligible"] is False
     assert ranked[0]["excluded_by"] is not None
 
@@ -143,6 +156,21 @@ def test_percent_off_is_excluded():
     ranked = score.rank([c])
     assert ranked[0]["eligible"] is False
     assert ranked[0]["excluded_by"] is not None
+
+
+def test_number_percent_off_is_excluded():
+    c = cluster("Save 40% off select games", tiers=(1,), owners=("a",))
+    ranked = score.rank([c])
+    assert ranked[0]["excluded_by"] is not None
+    assert "% off" in ranked[0]["excluded_by"]
+    assert ranked[0]["eligible"] is False
+
+
+def test_up_to_percent_off_is_excluded():
+    c = cluster("Up to 28% Off!", tiers=(1,), owners=("a",), source_names=("Eurogamer",))
+    ranked = score.rank([c])
+    assert ranked[0]["excluded_by"] is not None
+    assert ranked[0]["eligible"] is False
 
 
 def test_weekly_active_users_is_not_excluded():
