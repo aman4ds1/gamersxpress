@@ -19,4 +19,4 @@
 - Tools under /tools run entirely in the browser. No server calls.
 - Never state rumors as fact in article-generation prompts; sources are always cited.
 - For any Astro config, content collection, routing, or integration question, look it up in the Astro docs via the MCP before writing code. Don't rely on memory for Astro APIs.
-- Read docs/PLAN.md before pipeline work and follow it. If a task conflicts with it, say so instead of improvising.
+- Read docs/PLAN.md before pipeline work and follow it. If a task conflicts with it, say so instead of improvising.- Never delete or modify files outside the repository, and never delete any file that was not named in the prompt. If something should be removed, list it and wait for confirmation.
