@@ -149,6 +149,43 @@ def test_writer_template_bans_all_internal_terms():
         assert term in template
 
 
+def test_writer_template_uses_calendar_dates_not_relative_time():
+    template = write_module.load_template()
+    assert "Calendar dates only" in template
+    for word in ("today", "tonight", "now", "currently", "this week", "this weekend",
+                 "yesterday", "tomorrow", "recently", "soon", "next week"):
+        assert word in template
+
+
+def test_writer_template_attributes_statements_to_the_named_speaker():
+    template = write_module.load_template()
+    assert "Attribute statements to the named speaker" in template
+    assert "the narrative team" in template
+
+
+def test_writer_template_requires_a_date_for_limited_time_offers():
+    template = write_module.load_template()
+    assert "Limited-time offers need a date" in template
+    assert "date range or start date" in template
+
+
+def test_writer_template_omits_empty_sections_and_filler():
+    template = write_module.load_template()
+    assert "Sections earn their place" in template
+    assert "no other details are confirmed" in template
+
+
+def test_writer_template_names_title_entities():
+    template = write_module.load_template()
+    assert "Entities from the headline" in template
+    assert "every named character or product in the title" in template
+
+
+def test_writer_template_bans_full_and_complete_hype():
+    template = write_module.load_template()
+    assert 'No "full" or "complete" hype' in template
+
+
 def test_build_prompt_uses_custom_template(tmp_path):
     path = tmp_path / "writer.md"
     path.write_text("INSTRUCTIONS\n\n{{facts_sheet}}\n", encoding="utf-8")

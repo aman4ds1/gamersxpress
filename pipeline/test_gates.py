@@ -246,3 +246,146 @@ def test_gate_result_to_dict_round_trips():
     payload = run(article).to_dict()
     assert payload["passed"] is True
     assert "schema" in payload["checks"]
+
+
+# --- reader-text rules (relative time, attribution, offers, sections, entities,
+# --- completeness) -----------------------------------------------------------
+
+
+def tokon_facts():
+    """The Marvel Tōkon facts sheet: person speaker + "full" + a dated offer."""
+    return {
+        "id": "tokon",
+        "coherence": {"primary_entities": ["fighting souls", "marvel t", "phoenix cyclops"]},
+        "sources": [
+            {"source_name": "Tier One", "link": "https://a.example/1", "tier": 1, "owner": "a",
+             "region": "us", "title": "Marvel Tōkon: Fighting Souls reveals its Year 1 DLC roster"},
+            {"source_name": "Tier Two", "link": "https://b.example/1", "tier": 2, "owner": "b",
+             "region": "us", "title": "Phoenix Cyclops joins MARVEL Tōkon: Fighting Souls on November 2"},
+        ],
+        "claims": [
+            {"claim": "Marvel Tōkon: Fighting Souls revealed its full Year 1 DLC roster",
+             "value": "Marvel Tōkon: Fighting Souls revealed its full Year 1 DLC roster including Phoenix Cyclops on 2nd November",
+             "source_url": "https://a.example/1", "confidence": 1.0, "kind": "confirmed"},
+            {"claim": "Explanation for picking the Phoenix version of Cyclops",
+             "value": "Narrative team proposed the Phoenix version to create fresher visuals",
+             "source_url": "https://a.example/1", "confidence": 1.0,
+             "origin": "takeshi yamanaka", "affiliation": "playstation blog", "kind": "statement"},
+        ],
+    }
+
+
+def test_relative_time_rule_lists_come_from_config():
+    rules = gates.load_content_rules()
+    assert "today" in rules["relative_time_phrases"]
+    assert "now" in rules["relative_time_phrases"]
+    assert "this weekend" in rules["relative_time_phrases"]
+    assert CONFIG["relative_time_phrases"] == rules["relative_time_phrases"]
+
+
+def test_relative_time_in_body_fails():
+    body = "## What happened\n\nThe sale is starting today for all players. " + filler()
+    result = run(make_article(body=body)[0])
+    assert not result.passed
+    assert any("today" in failure for failure in result.checks["relative_time"]["failures"])
+
+
+def test_relative_time_in_title_and_description_fails():
+    result = run(make_article(front_overrides={"description": "The first ever sale begins now for players today."})[0])
+    assert not result.passed
+    assert result.checks["relative_time"]["failures"]
+
+
+def test_relative_time_inside_quotes_is_ignored():
+    body = '## What happened\n\nThe track is called "Now or Never" and it ships with the update. ' + filler()
+    result = run(make_article(body=body)[0])
+    assert result.checks["relative_time"]["failures"] == []
+
+
+def test_attribution_to_a_group_fails_when_the_sheet_names_a_speaker():
+    body = (
+        "## What happened\n\n"
+        + filler()
+        + "\n\nThe decision to launch the character as DLC rather than a day-one fighter "
+        + "was explained by the narrative team.\n"
+    )
+    result = run(make_article(body=body)[0], facts=tokon_facts())
+    failures = result.checks["attribution"]["failures"]
+    assert any("narrative team" in failure for failure in failures)
+    assert any("rather than" in failure for failure in failures)
+
+
+def test_limited_time_offer_without_a_date_fails():
+    body = "## What happened\n\n" + filler() + "\n\nThe game is available at a discount for players.\n"
+    result = run(make_article(body=body)[0])
+    assert any("discount" in failure for failure in result.checks["time_limited_offers"]["failures"])
+
+
+def test_offer_with_a_date_from_the_facts_sheet_passes():
+    facts = make_facts()
+    facts["claims"] = [{
+        "claim": "The sale runs from October 7 to October 21.",
+        "value": "October 7 to October 21",
+        "source_url": "https://a.example/1", "confidence": 1.0, "kind": "confirmed",
+    }]
+    body = "## What happened\n\n" + filler() + "\n\nThe sale runs from October 7 to October 21.\n"
+    result = run(make_article(body=body)[0], facts=facts)
+    assert result.checks["time_limited_offers"]["failures"] == []
+
+
+def test_no_other_details_filler_fails():
+    body = "## What happened\n\n" + filler() + "\n\n## What is unconfirmed\n\nNo other details are confirmed.\n"
+    result = run(make_article(body=body)[0])
+    assert any("no other details are confirmed" in failure for failure in result.checks["sections"]["failures"])
+
+
+def test_empty_optional_section_fails():
+    body = "## What happened\n\n" + filler() + "\n\n## Context and comparison\n\n"
+    result = run(make_article(body=body)[0])
+    assert any("Context and comparison" in failure for failure in result.checks["sections"]["failures"])
+
+
+def test_entities_must_cover_the_headline_product():
+    article, _ = make_article(
+        title="Marvel Tokon Fighting Souls reveals Year 1 DLC roster",
+        front_overrides={
+            "entities": ["PlayStation 5"],
+            "category": "gaming-news",
+            "tags": ["tokon", "dlc", "fighting"],
+        },
+    )
+    result = run(article, slug="marvel-tokon", facts=tokon_facts())
+    assert any(
+        "Marvel Tokon Fighting Souls" in failure for failure in result.checks["entities"]["failures"]
+    )
+
+
+def test_entities_must_cover_a_named_character_in_the_title():
+    article, _ = make_article(
+        title="Marvel Tokon Fighting Souls adds Phoenix Cyclops",
+        front_overrides={
+            "entities": ["Marvel Tōkon: Fighting Souls", "PlayStation 5"],
+            "category": "gaming-news",
+            "tags": ["tokon", "dlc", "fighting"],
+        },
+    )
+    result = run(article, slug="marvel-tokon-2", facts=tokon_facts())
+    assert any("Phoenix Cyclops" in failure for failure in result.checks["entities"]["failures"])
+
+
+def test_completeness_word_without_a_fact_fails():
+    body = "## What happened\n\n" + filler() + "\n\nThe studio confirmed the complete character roster.\n"
+    result = run(make_article(body=body)[0])
+    assert any("complete" in failure for failure in result.checks["completeness"]["failures"])
+
+
+def test_completeness_word_is_allowed_when_a_fact_states_it():
+    facts = make_facts()
+    facts["claims"] = [{
+        "claim": "The full roster is confirmed.",
+        "value": "full roster",
+        "source_url": "https://a.example/1", "confidence": 1.0, "kind": "confirmed",
+    }]
+    body = "## What happened\n\n" + filler() + "\n\nThe full roster is confirmed.\n"
+    result = run(make_article(body=body)[0], facts=facts)
+    assert result.checks["completeness"]["failures"] == []

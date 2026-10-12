@@ -284,6 +284,57 @@ def test_seo_instruction_covers_attribution_and_relation_rules():
         assert required in seo.SYSTEM_INSTRUCTION
 
 
+# --- relative time, completeness and contrast --------------------------------
+
+
+def test_validate_rejects_relative_time_in_snippet():
+    data = seo_data(
+        description="NVIDIA's flagship graphics card is available now with more memory and a higher price for gaming PCs and creators."
+    )
+    errors = seo.validate(data, article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert any("relative-time" in e for e in errors)
+
+
+def test_validate_rejects_completeness_word_without_a_fact():
+    data = seo_data(
+        description="NVIDIA's complete flagship graphics card arrives with more memory and a higher price for gaming PCs."
+    )
+    errors = seo.validate(data, article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert any("complete" in e for e in errors)
+
+
+def test_validate_allows_completeness_word_when_a_fact_states_it():
+    facts = make_facts(claim="NVIDIA's complete flagship line launches at $1,999.", value="$1,999")
+    data = seo_data(
+        description="NVIDIA's complete flagship graphics card arrives with more memory and a higher price for gaming PCs."
+    )
+    errors = seo.validate(data, article=ARTICLE, facts=facts, entities=seo.load_entities())
+    assert not any("complete" in e for e in errors)
+
+
+def test_validate_rejects_contrast_phrase_in_snippet():
+    data = seo_data(
+        description="NVIDIA's flagship card arrives as a premium option rather than a budget GPU for high-end gaming PCs and creators."
+    )
+    errors = seo.validate(data, article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert any("rather than" in e for e in errors)
+
+
+def test_snippet_banned_phrases_include_the_no_other_details_filler():
+    assert "no other details are confirmed" in seo.SNIPPET_BANNED_PHRASES
+
+
+def test_seo_instruction_covers_new_content_rules():
+    for required in (
+        "calendar dates",
+        "relative-time",
+        "'full' or 'complete'",
+        "date range or start date",
+        "main game or product from the headline",
+    ):
+        assert required in seo.SYSTEM_INSTRUCTION
+
+
 # --- entities ----------------------------------------------------------------
 
 

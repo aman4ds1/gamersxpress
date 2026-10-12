@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import verify
-from gates import load_content_limits
+from gates import load_content_limits, load_content_rules
 from json_schema import schema_errors
 from providers import (
     PROJECT_ROOT,
@@ -116,6 +116,7 @@ SNIPPET_BANNED_PHRASES = (
     "low confidence",
     "high confidence",
     "facts sheet",
+    "no other details are confirmed",
 )
 
 # Connectives that link two facts as cause, reason or contrast. The writer may
@@ -127,6 +128,8 @@ CAUSAL_PHRASES = (
     "driven by",
     "thanks to",
     "as a result",
+    "rather than",
+    "instead of",
 )
 
 # A percentage sorted with an origin phrase rewrites an overlap as "where it
@@ -178,15 +181,24 @@ SYSTEM_INSTRUCTION = (
     "something players receive: a price is what players pay. Never invent "
     "labels such as 'mid-tier'. Never print confidence numbers or words like "
     "'low confidence'. Never use internal terms such as 'facts sheet' in the "
-    "title or description; when a detail is not in the sheet, write 'no other "
-    "details are confirmed'. Name in-game currencies wherever an amount "
+    "title or description; omit any detail that is not in the sheet. Name "
+    "in-game currencies wherever an amount "
     "appears: '100,000 in-game DMZ Cash', never a bare dollar figure. "
+    "Use only the calendar dates the facts sheet gives (for example "
+    "'October 7'); never use relative-time words such as 'today', 'now', "
+    "'currently', 'this week' or 'soon'. Never add the words 'full' or "
+    "'complete' unless a fact states them. Include a sale, discount, trial "
+    "or free weekend only when the facts sheet gives its date range or start "
+    "date. Name the main game or product from the headline, every named "
+    "character or product in the title, and the platforms in the entities "
+    "field. "
     "Attribute an estimate to its origin ('according to estimates from X') and "
     "a reported claim to the outlet that reported it ('Eurogamer reports'); "
     "when the origin is unstated, attribute to the outlet. Never state an "
     "estimate or a reported claim as fact. Never link facts with a causal or "
     "contrast connective ('in contrast', 'because', 'driven by', 'thanks to', "
-    "'as a result') unless the facts sheet states that relationship, and never "
+    "'as a result', 'rather than', 'instead of') unless the facts sheet states "
+    "that relationship, and never "
     "rewrite a percentage or overlap as an origin ('came from'). The "
     "slug is generated in code from the final title; do not copy a source "
     "headline."
@@ -541,6 +553,25 @@ def validate(
                 errors.append(
                     f"title or description turns a percentage into an origin phrase: {phrase!r}"
                 )
+
+    # Relative-time wording makes the snippet go stale (writer rule: calendar
+    # dates only). The writer replaces "today"/"now" with the sheet's date.
+    rules = load_content_rules()
+    for phrase in rules["relative_time_phrases"]:
+        phrase = str(phrase).strip().lower()
+        if phrase and re.search(rf"(?<![\w-]){re.escape(phrase)}(?![\w-])", snippet):
+            errors.append(f"title or description uses relative-time wording: {phrase!r}")
+
+    # "full" and "complete" are hype unless a fact states them.
+    facts_lower = _facts_text(facts).lower()
+    for word in rules["completeness_words"]:
+        word = str(word).strip().lower()
+        if not word:
+            continue
+        if re.search(rf"\b{re.escape(word)}\b", snippet) and not re.search(
+            rf"\b{re.escape(word)}\b", facts_lower
+        ):
+            errors.append(f"title or description adds the word {word!r} that no fact states")
 
     if not isinstance(description, str):
         errors.append("description is not a string")

@@ -37,15 +37,16 @@ import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import yaml
 
-from cluster import similarity
+from cluster import load_known_names, similarity, story_phrases
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name("config.yaml")
@@ -90,6 +91,46 @@ DEFAULT_GATES: dict[str, Any] = {
     "banned_phrases": [],
 }
 
+# Reader-text rules shared with the SEO stage (``pipeline/seo.py``). config.yaml
+# is the single source of truth; these defaults keep the pipeline running with a
+# partial config.
+DEFAULT_RULES: dict[str, tuple[str, ...]] = {
+    "relative_time_phrases": (
+        "today", "tonight", "now", "currently", "this week", "this weekend",
+        "yesterday", "tomorrow", "recently", "soon", "next week",
+    ),
+    "offer_phrases": (
+        "sale", "discount", "game trial", "free weekend", "free to play",
+        "free play", "play free", "% off",
+    ),
+    "contrast_phrases": ("rather than", "instead of"),
+    "generic_attribution_phrases": (
+        "the team", "the studio", "the developer", "the developers",
+        "the narrative team", "narrative team", "the dev team", "dev team",
+        "the design team", "design team",
+    ),
+    "completeness_words": ("full", "complete"),
+}
+
+# Origin words that mark a claim's origin as an organisation rather than a
+# person the writer can quote by name.
+_ORG_ORIGIN_WORDS = frozenset({
+    "works", "studio", "studios", "games", "game", "entertainment", "inc",
+    "ltd", "llc", "corp", "corporation", "company", "team", "interactive",
+    "media", "software", "systems", "blog", "news",
+})
+
+# A quoted span (straight or curly double quotes) is a name, not reader text;
+# relative-time words inside it are ignored.
+_QUOTED_SPAN_RE = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
+_ALNUM_RE = re.compile(r"[a-z0-9]+")
+_MONTH_RE = re.compile(
+    r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b",
+    re.IGNORECASE,
+)
+_ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
 
 @dataclass
 class GateResult:
@@ -132,6 +173,34 @@ def load_content_limits(path: str | Path | None = None) -> dict:
     return {key: int(section.get(key, default)) for key, default in DEFAULT_CONTENT_LIMITS.items()}
 
 
+def load_content_rules(path: str | Path | None = None) -> dict:
+    """Read the reader-text phrase rules from the ``gates`` block in config.yaml.
+
+    These lists (relative-time words, offer phrases, contrast phrases, generic
+    attributions and completeness words) are shared by these gates and the SEO
+    snippet validation in ``pipeline/seo.py``. Missing keys fall back to
+    :data:`DEFAULT_RULES`.
+    """
+    path = Path(path) if path else DEFAULT_CONFIG_PATH
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    section = raw.get("gates") or {}
+    if not isinstance(section, dict):
+        section = {}
+    rules: dict[str, tuple[str, ...]] = {}
+    for key, defaults in DEFAULT_RULES.items():
+        values = section.get(key)
+        if isinstance(values, (list, tuple)):
+            rules[key] = tuple(str(value) for value in values if str(value).strip())
+        else:
+            rules[key] = defaults
+    return rules
+
+
 def load_gates_config(path: str | Path | None = None) -> dict:
     path = Path(path) if path else DEFAULT_CONFIG_PATH
     try:
@@ -148,6 +217,7 @@ def load_gates_config(path: str | Path | None = None) -> dict:
         "min_sources": int(section.get("min_sources", DEFAULT_GATES["min_sources"])),
         "banned_phrases": [str(p).lower() for p in section.get("banned_phrases") or []],
     }
+    config.update(load_content_rules(path))
     overlap = section.get("overlap") or {}
     config["overlap"] = {
         "ngram": int(overlap.get("ngram", DEFAULT_GATES["overlap"]["ngram"])),
@@ -245,6 +315,141 @@ def _parse_time(value: Any) -> dt.datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+
+
+# --- reader-text rule helpers -------------------------------------------------
+
+
+def _phrase_hits(text: str, phrases: Iterable[str]) -> list[str]:
+    """Phrases present in ``text`` on word boundaries, ignoring quoted spans."""
+    haystack = _QUOTED_SPAN_RE.sub(" ", str(text or "")).lower()
+    hits: list[str] = []
+    for phrase in phrases:
+        phrase = str(phrase).strip().lower()
+        if not phrase:
+            continue
+        if re.search(rf"(?<![\w-]){re.escape(phrase)}(?![\w-])", haystack):
+            hits.append(phrase)
+    return hits
+
+
+def _facts_claim_text(facts: dict | None) -> str:
+    """The claim and value text of every claim in the sheet, joined."""
+    parts: list[str] = []
+    for claim in (facts or {}).get("claims") or []:
+        parts.append(str(claim.get("claim", "")))
+        parts.append(str(claim.get("value", "")))
+    return "\n".join(parts)
+
+
+def _sentences(body: str) -> list[str]:
+    """Reader sentences in ``body`` (blank lines and terminal punctuation)."""
+    text = _FENCE_BLOCK_RE.sub(" ", body or "")
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", text) if part.strip()]
+
+
+def _date_token(sentence: str) -> str | None:
+    """The first calendar date token in ``sentence`` (month, ISO date or year)."""
+    for pattern in (_ISO_DATE_RE, _MONTH_RE, _YEAR_RE):
+        match = pattern.search(sentence)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _is_person_origin(origin: str) -> bool:
+    """True when a claim origin looks like a named person, not an organisation."""
+    words = _WORD_RE.findall(str(origin or "").lower())
+    if not words:
+        return False
+    return not any(word in _ORG_ORIGIN_WORDS for word in words)
+
+
+def _fold(text: str) -> str:
+    """Lowercased ASCII text with accents folded away (for tolerant matching)."""
+    return unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode("ascii").lower()
+
+
+def _entity_tokens(text: str) -> tuple[str, ...]:
+    """Lowercased ASCII alphanumeric tokens, accents folded away."""
+    return tuple(_ALNUM_RE.findall(_fold(text)))
+
+
+def _is_subsequence(needle: tuple[str, ...], haystack: tuple[str, ...]) -> bool:
+    if not needle:
+        return True
+    iterator = iter(haystack)
+    return all(token in iterator for token in needle)
+
+
+def _contains_run(haystack: tuple[str, ...], needle: tuple[str, ...]) -> bool:
+    """True when ``needle`` appears as a contiguous run inside ``haystack``."""
+    size = len(needle)
+    if size == 0:
+        return True
+    return any(haystack[index : index + size] == needle for index in range(len(haystack) - size + 1))
+
+
+def _name_covers(candidate: tuple[str, ...], name: tuple[str, ...]) -> bool:
+    """True when one token sequence contains the other, in order."""
+    return _is_subsequence(candidate, name) or _is_subsequence(name, candidate)
+
+
+def title_entity_coverage(
+    title: str,
+    entities: Iterable[str],
+    facts: dict | None = None,
+    *,
+    known: Iterable[str] | None = None,
+) -> list[str]:
+    """Name phrases from ``title`` that ``entities`` does not cover.
+
+    Rule: an article always names the main game or product from the headline and
+    every named character or product in the title as entities. A phrase is
+    checked when it is a known name or appears in the facts sheet, and phrases
+    that carry a number are only checked when they are known names (so a topical
+    phrase like "Year 1 DLC" is not demanded as an entity).
+    """
+    known_names = list(known) if known is not None else list(load_known_names())
+    known_tokens = [_entity_tokens(name) for name in known_names]
+    entity_tokens = [_entity_tokens(name) for name in entities if str(name).strip()]
+    facts_tokens = _entity_tokens(_facts_claim_text(facts))
+    missing: list[str] = []
+    for phrase in story_phrases(title):
+        tokens = _entity_tokens(phrase)
+        if not tokens or not any(token.isalpha() for token in tokens):
+            continue
+        is_known = any(_name_covers(tokens, known_name) for known_name in known_tokens)
+        in_facts = bool(facts_tokens) and _contains_run(facts_tokens, tokens)
+        if not (is_known or in_facts):
+            continue
+        if any(token.isdigit() for token in tokens) and not is_known:
+            continue
+        if not any(_name_covers(tokens, name) for name in entity_tokens):
+            missing.append(phrase)
+    return missing
+
+
+def _empty_sections(body: str) -> list[str]:
+    """Heading text of every section that has no body words before the next one."""
+    empty: list[str] = []
+    current: str | None = None
+    words = 0
+
+    def flush() -> None:
+        if current is not None and words == 0:
+            empty.append(current)
+
+    for line in (body or "").splitlines():
+        match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+        if match:
+            flush()
+            current = match.group(1)
+            words = 0
+        elif current is not None:
+            words += len(_WORD_RE.findall(line))
+    flush()
+    return empty
 
 
 # --- external checks (injectable) --------------------------------------------
@@ -442,6 +647,83 @@ def run_gates(
             banned_failures.append(f"banned filler phrase: {phrase!r}")
     record("banned_phrases", banned_failures, details={"found": len(banned_failures)})
 
+    # 5a. relative time (rule: write calendar dates, never words that expire)
+    relative_failures: list[str] = []
+    for label, text in (("title", title), ("description", description), ("body", body)):
+        hits = _phrase_hits(text, config["relative_time_phrases"])
+        if hits:
+            relative_failures.append(f"{label} uses relative-time wording that will expire: {hits}")
+    record("relative_time", relative_failures)
+
+    # 5b. attribution (rule: statements go to the speaker the sheet names, and
+    # no contrast is invented)
+    attribution_failures: list[str] = []
+    facts_text = _facts_claim_text(facts).lower()
+    body_lower = body.lower()
+    for phrase in config["contrast_phrases"]:
+        if phrase and phrase in body_lower and phrase not in facts_text:
+            attribution_failures.append(f"body uses a contrast phrase no fact states: {phrase!r}")
+    speakers = sorted({
+        str(claim.get("origin") or "").strip()
+        for claim in facts.get("claims") or []
+        if claim.get("kind") == "statement"
+        and str(claim.get("origin") or "").strip().lower() not in ("", "unstated")
+        and _is_person_origin(str(claim.get("origin") or ""))
+    })
+    if speakers:
+        for phrase in config["generic_attribution_phrases"]:
+            if phrase and phrase in body_lower and phrase not in facts_text:
+                attribution_failures.append(
+                    f"body attributes a statement to a group ({phrase!r}); the sheet names {speakers}"
+                )
+    record("attribution", attribution_failures)
+
+    # 5c. limited-time offers need a date the sheet states
+    offer_failures: list[str] = []
+    for sentence in _sentences(body):
+        lowered = sentence.lower()
+        offer = next((p for p in config["offer_phrases"] if p and p in lowered), None)
+        if not offer:
+            continue
+        date = _date_token(sentence)
+        if not date or date.lower() not in facts_text:
+            offer_failures.append(
+                f"body offers {offer!r} without a date range or start date from the facts sheet: {sentence!r}"
+            )
+    record("time_limited_offers", offer_failures)
+
+    # 5d. sections earn their place
+    section_failures: list[str] = []
+    filler = "no other details are confirmed"
+    if filler in body_lower:
+        section_failures.append(f"body writes filler instead of omitting the section: {filler!r}")
+    for heading in _empty_sections(body):
+        section_failures.append(f"section {heading!r} has no content; omit it instead")
+    record("sections", section_failures)
+
+    # 5e. entities name the headline's game/product and characters
+    entity_failures: list[str] = []
+    missing_entities = title_entity_coverage(
+        title, front.get("entities") or [], facts,
+    )
+    if missing_entities:
+        entity_failures.append(
+            f"entities must include the main game or product and every named character "
+            f"or product in the title: {missing_entities}"
+        )
+    record("entities", entity_failures, details={"missing": missing_entities})
+
+    # 5f. no "full"/"complete" hype unless a fact states it
+    completeness_failures: list[str] = []
+    for word in config["completeness_words"]:
+        if not word:
+            continue
+        if re.search(rf"\b{re.escape(word)}\b", haystack) and not re.search(
+            rf"\b{re.escape(word)}\b", facts_text
+        ):
+            completeness_failures.append(f"body adds the word {word!r} that no fact states")
+    record("completeness", completeness_failures)
+
     # 6. duplicates and near-duplicates
     duplicate_failures: list[str] = []
     near_cfg = config["near_duplicate"]
@@ -527,13 +809,16 @@ __all__ = [
     "ALLOWED_CATEGORIES",
     "DEFAULT_CONTENT_LIMITS",
     "DEFAULT_GATES",
+    "DEFAULT_RULES",
     "GateResult",
     "default_link_checker",
     "default_site_checks",
     "load_content_limits",
+    "load_content_rules",
     "load_existing_articles",
     "load_gates_config",
     "overlap_ratio",
     "parse_front_matter",
     "run_gates",
+    "title_entity_coverage",
 ]

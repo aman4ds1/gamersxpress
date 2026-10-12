@@ -246,6 +246,55 @@ gates:
     - "read on"
     - "at the end of the day"
     - "without further ado"
+  # Relative-time words make a page go stale the moment the reader opens it: a
+  # story must use the calendar dates the facts sheet gives it instead. Matched
+  # on word boundaries outside quoted spans, in the title, description and body.
+  relative_time_phrases:
+    - today
+    - tonight
+    - now
+    - currently
+    - this week
+    - this weekend
+    - yesterday
+    - tomorrow
+    - recently
+    - soon
+    - next week
+  # Consumer offers (sales, trials, free weekends). A story may include one only
+  # when the facts sheet gives its date range or start date; otherwise it fails.
+  offer_phrases:
+    - sale
+    - discount
+    - game trial
+    - free weekend
+    - free to play
+    - free play
+    - play free
+    - "% off"
+  # Contrast connectives are allowed only when a fact states the relationship
+  # (writer rule 2: never write a contrast no fact states).
+  contrast_phrases:
+    - rather than
+    - instead of
+  # A statement of intent, reasoning or design must be attributed to the speaker
+  # the facts sheet names, never to a group. These phrases fail when the sheet
+  # names a speaker and does not itself use the phrase.
+  generic_attribution_phrases:
+    - the team
+    - the studio
+    - the developer
+    - the developers
+    - the narrative team
+    - narrative team
+    - the dev team
+    - dev team
+    - the design team
+    - design team
+  # "full" and "complete" are hype words unless a fact states them.
+  completeness_words:
+    - full
+    - complete
 
 # Scoring stage (pipeline/score.py; PLAN.md section 7.4). A story is only
 # covered when it is eligible AND reaches min_score; recency, tier, corroboration
