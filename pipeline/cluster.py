@@ -231,6 +231,204 @@ def named_entities(title: str, *, include_leading: bool = False) -> set[str]:
     return set(_ordered_entities(title, include_leading=include_leading))
 
 
+# --- story entities: name phrases and their connector sub-entities ------------
+#
+# :func:`named_entities` glues a whole run of capitalized words into one name,
+# which is right for comparing headlines but too coarse to decide whether a
+# claim is about a story: the cluster title "DMZ for Call of Duty: Modern
+# Warfare 4 being released early, but Infinity Ward shoots down PvE hopes"
+# produced the single entity "dmz for call of duty modern warfare 4", so a claim
+# naming the game ("Release date of Call of Duty: Modern Warfare 4") matched
+# none of it and was dropped as off-topic.
+#
+# :func:`story_entities` keeps each proper-name phrase but stops at the words
+# and punctuation that separate two names ("for", "in", "on", "with", "and", a
+# comma, a spaced dash) and preserves an internal colon, so a subtitle stays
+# visible ("call of duty: modern warfare 4"). Each phrase is then split at its
+# connectors into sub-entities ("call of duty", "modern warfare 4"), keeping the
+# full phrase as well. A name known from ``data/entities.json`` is never split
+# further, so "Call of Duty" and "Gears of War" stay whole when they are known.
+
+DEFAULT_ENTITIES_PATH = PROJECT_ROOT / "data" / "entities.json"
+
+#: Words that bind a multi-word proper name together ("Gears of War").
+_STORY_GLUE_WORDS = frozenset({"of", "the", "a", "an", "vs", "de"})
+#: Words that separate two names in one headline; they end a phrase.
+_STORY_BREAK_WORDS = frozenset({"for", "in", "on", "with", "and"})
+#: Punctuation kept inside a phrase (a subtitle colon); punctuation that ends a
+#: phrase (a list comma, a spaced dash).
+_STORY_INNER_PUNCT = frozenset({":"})
+_STORY_BREAK_PUNCT = frozenset({",", "-", "\u2013", "\u2014"})
+#: A name token (intra-word apostrophes/hyphens kept) or a separating punctuation.
+_STORY_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*|[:,\u2013\u2014-]")
+
+_KNOWN_NAMES_CACHE: dict[str, frozenset[str]] = {}
+
+
+def load_known_names(path: str | Path | None = None) -> frozenset[str]:
+    """Lowercased canonical names and aliases from ``data/entities.json``.
+
+    A missing or malformed file yields an empty set, so entity extraction still
+    runs. The result is cached per resolved path.
+    """
+    resolved = str(Path(path).resolve()) if path else str(DEFAULT_ENTITIES_PATH.resolve())
+    cached = _KNOWN_NAMES_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+    try:
+        raw = json.loads(Path(resolved).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raw = None
+    entries = raw.get("entities", raw) if isinstance(raw, dict) else raw
+    names: set[str] = set()
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        for value in [entry.get("canonical"), *(entry.get("aliases") or [])]:
+            name = normalize_title(str(value)) if value else ""
+            if name:
+                names.add(name)
+    result = frozenset(names)
+    _KNOWN_NAMES_CACHE[resolved] = result
+    return result
+
+
+def _story_phrase_tokens(title: str) -> list[list[str]]:
+    """Proper-name phrases as token lists, split at separating connectors."""
+    phrases: list[list[str]] = []
+    current: list[str] = []
+    for token in _STORY_TOKEN_RE.findall(str(title or "")):
+        lower = token.lower()
+        if token in _STORY_INNER_PUNCT:
+            if current:
+                current.append(token)
+        elif token in _STORY_BREAK_PUNCT or lower in _STORY_BREAK_WORDS:
+            if current:
+                phrases.append(current)
+                current = []
+        elif lower in _STORY_GLUE_WORDS:
+            if current:
+                current.append(lower)
+        elif lower in _GENERIC_WORDS:
+            if current:
+                phrases.append(current)
+                current = []
+        elif _is_name_token(token):
+            if token.isdigit() and not current:
+                continue  # numbers never start an entity
+            current.append(token)
+        else:
+            if current:
+                phrases.append(current)
+                current = []
+    if current:
+        phrases.append(current)
+    return phrases
+
+
+def _clean_story_phrase(tokens: list[str]) -> list[str]:
+    """Strip leading/trailing glue words and stray punctuation from a phrase."""
+    while tokens and (
+        tokens[0].lower() in _STORY_GLUE_WORDS
+        or tokens[0] in _STORY_INNER_PUNCT
+        or tokens[0] in _STORY_BREAK_PUNCT
+    ):
+        tokens = tokens[1:]
+    while tokens and (
+        tokens[-1].lower() in _STORY_GLUE_WORDS
+        or tokens[-1] in _STORY_INNER_PUNCT
+        or tokens[-1] in _STORY_BREAK_PUNCT
+    ):
+        tokens = tokens[:-1]
+    return tokens
+
+
+def _format_story_phrase(tokens: list[str]) -> str:
+    """Join phrase tokens, attaching an inner colon to the word before it."""
+    words: list[str] = []
+    for token in tokens:
+        if token in _STORY_INNER_PUNCT and words:
+            words[-1] = words[-1] + token
+        else:
+            words.append(token)
+    return " ".join(words)
+
+
+def story_phrases(title: str) -> list[str]:
+    """Full proper-name phrases in ``title``, in order of first appearance.
+
+    Words joined by a binding connector ("of", "the") stay one phrase; the
+    separating words and punctuation end it. An internal colon is preserved, so
+    "Call of Duty: Modern Warfare 4" is one phrase. Bare numbers, generic news
+    words and lone leading words never start a phrase.
+    """
+    phrases: list[str] = []
+    for tokens in _story_phrase_tokens(title):
+        cleaned = _clean_story_phrase(tokens)
+        if not cleaned or not any(char.isalpha() for char in "".join(cleaned)):
+            continue
+        text = _format_story_phrase(cleaned)
+        if text and text not in phrases:
+            phrases.append(text)
+    return phrases
+
+
+def sub_entities(name: str, *, known: Iterable[str] | None = None) -> list[str]:
+    """A name phrase plus the sub-entities its connectors split it into.
+
+    The full phrase is kept (lowercased, colon preserved) and each connector-
+    separated part is added ("Call of Duty: Modern Warfare 4" yields "Call of
+    Duty" and "Modern Warfare 4"). A phrase or part that is a known name from
+    ``data/entities.json`` is never split further.
+    """
+    known_set = load_known_names() if known is None else frozenset(
+        normalize_title(str(entry)) for entry in known
+    )
+    display = re.sub(r"\s+", " ", str(name or "").strip().lower())
+    base = normalize_title(name)
+    if not base:
+        return []
+    out: list[str] = [display] if display else []
+    if base in known_set:
+        return out
+    current: list[str] = []
+    segments: list[list[str]] = []
+    for token in _STORY_TOKEN_RE.findall(str(name or "")):
+        lower = token.lower()
+        if token in _STORY_INNER_PUNCT or token in _STORY_BREAK_PUNCT or lower in _STORY_BREAK_WORDS:
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current)
+    for segment in segments:
+        text = normalize_title(_format_story_phrase(segment))
+        if text and text != base and any(char.isalpha() for char in text) and text not in out:
+            out.append(text)
+    for known_name in sorted(known_set, key=len, reverse=True):
+        if (
+            known_name not in out
+            and contains_entity(base, known_name)
+            and any(char.isalpha() for char in known_name)
+        ):
+            out.append(known_name)
+    return out
+
+
+def story_entities(
+    title: str, *, known: Iterable[str] | None = None
+) -> list[str]:
+    """Every full name phrase in ``title`` plus its connector sub-entities."""
+    entities: list[str] = []
+    for phrase in story_phrases(title):
+        for entity in sub_entities(phrase, known=known):
+            if entity and entity not in entities:
+                entities.append(entity)
+    return entities
+
+
 def story_type(title: str) -> str:
     """Classify a headline as ``review``, ``sales`` or ``announcement``.
 
@@ -973,9 +1171,14 @@ __all__ = [
     "event_overlap",
     "event_words",
     "excluded_title_pattern",
+    "DEFAULT_ENTITIES_PATH",
+    "load_known_names",
     "load_pool",
     "load_seen",
     "mark_seen",
+    "story_entities",
+    "story_phrases",
+    "sub_entities",
     "merge_items",
     "named_entities",
     "normalize_title",

@@ -731,7 +731,9 @@ def test_primary_entities_uses_the_most_supported_headline_entity():
             "Ace Combat 8 has sold one million copies",
         ],
     )
-    assert "gears of war e-day" in primary
+    assert "gears of war: e-day" in primary
+    assert "gears of war" in primary
+    assert "e day" in primary
     assert "ace combat 8" not in primary
 
 
@@ -832,6 +834,65 @@ def test_coherence_uses_claim_text_when_source_has_no_title(tmp_path):
     )
     assert len(result["claims"]) == 1
     assert result["coherence"]["checked"] is True
+
+
+COD_DMZ_SPLIT_TITLE = (
+    "DMZ for Call of Duty: Modern Warfare 4 being released early, but "
+    "Infinity Ward shoots down PvE hopes"
+)
+COD_DMZ_BLOG_TITLE = (
+    "Everything you need to know about DMZ mode in Call of Duty: Modern Warfare 4"
+)
+
+
+def test_coherence_keeps_claims_that_name_a_sub_entity():
+    # The cluster title binds DMZ and the game into one long phrase; a claim that
+    # names only "Call of Duty: Modern Warfare 4", or only "DMZ", is still about
+    # the story and must be kept. A claim from an unrelated game's source, whose
+    # headline is not about the cluster either, is still dropped.
+    sources = [
+        source(link="https://eurogamer.net/dmz", name="Eurogamer", owner="ign", tier=2, title=COD_DMZ_SPLIT_TITLE),
+        source(link="https://blog.playstation.com/dmz", name="PlayStation Blog", owner="sony", tier=1, title=COD_DMZ_BLOG_TITLE),
+        source(link="https://b.example/ace", name="Beta", owner="co-b", tier=1, title="Ace Combat 8 Has Sold One Million Copies"),
+    ]
+    claims = [
+        claim(claim="Release date of Call of Duty: Modern Warfare 4", value="October 23", source_url="https://blog.playstation.com/dmz"),
+        claim(claim="Forward Operating Base station count", value="over a dozen stations", source_url="https://blog.playstation.com/dmz"),
+        claim(claim="DMZ Progression level range", value="70 levels", source_url="https://blog.playstation.com/dmz"),
+        claim(claim="Ace Combat 8 sold one million copies", value="one million", source_url="https://b.example/ace"),
+    ]
+    kept, dropped, primary = facts.coherence_check(
+        claims, sources, title=COD_DMZ_SPLIT_TITLE, story_id="dmz"
+    )
+    assert [entry["claim"] for entry in kept] == [
+        "Release date of Call of Duty: Modern Warfare 4",
+        "Forward Operating Base station count",
+        "DMZ Progression level range",
+    ]
+    assert [entry["claim"] for entry in dropped] == ["Ace Combat 8 sold one million copies"]
+    assert "call of duty: modern warfare 4" in primary
+    assert "call of duty" in primary
+    assert "dmz" in primary
+
+
+def test_coherence_warns_when_most_of_one_source_is_dropped(caplog):
+    caplog.set_level(logging.WARNING)
+    sources = [
+        source(link="https://blog.playstation.com/dmz", name="PlayStation Blog", owner="sony", tier=1, title=COD_DMZ_BLOG_TITLE),
+        source(link="https://b.example/ace", name="Beta", owner="co-b", tier=1, title="Ace Combat 8 Has Sold One Million Copies"),
+    ]
+    claims = [
+        claim(claim="Ace Combat 8 sold one million copies", value="one million", source_url="https://b.example/ace"),
+        claim(claim="Ace Combat 8 review score", value="9/10", source_url="https://b.example/ace"),
+    ]
+    kept, dropped, _ = facts.coherence_check(
+        claims, sources, title=COD_DMZ_SPLIT_TITLE, story_id="dmz"
+    )
+    assert kept == []
+    assert len(dropped) == 2
+    assert any(
+        "dropped 2 of 2 claims from Beta" in record.message for record in caplog.records
+    )
 
 
 # --- old-format fixture: only the central claim's origins may confirm ---------

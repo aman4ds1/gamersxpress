@@ -373,6 +373,53 @@ def test_call_of_duty_headlines_sharing_several_entities_still_cluster():
     assert cluster.same_story(left, right) is True
 
 
+# --- story entities: long phrases split into sub-entities ---------------------
+#
+# The coherence check compares a claim against these, so a claim naming only
+# part of a long capitalized phrase is still recognized as on-topic.
+
+COD_DMZ_SPLIT_TITLE = (
+    "DMZ for Call of Duty: Modern Warfare 4 being released early, but "
+    "Infinity Ward shoots down PvE hopes"
+)
+
+
+def test_story_entities_yield_full_phrases_and_sub_entities():
+    assert set(cluster.story_entities(COD_DMZ_SPLIT_TITLE)) == {
+        "dmz",
+        "call of duty: modern warfare 4",
+        "call of duty",
+        "modern warfare 4",
+        "infinity ward",
+        "pve",
+    }
+
+
+def test_story_phrases_stop_at_separating_connectors():
+    assert cluster.story_phrases(COD_DMZ_SPLIT_TITLE) == [
+        "DMZ",
+        "Call of Duty: Modern Warfare 4",
+        "Infinity Ward",
+        "PvE",
+    ]
+
+
+def test_story_entities_keep_known_names_whole():
+    # "of" binds "Gears of War" together and is never a split point; the
+    # subtitle colon splits the phrase into its two named parts.
+    assert set(cluster.story_entities("Gears of War: E-Day sold well")) == {
+        "gears of war: e-day",
+        "gears of war",
+        "e day",
+    }
+
+
+def test_sub_entities_prefer_a_known_name_over_splitting():
+    assert cluster.sub_entities(
+        "Sackboy for PlayStation", known={"sackboy for playstation"}
+    ) == ["sackboy for playstation"]
+
+
 # --- failed-story tracking ---------------------------------------------------
 
 

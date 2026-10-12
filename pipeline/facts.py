@@ -882,29 +882,52 @@ def primary_entities(
     source_titles: list[str] | None = None,
     entities: list[str] | None = None,
 ) -> list[str]:
-    """The entity (or tied entities) that define the story's subject.
+    """The entities that define the story's subject, with their sub-entities.
 
-    Counts each named entity across the cluster title and the source headlines
-    and keeps those with the highest support. Falls back to the cluster's
-    reported entities when no headline parses.
+    Counts each full name phrase (:func:`cluster.story_phrases`) across the
+    cluster title and the source headlines and keeps those with the highest
+    support. Each surviving phrase is expanded into itself plus the sub-entities
+    its connectors split it into (:func:`cluster.sub_entities`), so a claim that
+    names only part of a long phrase ("Call of Duty" inside "Call of Duty:
+    Modern Warfare 4") is still recognized as on-topic. Falls back to the
+    cluster's reported entities when no headline parses.
     """
     counts: Counter[str] = Counter()
     for candidate in [title, *(source_titles or [])]:
         if candidate:
-            for entity in cluster.named_entities(candidate, include_leading=True):
+            for entity in cluster.story_phrases(candidate):
                 counts[entity] += 1
     if counts:
         top = max(counts.values())
-        return sorted(entity for entity, count in counts.items() if count == top)
-    return sorted({str(entity).strip().lower() for entity in (entities or []) if str(entity).strip()})
+        return _expand_entities(sorted(entity for entity, count in counts.items() if count == top))
+    return _expand_entities(
+        [str(entity).strip().lower() for entity in (entities or []) if str(entity).strip()]
+    )
 
 
-def _claim_on_topic(claim: dict, source: dict, primary: list[str]) -> bool:
+def _expand_entities(entities: list[str]) -> list[str]:
+    """Each entity followed by the sub-entities its connectors split it into."""
+    expanded: list[str] = []
+    for entity in entities:
+        for sub in cluster.sub_entities(entity):
+            if sub and sub not in expanded:
+                expanded.append(sub)
+    return sorted(expanded)
+
+
+def _claim_on_topic(claim: dict, source: dict, entities: list[str]) -> bool:
+    """True when a claim or its source headline names any entity or sub-entity.
+
+    Either the claim's own text/value or the source article's title is enough;
+    matching is case-insensitive and on whole words or phrases.
+    """
+    text = f"{claim.get('claim', '')} {claim.get('value', '')}"
+    if any(cluster.contains_entity(text, entity) for entity in entities):
+        return True
     source_title = str(source.get("title") or "")
     if source_title:
-        return any(cluster.contains_entity(source_title, entity) for entity in primary)
-    text = f"{claim.get('claim', '')} {claim.get('value', '')}"
-    return any(cluster.contains_entity(text, entity) for entity in primary)
+        return any(cluster.contains_entity(source_title, entity) for entity in entities)
+    return False
 
 
 def coherence_check(
@@ -915,10 +938,13 @@ def coherence_check(
     entities: list[str] | None = None,
     story_id: str = "",
 ) -> tuple[list[dict], list[dict], list[str]]:
-    """Drop claims whose source is not about the cluster's primary entity.
+    """Drop claims whose claim text and source both miss the story's entities.
 
-    Returns ``(kept, dropped, primary)``. When no primary entity can be
-    determined the check is skipped and every claim is kept.
+    Returns ``(kept, dropped, primary)``. A claim is kept when its claim text or
+    value names any primary entity or sub-entity, or when the title of its source
+    article does. When no primary entity can be determined the check is skipped
+    and every claim is kept. When more than half of a single source's claims are
+    dropped, a warning naming that source and the entities is logged.
     """
     primary = primary_entities(
         title=title,
@@ -931,11 +957,17 @@ def coherence_check(
     by_url = _sources_by_url(sources)
     kept: list[dict] = []
     dropped: list[dict] = []
+    totals: Counter[str] = Counter()
+    dropped_by_source: Counter[str] = Counter()
     for claim in claims:
-        source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
+        key = _source_url_key(claim.get("source_url"))
+        source = by_url.get(key) or {}
+        totals[key] += 1
         if _claim_on_topic(claim, source, primary):
             kept.append(claim)
         else:
+            dropped.append(claim)
+            dropped_by_source[key] += 1
             logger.warning(
                 "story %s: dropping off-topic claim from %s (mentions none of %s): %r",
                 story_id or "?",
@@ -943,7 +975,23 @@ def coherence_check(
                 primary,
                 claim.get("claim"),
             )
-            dropped.append(claim)
+    for key, dropped_count in dropped_by_source.items():
+        total = totals.get(key, 0)
+        if total and dropped_count * 2 > total:
+            source = by_url.get(key) or {}
+            label = str(
+                source.get("source_name") or source.get("title") or key or "unknown source"
+            )
+            logger.warning(
+                "story %s: dropped %d of %d claims from %s (%s) as off-topic; "
+                "entities checked: %s",
+                story_id or "?",
+                dropped_count,
+                total,
+                label,
+                key or "unknown url",
+                primary,
+            )
     return kept, dropped, primary
 
 
