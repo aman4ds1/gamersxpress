@@ -147,6 +147,87 @@ def test_retry_exhausted_then_falls_back():
     assert len(first.calls) == 2
 
 
+# --- busy-status backoff (429/503), jitter, and per-role time budget ---------
+
+
+def test_busy_status_uses_the_long_backoff_schedule():
+    provider = FakeProvider(
+        "a",
+        [
+            providers.ProviderError("429", retryable=True, status=429),
+            providers.ProviderError("503", retryable=True, status=503),
+            "done",
+        ],
+    )
+    config = make_config(chain(("a", "m", "fam")), max_attempts=3)
+    config["retry"].update(
+        {"busy_delays_seconds": [10, 30], "jitter_ratio": 0, "total_time_budget_seconds": 90}
+    )
+    sleeps = []
+    result = providers.generate(
+        "writer", "p", config=config, providers={"a": provider}, env=keyed("a"),
+        sleep=sleeps.append,
+    )
+    assert result.value == "done"
+    assert sleeps == [10, 30]  # not the 1s/2s generic schedule
+    assert len(provider.calls) == 3
+
+
+def test_generic_transient_error_keeps_the_fast_exponential_backoff():
+    provider = FakeProvider(
+        "a", [providers.ProviderError("500", retryable=True, status=500), "done"]
+    )
+    config = make_config(chain(("a", "m", "fam")), max_attempts=2)
+    config["retry"].update({"busy_delays_seconds": [10, 30], "jitter_ratio": 0})
+    sleeps = []
+    result = providers.generate(
+        "writer", "p", config=config, providers={"a": provider}, env=keyed("a"),
+        sleep=sleeps.append,
+    )
+    assert result.value == "done"
+    assert sleeps == [1]
+
+
+def test_busy_backoff_is_jittered_around_the_base_delay():
+    def sleep_for(rand_value):
+        provider = FakeProvider(
+            "a", [providers.ProviderError("503", retryable=True, status=503), "done"]
+        )
+        config = make_config(chain(("a", "m", "fam")), max_attempts=2)
+        config["retry"].update(
+            {"busy_delays_seconds": [10], "jitter_ratio": 0.5, "total_time_budget_seconds": 90}
+        )
+        sleeps = []
+        result = providers.generate(
+            "writer", "p", config=config, providers={"a": provider}, env=keyed("a"),
+            sleep=sleeps.append, rand=lambda: rand_value,
+        )
+        assert result.value == "done"
+        return sleeps[0]
+
+    assert sleep_for(0.0) == 5.0   # factor 1 - 0.5
+    assert sleep_for(0.5) == 10.0  # midpoint: no change
+    assert sleep_for(1.0) == 15.0  # factor 1 + 0.5
+
+
+def test_role_time_budget_caps_total_backoff_and_stops_retrying():
+    provider = FakeProvider(
+        "a", [providers.ProviderError("503", retryable=True, status=503)] * 4
+    )
+    config = make_config(chain(("a", "m", "fam")), max_attempts=4)
+    config["retry"].update(
+        {"busy_delays_seconds": [10, 30], "jitter_ratio": 0, "total_time_budget_seconds": 45}
+    )
+    sleeps = []
+    with pytest.raises(providers.SkipRun):
+        providers.generate(
+            "writer", "p", config=config, providers={"a": provider}, env=keyed("a"),
+            sleep=sleeps.append,
+        )
+    assert sleeps == [10, 30]  # 40s of the 45s budget; the next 30s wait would exceed it
+    assert len(provider.calls) == 3
+
+
 def test_invalid_json_falls_back_to_next_provider():
     first = FakeProvider("a", ["this is not json"])
     second = FakeProvider("b", ['{"ok": true}'])
@@ -458,6 +539,59 @@ def test_shipped_config_guard_holds_for_every_writer_family():
         remaining = [entry for entry in verifier if entry["family"] != family]
         assert remaining, f"verifier has no eligible model when writer family is {family}"
         assert any(entry.get("enabled", True) for entry in remaining)
+
+
+def _writer_gemini_entries(config):
+    return [
+        entry for entry in config["roles"]["writer"]
+        if entry["provider"] == "gemini" and entry.get("enabled", True)
+    ]
+
+
+def test_writer_503_falls_to_second_gemini_model_keeping_family_google():
+    config = providers.load_config()
+    config["retry"] = {**config["retry"], "max_attempts": 1}  # no wait: fall through per model
+    gemini_entries = _writer_gemini_entries(config)
+    assert len(gemini_entries) >= 2, "writer needs a second Gemini model as a same-provider fallback"
+    primary, backup = gemini_entries[0]["model"], gemini_entries[1]["model"]
+    assert primary != backup
+
+    gemini = FakeProvider(
+        "gemini",
+        [providers.ProviderError("503", retryable=True, status=503), "draft-from-backup"],
+    )
+    groq = FakeProvider("groq", ["draft-from-groq"])
+
+    result = providers.generate(
+        "writer", "p", config=config,
+        providers={"gemini": gemini, "groq": groq}, env=keyed("gemini", "groq"),
+        sleep=lambda _d: None,
+    )
+    assert result.provider == "gemini"
+    assert result.family == "google"  # the backup is the same family, so the guard still excludes Google
+    assert result.model == backup
+    assert [call["model"] for call in gemini.calls] == [primary, backup]
+    assert groq.calls == []  # Groq is not reached while a Gemini model works
+    assert len(result.fallbacks) == 1 and primary in result.fallbacks[0]
+
+
+def test_writer_all_gemini_models_failing_falls_to_groq():
+    config = providers.load_config()
+    config["retry"] = {**config["retry"], "max_attempts": 1}
+    gemini_entries = _writer_gemini_entries(config)
+    failure = providers.ProviderError("503", retryable=True, status=503)
+    gemini = FakeProvider("gemini", [failure] * len(gemini_entries))
+    groq = FakeProvider("groq", ["draft-from-groq"])
+
+    result = providers.generate(
+        "writer", "p", config=config,
+        providers={"gemini": gemini, "groq": groq}, env=keyed("gemini", "groq"),
+        sleep=lambda _d: None,
+    )
+    assert result.provider == "groq"
+    assert result.family == "openai"
+    assert len(gemini.calls) == len(gemini_entries)
+    assert len(result.fallbacks) == len(gemini_entries)
 
 
 def test_disabled_entries_are_never_called():

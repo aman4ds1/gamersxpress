@@ -33,13 +33,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 import yaml
 
@@ -214,6 +215,44 @@ class RunState:
 
 def _is_retryable_status(status: int) -> bool:
     return status == 429 or 500 <= status <= 599
+
+
+#: Statuses that mean "the service is busy, wait and try again": 429 (rate
+#: limited) and 503 (overloaded/unavailable). They clear on a timescale of
+#: seconds, so they get the longer, jittered ``busy_delays_seconds`` schedule
+#: instead of the sub-second exponential backoff a generic transient error gets.
+_BUSY_STATUSES = frozenset({429, 503})
+
+
+class _RoleTimeBudget:
+    """Total backoff time one role may spend, shared across its providers.
+
+    Bounds worst-case pipeline latency: ``generate`` creates one budget per role
+    and passes it into every provider attempt, so a slow-failing first provider
+    cannot spend the whole run's patience before the fallback is tried. ``spend``
+    refuses a delay that would exceed the remaining budget so the total slept
+    never exceeds the budget.
+    """
+
+    def __init__(self, seconds: float):
+        self.remaining = max(0.0, float(seconds))
+
+    def spend(self, delay: float) -> bool:
+        if delay <= 0:
+            return True
+        if delay > self.remaining:
+            return False
+        self.remaining -= delay
+        return True
+
+
+def _jitter(delay: float, ratio: float, rand: Callable[[], float]) -> float:
+    """Scale ``delay`` by a random +/- ``ratio`` fraction to avoid retry lockstep."""
+    if ratio <= 0:
+        return round(delay, 3)
+    factor = 1.0 + ratio * (2.0 * rand() - 1.0)
+    return round(max(0.0, delay * factor), 3)
+
 
 
 def http_post_json(
@@ -621,10 +660,21 @@ def _complete_with_retry(
     length_retries: int = 1,
     length_budget_multiplier: int = 2,
     length_budget_cap: int = 0,
+    busy_delays: Sequence[float] = (),
+    jitter_ratio: float = 0.0,
+    rand: Callable[[], float] = random.random,
+    time_budget: _RoleTimeBudget | None = None,
 ) -> Completion:
     """Call ``provider.complete`` with backoff, returning a :class:`Completion`.
 
-    Transient errors retry ``max_attempts`` times with exponential backoff.
+    Transient errors retry ``max_attempts`` times with exponential backoff. A
+    429 or 503 uses the longer, jittered ``busy_delays`` schedule instead (about
+    10s then 30s): those mean the service is busy, not that the request was bad.
+    Every backoff delay is drawn through ``rand`` and capped by the shared
+    per-role ``time_budget``; once the budget cannot cover the next wait,
+    retrying stops and the error propagates so the caller falls back to the next
+    provider.
+
     A ``finish_reason="length"`` response is truncated output, which must never
     be parsed: it retries up to ``length_retries`` times with a larger token
     budget. If it stays truncated, a ``json_schema`` request raises
@@ -632,6 +682,8 @@ def _complete_with_retry(
     call (the verifier) returns the truncated :class:`Completion` unchanged so
     the caller fails the run without parsing it.
     """
+    if time_budget is None:
+        time_budget = _RoleTimeBudget(float("inf"))
     attempt = 0
     budget = dict(options or {})
     length_remaining = max(0, int(length_retries))
@@ -643,7 +695,18 @@ def _complete_with_retry(
         except ProviderError as exc:
             if not exc.retryable or attempt >= max_attempts - 1:
                 raise
-            delay = min(base_delay * (2 ** attempt), max_delay)
+            if exc.status in _BUSY_STATUSES and busy_delays:
+                raw_delay = float(busy_delays[min(attempt, len(busy_delays) - 1)])
+            else:
+                raw_delay = min(base_delay * (2 ** attempt), max_delay)
+            delay = _jitter(raw_delay, jitter_ratio, rand)
+            if not time_budget.spend(delay):
+                logger.warning(
+                    "role=%s provider=%s model=%s: retry time budget exhausted "
+                    "(%.1fs left, next wait %.1fs); falling back: %s",
+                    role, provider.name, model, time_budget.remaining, delay, exc,
+                )
+                raise
             logger.warning(
                 "role=%s provider=%s model=%s retry %s/%s after %.1fs: %s",
                 role, provider.name, model, attempt + 1, max_attempts - 1, delay, exc,
@@ -739,6 +802,7 @@ def generate(
     env: Mapping[str, str] | None = None,
     dry_run: bool | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    rand: Callable[[], float] = random.random,
     run_state: RunState | None = None,
     exclude_families: set[str] | None = None,
 ) -> Generation:
@@ -827,6 +891,11 @@ def generate(
     max_attempts = int(retry.get("max_attempts", 3))
     base_delay = float(retry.get("base_delay_seconds", 1))
     max_delay = float(retry.get("max_delay_seconds", 30))
+    busy_delays = [float(value) for value in (retry.get("busy_delays_seconds") or ())]
+    jitter_ratio = float(retry.get("jitter_ratio", 0) or 0)
+    total_time_budget = float(retry.get("total_time_budget_seconds", 0) or 0)
+    # A non-positive budget means "unlimited"; the shipped config sets a real one.
+    time_budget = _RoleTimeBudget(total_time_budget if total_time_budget > 0 else float("inf"))
     length_retries = int(retry.get("length_retries", 1))
     length_budget_multiplier = int(retry.get("length_budget_multiplier", 2))
     length_budget_cap = int(retry.get("length_budget_cap", 0))
@@ -853,6 +922,10 @@ def generate(
                 length_retries=length_retries,
                 length_budget_multiplier=length_budget_multiplier,
                 length_budget_cap=length_budget_cap,
+                busy_delays=busy_delays,
+                jitter_ratio=jitter_ratio,
+                rand=rand,
+                time_budget=time_budget,
             )
         except ProviderError as exc:
             fallbacks.append(f"role={role} {name} ({model}, family={family}): {exc}")
