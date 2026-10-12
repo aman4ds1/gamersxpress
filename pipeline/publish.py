@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -79,29 +80,84 @@ def _generated_date(facts: dict) -> dt.date:
     return dt.datetime.now(dt.timezone.utc).date()
 
 
+# A very large YAML line width so PyYAML never folds a long scalar (a title or
+# description) onto a second line. A wrapped scalar is still valid YAML to a
+# real parser but truncates to its first line in every line-based reader, which
+# is how a valid 113-character description once failed the publish gate.
+_YAML_WIDTH = 10**6
+
+_FRONT_MATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n?(.*)$", re.DOTALL)
+
+
 def _dump_front(front: dict) -> str:
     """Render ordered front-matter YAML with indented list items.
 
     Astro accepts either style, but the repo's own ``checks/check-articles.mjs``
     parser requires list items on indented lines (``  - name: ...``), so lists
-    are indented explicitly here.
+    are indented explicitly here. ``width`` is set so no scalar is ever folded.
     """
     parts: list[str] = []
     for key, value in front.items():
+        dumped = yaml.safe_dump(
+            {key: value},
+            sort_keys=False,
+            allow_unicode=True,
+            default_flow_style=False,
+            width=_YAML_WIDTH,
+        )
         if isinstance(value, list):
-            raw = yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True)
-            head, _, body = raw.partition("\n")
+            head, _, body = dumped.partition("\n")
             parts.append(head)
             parts.extend("  " + line for line in body.splitlines())
         else:
-            parts.append(yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True).strip())
+            parts.append(dumped.strip())
     return "\n".join(parts) + "\n"
 
 
+def _front_matter_dict(article: str) -> dict:
+    """Parse the YAML front matter of ``article`` with a real YAML parser."""
+    match = _FRONT_MATTER_RE.match(article or "")
+    if not match:
+        return {}
+    try:
+        parsed = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def verify_front_matter(front: dict, article: str) -> None:
+    """Fail loudly unless the rendered front matter round-trips to ``front``.
+
+    Reads the YAML back with a real parser and compares every field to its
+    source value, so a wrapped or folded long scalar can never be written.
+    """
+    parsed = _front_matter_dict(article)
+    if parsed == front:
+        return
+    problems: list[str] = []
+    for key, expected in front.items():
+        if key not in parsed:
+            problems.append(f"missing {key!r}")
+        elif parsed[key] != expected:
+            problems.append(f"{key!r} is {parsed[key]!r}, expected {expected!r}")
+    for key in parsed:
+        if key not in front:
+            problems.append(f"unexpected {key!r}")
+    raise ValueError("front matter failed to round-trip: " + "; ".join(problems))
+
+
 def assemble_article(body: str, front: dict) -> str:
-    """Render the final Markdown: YAML front matter followed by the body."""
+    """Render the final Markdown: YAML front matter followed by the body.
+
+    The result is read back through a real YAML parser and checked against
+    ``front`` before it is returned, so wrapped or dropped fields fail here
+    rather than downstream in the publish gate.
+    """
     header = _dump_front(front)
-    return f"---\n{header}---\n{body.lstrip(chr(10)).rstrip()}\n"
+    article = f"---\n{header}---\n{body.lstrip(chr(10)).rstrip()}\n"
+    verify_front_matter(front, article)
+    return article
 
 
 # --- published log -----------------------------------------------------------
@@ -173,6 +229,10 @@ def publish(
     articles_dir.mkdir(parents=True, exist_ok=True)
     article_path = articles_dir / f"{slug}.md"
     article_path.write_text(article, encoding="utf-8")
+
+    written = article_path.read_text(encoding="utf-8")
+    if _front_matter_dict(written) != _front_matter_dict(article):
+        raise ValueError(f"front matter written to {article_path} does not round-trip")
 
     destination_cover = None
     if cover_path:
@@ -311,8 +371,9 @@ __all__ = [
     "load_log",
     "publish",
     "save_draft",
-    "save_repair",
     "save_log",
+    "save_repair",
+    "verify_front_matter",
     "write_issue",
     "write_last_run",
 ]

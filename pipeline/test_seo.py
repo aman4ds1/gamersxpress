@@ -79,6 +79,28 @@ def test_allowed_categories_match_categories_ts():
     assert tuple(re.findall(r"'([^']+)'", block)) == seo.ALLOWED_CATEGORIES
 
 
+def test_content_limits_match_gates_and_config():
+    import gates
+
+    limits = gates.load_content_limits()
+    assert seo.MAX_TITLE == limits["max_title"]
+    assert seo.MIN_DESC == limits["min_description"]
+    assert seo.MAX_DESC == limits["max_description"]
+    assert seo.content_limits() == limits
+
+
+def test_validate_uses_injected_content_limits():
+    limits = {"max_title": 10, "min_description": 1, "max_description": 5}
+    errors = seo.validate(
+        seo_data(title="A" * 11, description="ok"),
+        article=ARTICLE,
+        facts=make_facts(),
+        entities=seo.load_entities(),
+        limits=limits,
+    )
+    assert any("title is 11 characters (max 10)" in e for e in errors)
+
+
 # --- validation --------------------------------------------------------------
 
 

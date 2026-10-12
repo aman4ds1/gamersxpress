@@ -111,6 +111,27 @@ def test_short_body_fails():
     assert not run(article).passed
 
 
+def test_content_limits_are_read_from_config():
+    limits = gates.load_content_limits()
+    assert limits == {
+        "max_title": 65,
+        "min_description": 70,
+        "max_description": 160,
+        "min_words": 200,
+    }
+    assert CONFIG["max_title"] == limits["max_title"]
+    assert CONFIG["min_description"] == limits["min_description"]
+    assert CONFIG["max_description"] == limits["max_description"]
+    assert CONFIG["min_words"] == limits["min_words"]
+
+
+def test_min_words_boundary_uses_the_config_limit():
+    passing, _ = make_article(body=filler(200))
+    assert run(passing).passed, run(passing).failures
+    failing, _ = make_article(body=filler(199))
+    assert not run(failing).passed
+
+
 def test_body_sources_section_fails():
     article, _ = make_article(body="## Overview\n\n" + filler() + "\n\n## Sources\n\n- a\n- b\n")
     assert not run(article).passed

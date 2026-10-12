@@ -8,8 +8,9 @@ block. The gates are:
 * **Schema and lengths** (``src/content.config.ts``): title/description lengths,
   category in the site enum, non-empty tags/entities, >= 2 distinct http(s)
   sources, and ``imageAlt`` whenever ``image`` is set.
-* **Structure**: >= 300 words, at most one H1, no skipped heading levels, and no
-  body ``Sources`` section (the page renders sources from front matter).
+* **Structure**: at least ``content_limits.min_words`` words, at most one H1, no
+  skipped heading levels, and no body ``Sources`` section (the page renders
+  sources from front matter).
 * **Sources**: every source URL is http(s), distinct, present in the facts
   sheet, and rendered by the news page template.
 * **Text overlap**: the article must not lift n-grams from the gathered source
@@ -67,11 +68,22 @@ _WORD_RE = re.compile(r"[A-Za-z0-9']+")
 _HREF_RE = re.compile(r"\]\(([^)]+)\)")
 _SOURCES_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+sources\s*$", re.IGNORECASE | re.MULTILINE)
 
-DEFAULT_GATES: dict[str, Any] = {
+# Fallback content limits used only when ``content_limits`` is missing from
+# config.yaml. config.yaml is the single source of truth, shared with the SEO
+# stage and checks/check-articles.mjs; these defaults keep the pipeline running
+# with a partial config.
+DEFAULT_CONTENT_LIMITS: dict[str, int] = {
     "max_title": 65,
     "min_description": 70,
     "max_description": 160,
-    "min_words": 300,
+    "min_words": 200,
+}
+
+DEFAULT_GATES: dict[str, Any] = {
+    "max_title": DEFAULT_CONTENT_LIMITS["max_title"],
+    "min_description": DEFAULT_CONTENT_LIMITS["min_description"],
+    "max_description": DEFAULT_CONTENT_LIMITS["max_description"],
+    "min_words": DEFAULT_CONTENT_LIMITS["min_words"],
     "min_sources": 2,
     "overlap": {"ngram": 8, "max_ratio": 0.2},
     "near_duplicate": {"title_similarity": 0.8, "window_days": 7},
@@ -99,6 +111,27 @@ class GateResult:
         }
 
 
+def load_content_limits(path: str | Path | None = None) -> dict:
+    """Read the shared content length limits from ``content_limits`` in config.yaml.
+
+    These limits (title/description lengths and the minimum body word count) are
+    the single source of truth shared by the SEO stage (``pipeline/seo.py``),
+    these publish gates and ``checks/check-articles.mjs``. Missing keys fall back
+    to :data:`DEFAULT_CONTENT_LIMITS`.
+    """
+    path = Path(path) if path else DEFAULT_CONFIG_PATH
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    section = raw.get("content_limits") or {}
+    if not isinstance(section, dict):
+        section = {}
+    return {key: int(section.get(key, default)) for key, default in DEFAULT_CONTENT_LIMITS.items()}
+
+
 def load_gates_config(path: str | Path | None = None) -> dict:
     path = Path(path) if path else DEFAULT_CONFIG_PATH
     try:
@@ -106,11 +139,12 @@ def load_gates_config(path: str | Path | None = None) -> dict:
     except FileNotFoundError:
         raw = {}
     section = raw.get("gates") or {}
+    limits = load_content_limits(path)
     config = {
-        "max_title": int(section.get("max_title", DEFAULT_GATES["max_title"])),
-        "min_description": int(section.get("min_description", DEFAULT_GATES["min_description"])),
-        "max_description": int(section.get("max_description", DEFAULT_GATES["max_description"])),
-        "min_words": int(section.get("min_words", DEFAULT_GATES["min_words"])),
+        "max_title": limits["max_title"],
+        "min_description": limits["min_description"],
+        "max_description": limits["max_description"],
+        "min_words": limits["min_words"],
         "min_sources": int(section.get("min_sources", DEFAULT_GATES["min_sources"])),
         "banned_phrases": [str(p).lower() for p in section.get("banned_phrases") or []],
     }
@@ -491,10 +525,12 @@ def _normalize(url: str) -> str:
 
 __all__ = [
     "ALLOWED_CATEGORIES",
+    "DEFAULT_CONTENT_LIMITS",
     "DEFAULT_GATES",
     "GateResult",
     "default_link_checker",
     "default_site_checks",
+    "load_content_limits",
     "load_existing_articles",
     "load_gates_config",
     "overlap_ratio",

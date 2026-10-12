@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseArticle, checkArticle, checkArticles, countWords } from './check-articles.mjs';
+import { parseArticle, checkArticle, checkArticles, countWords, LIMITS } from './check-articles.mjs';
 
 const FILLER = Array.from({ length: 320 }, (_, index) => `word${index}`).join(' ');
 
@@ -69,11 +69,50 @@ test('image without imageAlt fails, with imageAlt passes', () => {
 });
 
 test('body word count boundaries', () => {
-  const threeHundred = Array.from({ length: 300 }, () => 'word').join(' ');
-  assert.equal(countWords(threeHundred), 300);
-  assert.deepEqual(check({ body: threeHundred }).issues, []);
-  const twoNinetyNine = Array.from({ length: 299 }, () => 'word').join(' ');
-  assert.match(check({ body: twoNinetyNine }).issues[0], /body has 299 words \(min 300\)/);
+  const twoHundred = Array.from({ length: 200 }, () => 'word').join(' ');
+  assert.equal(countWords(twoHundred), 200);
+  assert.deepEqual(check({ body: twoHundred }).issues, []);
+  const oneNinetyNine = Array.from({ length: 199 }, () => 'word').join(' ');
+  assert.match(check({ body: oneNinetyNine }).issues[0], /body has 199 words \(min 200\)/);
+});
+
+test('content limits are read from pipeline/config.yaml', () => {
+  assert.deepEqual(LIMITS, {
+    maxTitle: 65,
+    minDescription: 70,
+    maxDescription: 160,
+    minWords: 200,
+  });
+});
+
+test('wrapped multi-line description is read in full by the YAML parser', () => {
+  const description =
+    'Marvel Tokon: Fighting Souls has revealed its Year 1 DLC roster, bringing new fighters and stages to the tag-team brawler over the coming months.';
+  const wrapped = [
+    '---',
+    'title: "A well written sample headline that fits within sixty five"',
+    "description: 'Marvel Tokon: Fighting Souls has revealed its Year 1 DLC roster, bringing",
+    "  new fighters and stages to the tag-team brawler over the coming months.'",
+    'pubDate: 2026-10-01',
+    'sources:',
+    '  - name: One',
+    '    url: https://example.com/x',
+    '  - name: Two',
+    '    url: https://example.com/y',
+    '---',
+    '',
+    '## Section one',
+    '',
+    FILLER,
+  ].join('\n');
+
+  const article = parseArticle(wrapped, 'wrapped');
+  assert.equal(article.frontmatter.description, description);
+  assert.deepEqual(article.parseErrors, []);
+
+  const result = checkArticle(article);
+  assert.equal(result.descLength, description.length);
+  assert.ok(!result.issues.some((issue) => issue.includes('description')));
 });
 
 test('more than one H1 in the body fails', () => {

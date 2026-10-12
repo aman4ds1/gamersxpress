@@ -1,74 +1,60 @@
+import { readFileSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 
 const ARTICLES_DIR = fileURLToPath(new URL('../src/content/articles', import.meta.url));
-const MAX_TITLE = 65;
-const MIN_DESC = 70;
-const MAX_DESC = 160;
-const MIN_SOURCES = 2;
-const MIN_WORDS = 300;
+const CONFIG_PATH = fileURLToPath(new URL('../pipeline/config.yaml', import.meta.url));
 
-function scalar(value) {
-  const trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2)
-  ) {
-    return trimmed.slice(1, -1);
+// Fallbacks used only when pipeline/config.yaml is unreadable. config.yaml is
+// the single source of truth for the content limits, shared with
+// pipeline/seo.py and pipeline/gates.py, so this check can never drift.
+const DEFAULT_LIMITS = {
+  maxTitle: 65,
+  minDescription: 70,
+  maxDescription: 160,
+  minWords: 200,
+};
+
+export function loadContentLimits(path = CONFIG_PATH) {
+  try {
+    const config = parseYaml(readFileSync(path, 'utf8')) ?? {};
+    const section = config.content_limits ?? {};
+    return {
+      maxTitle: section.max_title ?? DEFAULT_LIMITS.maxTitle,
+      minDescription: section.min_description ?? DEFAULT_LIMITS.minDescription,
+      maxDescription: section.max_description ?? DEFAULT_LIMITS.maxDescription,
+      minWords: section.min_words ?? DEFAULT_LIMITS.minWords,
+    };
+  } catch {
+    return { ...DEFAULT_LIMITS };
   }
-  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-    return trimmed
-      .slice(1, -1)
-      .split(',')
-      .map((part) => part.trim())
-      .filter((part) => part.length > 0);
-  }
-  return trimmed;
 }
+
+export const LIMITS = loadContentLimits();
+
+const MIN_SOURCES = 2;
 
 export function parseArticle(raw, slug) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(raw);
   if (!match) return { slug, frontmatter: {}, body: raw, parseErrors: ['missing frontmatter block'] };
 
-  const frontmatter = {};
-  let listKey = null;
-  for (const line of match[1].split(/\r?\n/)) {
-    if (line.trim() === '' || line.trim().startsWith('#')) continue;
-    const pair = /^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/.exec(line);
-    if (pair && !line.startsWith(' ')) {
-      const key = pair[1];
-      const value = pair[2];
-      if (value.trim() === '') {
-        listKey = key;
-        frontmatter[key] = [];
-      } else {
-        listKey = null;
-        frontmatter[key] = scalar(value);
-      }
-      continue;
-    }
-    if (listKey === null) continue;
-    const item = /^\s+-\s+(.*)$/.exec(line);
-    if (item) {
-      const text = item[1];
-      const objPair = /^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/.exec(text);
-      if (objPair && objPair[2].trim() !== '') {
-        frontmatter[listKey].push({ [objPair[1]]: scalar(objPair[2]) });
-      } else if (objPair) {
-        frontmatter[listKey].push({ [objPair[1]]: [] });
-      } else {
-        frontmatter[listKey].push(scalar(text));
-      }
-      continue;
-    }
-    const sub = /^\s{2,}([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/.exec(line);
-    const last = frontmatter[listKey][frontmatter[listKey].length - 1];
-    if (sub && last && typeof last === 'object' && !Array.isArray(last)) {
-      last[sub[1]] = scalar(sub[2]);
-    }
+  // Parse the front matter with a real YAML parser. A line-based reader only
+  // sees the first line of a wrapped scalar, which truncated a valid
+  // 113-character description and failed the gate; a real parser reads it whole.
+  try {
+    const parsed = parseYaml(match[1]);
+    const frontmatter = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    return { slug, frontmatter, body: match[2], parseErrors: [] };
+  } catch (error) {
+    return {
+      slug,
+      frontmatter: {},
+      body: match[2],
+      parseErrors: [`invalid frontmatter YAML: ${error.message}`],
+    };
   }
-  return { slug, frontmatter, body: match[2], parseErrors: [] };
 }
 
 export function extractHeadings(body) {
@@ -105,14 +91,16 @@ export function checkArticle(article) {
   const { frontmatter, body, slug, parseErrors = [] } = article;
   for (const error of parseErrors) issues.push(error);
 
+  const { maxTitle, minDescription, maxDescription, minWords } = LIMITS;
+
   const title = typeof frontmatter.title === 'string' ? frontmatter.title : '';
   if (title.trim() === '') issues.push('missing title');
-  else if (title.length > MAX_TITLE) issues.push(`title is ${title.length} characters (max ${MAX_TITLE})`);
+  else if (title.length > maxTitle) issues.push(`title is ${title.length} characters (max ${maxTitle})`);
 
   const description = typeof frontmatter.description === 'string' ? frontmatter.description : '';
   if (description.trim() === '') issues.push('missing description');
-  else if (description.length < MIN_DESC || description.length > MAX_DESC) {
-    issues.push(`description is ${description.length} characters (must be ${MIN_DESC}-${MAX_DESC})`);
+  else if (description.length < minDescription || description.length > maxDescription) {
+    issues.push(`description is ${description.length} characters (must be ${minDescription}-${maxDescription})`);
   }
 
   const sources = Array.isArray(frontmatter.sources) ? frontmatter.sources : [];
@@ -124,7 +112,7 @@ export function checkArticle(article) {
   }
 
   const words = countWords(body);
-  if (words < MIN_WORDS) issues.push(`body has ${words} words (min ${MIN_WORDS})`);
+  if (words < minWords) issues.push(`body has ${words} words (min ${minWords})`);
 
   const headings = extractHeadings(body);
   const h1Count = headings.filter((heading) => heading.level === 1).length;

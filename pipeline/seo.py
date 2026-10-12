@@ -7,8 +7,10 @@ layout and JSON-LD are generated in code (PLAN.md principle 2 and section 10).
 
 Validation is code-only and independent of the model:
 
-* ``title`` <= 65 chars, ``description`` 70-160 chars, ``slug`` <= 60 chars and
-  a lowercase ASCII hyphenated token, ``category`` one of the site's categories.
+* Title and description lengths come from ``content_limits`` in config.yaml, the
+  single source of truth shared with ``pipeline/gates.py`` and
+  ``checks/check-articles.mjs``; ``slug`` <= 60 chars and a lowercase ASCII
+  hyphenated token, ``category`` one of the site's categories.
 * **No invented values.** The verifier's independent number/price/date/spec
   check (:func:`verify.extract_values`) is run over the title, description and
   alt text; a value that is not in the facts sheet -- or that the article body
@@ -46,6 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import verify
+from gates import load_content_limits
 from json_schema import schema_errors
 from providers import (
     PROJECT_ROOT,
@@ -58,13 +61,24 @@ DEFAULT_ENTITIES_PATH = PROJECT_ROOT / "data" / "entities.json"
 DEFAULT_ARTICLES_DIR = PROJECT_ROOT / "src" / "content" / "articles"
 DEFAULT_DRAFTS_DIR = PROJECT_ROOT / "drafts"
 
-MAX_TITLE = 65
-MIN_DESC = 70
-MAX_DESC = 160
+# Content length limits are the single source of truth in config.yaml under
+# ``content_limits`` (also read by pipeline/gates.py and
+# checks/check-articles.mjs). They are loaded here once for the module-level
+# prompt, and re-read at call time so a config edit is picked up without a code
+# change.
+_DEFAULT_CONTENT_LIMITS = load_content_limits()
+MAX_TITLE = _DEFAULT_CONTENT_LIMITS["max_title"]
+MIN_DESC = _DEFAULT_CONTENT_LIMITS["min_description"]
+MAX_DESC = _DEFAULT_CONTENT_LIMITS["max_description"]
 MAX_SLUG = 60
 MAX_ALT = 200
 MIN_TAGS = 3
 MAX_TAGS = 6
+
+
+def content_limits() -> dict:
+    """Return the current content length limits from config.yaml."""
+    return load_content_limits()
 
 # Mirrors src/data/categories.ts (the source of truth re-exported by
 # src/content.config.ts). test_seo.py asserts the two lists stay in sync.
@@ -478,9 +492,14 @@ def validate(
     facts: dict,
     entities: list[dict],
     config: dict | None = None,
+    limits: dict | None = None,
 ) -> list[str]:
     """Return every code-validation error for ``data`` (empty list means valid)."""
     config = config if config is not None else verify.load_verify_config()
+    limits = limits if limits is not None else content_limits()
+    max_title = limits["max_title"]
+    min_desc = limits["min_description"]
+    max_desc = limits["max_description"]
     errors: list[str] = []
 
     title = data.get("title", "")
@@ -493,8 +512,8 @@ def validate(
     if not isinstance(title, str) or not title.strip():
         errors.append("title is empty")
     else:
-        if len(title) > MAX_TITLE:
-            errors.append(f"title is {len(title)} characters (max {MAX_TITLE})")
+        if len(title) > max_title:
+            errors.append(f"title is {len(title)} characters (max {max_title})")
         if title.rstrip().endswith("."):
             errors.append("title must not end with a period")
         if "!" in title:
@@ -526,8 +545,8 @@ def validate(
     if not isinstance(description, str):
         errors.append("description is not a string")
     else:
-        if len(description) < MIN_DESC or len(description) > MAX_DESC:
-            errors.append(f"description is {len(description)} characters (need {MIN_DESC}-{MAX_DESC})")
+        if len(description) < min_desc or len(description) > max_desc:
+            errors.append(f"description is {len(description)} characters (need {min_desc}-{max_desc})")
         if "\n" in description:
             errors.append("description must be a single line")
 
@@ -705,6 +724,7 @@ __all__ = [
     "build_prompt",
     "canonicalize_entities",
     "canonicalize_text",
+    "content_limits",
     "existing_slugs",
     "generate_seo",
     "load_entities",

@@ -57,6 +57,13 @@ roles:
       # Flash 3.5: best quality-per-cost on this key for long prose.
       model: gemini-3.5-flash
       family: google
+    - provider: gemini
+      # Same-provider fallback: a second Google model so a per-model 503/429 on
+      # Flash 3.5 does not immediately cost the whole Google family for the
+      # writer. Verified accessible via tools/list_models.py. Family stays
+      # "google", so the verifier guard still excludes Google for a Gemini draft.
+      model: gemini-3.6-flash
+      family: google
     - provider: groq
       # gpt-oss-120b: OpenAI's largest open model, a capable prose fallback
       # when Google is down. Family is "openai" (the model), not Groq (the host).
@@ -127,6 +134,14 @@ roles:
 # max_attempts counts the first try. Delays are seconds: base * 2**attempt,
 # capped at max_delay_seconds.
 #
+# 429 (rate limited) and 503 (overloaded) are "the service is busy" errors: they
+# use busy_delays_seconds instead of the fast exponential schedule, waiting about
+# 10s then 30s (the last value repeats if max_attempts is higher). Every delay is
+# randomised by +/- jitter_ratio so parallel or duplicate runs do not retry in
+# lockstep. total_time_budget_seconds caps the backoff one role may spend across
+# ALL its providers: once exhausted, generate() stops retrying and moves to the
+# next provider (or skips the run), bounding worst-case run latency.
+#
 # finish_reason="length" (Gemini reports "MAX_TOKENS") means the model ran out
 # of output budget and the response is truncated JSON, which must never be
 # parsed. Instead retry up to length_retries times with the token budget scaled
@@ -137,6 +152,9 @@ retry:
   max_attempts: 3
   base_delay_seconds: 1
   max_delay_seconds: 30
+  busy_delays_seconds: [10, 30]
+  jitter_ratio: 0.25
+  total_time_budget_seconds: 90
   length_retries: 1
   length_budget_multiplier: 2
   length_budget_cap: 20000
@@ -193,14 +211,23 @@ verify:
     - pattern: '^(?:19|20)\d{2}$'
       context: '^#{1,6}\s'
 
-# Publish gates (pipeline/gates.py; PLAN.md section 9). Every value is code,
-# never a model. `overlap` is the n-gram text-overlap check against the source
-# texts gathered in data/gathered/<cluster-id>.json.
-gates:
+# Single source of truth for content length limits: the SEO stage
+# (pipeline/seo.py), the publish gates (pipeline/gates.py) and the Node site
+# check (checks/check-articles.mjs) all read these values, so the pipeline and
+# the site check can never drift apart. Edit them here only.
+content_limits:
   max_title: 65
   min_description: 70
   max_description: 160
-  min_words: 300
+  # Minimum body word count. NOTE: docs/PLAN.md section 9 still says 300 words;
+  # the owner lowered the gate to 200 in this task, so the value here is 200.
+  min_words: 200
+
+# Publish gates (pipeline/gates.py; PLAN.md section 9). Every value is code,
+# never a model. `overlap` is the n-gram text-overlap check against the source
+# texts gathered in data/gathered/<cluster-id>.json. Title/description lengths
+# and the minimum word count live under `content_limits` above.
+gates:
   min_sources: 2
   overlap:
     ngram: 8

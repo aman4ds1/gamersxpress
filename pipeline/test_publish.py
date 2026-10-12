@@ -113,3 +113,57 @@ def test_write_issue_lists_recent_failures(tmp_path):
 def test_write_last_run(tmp_path):
     path = publish.write_last_run({"status": "completed"}, tmp_path / "last-run.json")
     assert json.loads(path.read_text(encoding="utf-8"))["status"] == "completed"
+
+
+LONG_DESCRIPTION = (
+    "Marvel Tokon: Fighting Souls has revealed its Year 1 DLC roster, bringing "
+    "new fighters and stages to the tag-team brawler over the coming months."
+)
+
+
+def test_long_description_is_written_on_one_line_and_round_trips():
+    front = publish.build_front_matter(FACTS, {**SEO, "description": LONG_DESCRIPTION})
+    article = publish.assemble_article("## Body\n\nHello.", front)
+
+    desc_lines = [line for line in article.splitlines() if line.startswith("description:")]
+    assert len(desc_lines) == 1
+    assert LONG_DESCRIPTION in desc_lines[0]
+
+    parsed, _ = gates.parse_front_matter(article)
+    for key, value in front.items():
+        assert parsed[key] == value
+
+
+def test_assemble_article_verifies_front_matter_matches_source():
+    front = publish.build_front_matter(FACTS, SEO)
+    article = publish.assemble_article("## Body\n\nHello.", front)
+    publish.verify_front_matter(front, article)
+
+
+def test_verify_front_matter_rejects_a_changed_field():
+    front = publish.build_front_matter(FACTS, SEO)
+    with pytest.raises(ValueError, match="round-trip"):
+        publish.verify_front_matter(front, "---\ntitle: something else\n---\nbody\n")
+
+
+def test_publish_writes_long_description_readable_by_the_gate_parser(tmp_path):
+    seo = {**SEO, "description": LONG_DESCRIPTION}
+    front = publish.build_front_matter(FACTS, seo)
+    article = publish.assemble_article("## Body\n\nHello.", front)
+    publish.publish(
+        article,
+        slug="long-description",
+        title=seo["title"],
+        category="hardware",
+        mode="draft",
+        articles_dir=tmp_path / "articles",
+        covers_dir=tmp_path / "covers",
+        log_path=tmp_path / "log.json",
+        seen_path=tmp_path / "seen.json",
+        now=NOW,
+    )
+    written = (tmp_path / "articles" / "long-description.md").read_text(encoding="utf-8")
+    desc_lines = [line for line in written.splitlines() if line.startswith("description:")]
+    assert len(desc_lines) == 1
+    parsed, _ = gates.parse_front_matter(written)
+    assert parsed["description"] == LONG_DESCRIPTION
