@@ -486,3 +486,65 @@ def test_marvel_tokon_dlc_roster_is_still_eligible():
     )
     assert score.ineligible_reason(c) is None
     assert score.rank([c])[0]["eligible"] is True
+
+
+# --- countable source floor ---------------------------------------------------
+
+
+def test_fetch_false_and_tier3_items_do_not_count_toward_source_floor():
+    c = cluster(
+        "Halo returns to Xbox Game Pass",
+        items=[
+            {"link": "https://a.example/1", "tier": 1},
+            {"link": "https://b.example/1", "tier": 3},
+            {"link": "https://c.example/1", "tier": 2, "fetchable": False},
+        ],
+    )
+    assert score.source_urls(c) == ["https://a.example/1"]
+    assert score.source_count(c) == 1
+    assert score.ineligible_reason(c, min_sources=2) == "too few sources"
+
+
+def test_items_without_fetchable_field_still_count():
+    c = cluster(
+        "Nvidia announces RTX 5090",
+        items=[{"link": "https://a.example/1"}, {"link": "https://b.example/1"}],
+    )
+    assert score.source_count(c) == 2
+    assert score.ineligible_reason(c, min_sources=2) is None
+
+
+# --- item-level exclusion before clustering ----------------------------------
+
+
+def test_filter_excluded_items_drops_matching_and_keeps_the_rest():
+    items = [
+        {"title": "Nvidia announces RTX 5090", "link": "https://a.example/1"},
+        {"title": "Best deals on gaming PCs this week", "link": "https://b.example/1"},
+    ]
+    kept = score.filter_excluded_items(items, ["best deals"])
+    assert [item["link"] for item in kept] == ["https://a.example/1"]
+
+
+def test_filter_excluded_items_cannot_raise_a_cluster_source_count():
+    items = [
+        {"title": "Nvidia announces RTX 5090", "link": "https://a.example/1", "tier": 1, "owner": "a"},
+        {"title": "Best deals on gaming PCs this week", "link": "https://b.example/1", "tier": 1, "owner": "b"},
+    ]
+    kept = score.filter_excluded_items(items, ["best deals"])
+    c = cluster("Nvidia announces RTX 5090", items=kept, tiers=(1,), owners=("a",))
+    assert score.source_count(c) == 1
+
+
+def test_filter_excluded_items_reports_each_pattern_once():
+    seen = []
+    items = [
+        {"title": "Save 20% now", "link": "https://a.example/1"},
+        {"title": "Save 30% today", "link": "https://b.example/1"},
+    ]
+    score.filter_excluded_items(items, ["save \\d+%"], on_excluded=lambda pattern, count: seen.append((pattern, count)))
+    assert seen == [("save \\d+%", 2)]
+
+
+def test_default_max_candidates_per_run_is_five():
+    assert score.DEFAULT_MAX_CANDIDATES_PER_RUN == 5

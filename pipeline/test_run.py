@@ -845,3 +845,123 @@ def test_confirmed_but_too_few_usable_facts_is_not_ready(tmp_path):
     assert not list(paths.articles_dir.glob("*.md"))
     failed = json.loads(paths.failed.read_text(encoding="utf-8"))
     assert next(iter(failed["unconfirmed"].values()))["reason"] == "too few facts"
+
+
+# --- post-gather source floor, item exclusion, observability -----------------
+
+
+def test_candidate_with_one_usable_source_is_rejected_without_model_calls(tmp_path):
+    paths = make_paths(tmp_path)
+    items = [
+        item("Halo returns to Xbox Game Pass", "https://h.example/1", owner="owner-h1"),
+        item("Halo returns to Xbox Game Pass", "https://h.example/2", owner="owner-h2"),
+    ]
+    facts_calls = []
+
+    def gather_fn(chosen, *, output_dir=None, id=None):
+        return {
+            "id": id,
+            "gathered_at": NOW.isoformat(),
+            "sources": [
+                {"link": "https://h.example/1", "final_url": "https://h.example/1",
+                 "source_name": "owner-h1 outlet", "tier": 1, "owner": "owner-h1",
+                 "region": "us", "status": "ok", "text": "x" * 500, "error": None},
+                {"link": "https://h.example/2", "final_url": "https://h.example/2",
+                 "source_name": "owner-h2 outlet", "tier": 1, "owner": "owner-h2",
+                 "region": "us", "status": "fetch-error", "text": "", "error": "boom"},
+            ],
+        }
+
+    def facts_fn(*args, **kwargs):
+        facts_calls.append(1)
+        raise AssertionError("facts must not run for a candidate with too few usable sources")
+
+    result = run_with_items(tmp_path, items, gather_fn=gather_fn, facts_fn=facts_fn)
+    assert result.status == "nothing"
+    assert result.exit_code == 0
+    assert facts_calls == []
+    assert result.run_state.calls == 0, "the readiness gate must spend no model calls"
+
+    report = latest_candidates_report(paths)
+    entry = report["candidates"][0]
+    assert entry["reason"] == "insufficient sources"
+    assert entry["outcome"] == "not ready"
+    assert entry["confirmed"] is False
+    assert entry["model_calls"] == 0
+
+
+def test_excluded_headline_items_never_cluster(tmp_path):
+    paths = make_paths(tmp_path)
+    excluded = "Best deals on gaming PCs this week"
+    items = [
+        item(excluded, "https://d.example/1", owner="owner-d1"),
+        item(excluded, "https://d.example/2", owner="owner-d2"),
+        item(dryrun.SAMPLE_TITLE, "https://s.example/1", owner="owner-s1"),
+        item(dryrun.SAMPLE_TITLE, "https://s.example/2", owner="owner-s2"),
+    ]
+    result = run_with_items(tmp_path, items)
+    assert result.status == "completed"
+    report = latest_candidates_report(paths)
+    assert [c["title"] for c in report["candidates"]] == [dryrun.SAMPLE_TITLE]
+    assert excluded not in [s["title"] for s in report["skipped"]]
+
+
+def test_last_run_and_candidates_report_carry_timings_and_model_calls(tmp_path):
+    paths = make_paths(tmp_path)
+    result = run_once(tmp_path, dry_run=True, scenario="pass")
+    assert result.status == "completed"
+
+    report = json.loads(paths.last_run.read_text(encoding="utf-8"))
+    expected_stages = {"ingest", "cluster", "score", "gather", "facts", "write", "verify", "seo", "gates", "publish"}
+    assert expected_stages <= set(report["timings"])
+    assert all(isinstance(value, (int, float)) for value in report["timings"].values())
+    assert report["model_calls"] == result.run_state.calls
+    assert report["model_calls"] >= 1
+
+    candidates = latest_candidates_report(paths)
+    assert "timings" in candidates
+    # The candidates report is written when the story is chosen, before the
+    # writer/verifier/SEO calls, so it can only report the calls spent so far.
+    assert 1 <= candidates["model_calls"] <= result.run_state.calls
+
+
+def test_dry_run_writes_fetch_health_per_domain(tmp_path):
+    paths = make_paths(tmp_path)
+    result = run_once(tmp_path, dry_run=True, scenario="pass")
+    assert result.status == "completed"
+    health = json.loads(paths.fetch_health.read_text(encoding="utf-8"))
+    assert "a.example" in health["domains"]
+    assert health["domains"]["a.example"]["successes"] == 1
+
+
+def test_run_reattributes_wire_item_to_the_link_owner(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config = {
+        "sources": [
+            {"name": "Xbox Wire", "site": "https://news.xbox.com",
+             "feed_url": "https://news.xbox.com/feed", "tier": 1, "owner": "microsoft",
+             "region": "us", "categories": ["xbox"], "topic": "gaming"},
+            {"name": "IGN", "site": "https://www.ign.com",
+             "feed_url": "https://www.ign.com/feed", "tier": 2, "owner": "ign-entertainment",
+             "region": "us", "categories": ["gaming-news"], "topic": "gaming"},
+        ],
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    paths = make_paths(tmp_path)
+    items = [{
+        "title": "IGN reports a new game", "link": "https://www.ign.com/articles/x",
+        "source_name": "Xbox Wire", "tier": 1, "owner": "microsoft", "region": "us",
+        "published": NOW.isoformat(), "age_hours": 1.0,
+        "source_domain": "xbox.com", "discovered_via": "Xbox Wire", "fetchable": True,
+    }]
+    run_module.run(
+        paths=paths, now=NOW, env={}, config_path=str(config_path),
+        ingest_fn=ingest_fn_for(items),
+        gather_fn=lambda chosen, output_dir=None, id=None: dryrun.sample_gathered(id, NOW),
+        generate=dryrun.make_generate("pass"),
+        link_checker=lambda url: 200, site_checks=STUB_CHECKS,
+    )
+    stored = json.loads(paths.pool.read_text(encoding="utf-8"))["items"][0]
+    assert stored["source_name"] == "IGN"
+    assert stored["tier"] == 2
+    assert stored["discovered_via"] == "Xbox Wire"

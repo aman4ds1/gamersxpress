@@ -16,8 +16,8 @@ def cluster(items):
     return {"id": "story-1", "title": "Story", "items": items}
 
 
-def item(id=1, link="https://a.example/1", name="Source A", tier=1, owner="co-a", region="us", published=None):
-    return {"link": link, "source_name": name, "tier": tier, "owner": owner, "region": region, "published": published, "id": id}
+def item(id=1, link="https://a.example/1", name="Source A", tier=1, owner="co-a", region="us", published=None, fetchable=True):
+    return {"link": link, "source_name": name, "tier": tier, "owner": owner, "region": region, "published": published, "id": id, "fetchable": fetchable}
 
 
 def always_true(_url):
@@ -255,3 +255,65 @@ def test_robots_allowed_caches_per_host(robots_server):
 def test_robots_allowed_allow_on_unreachable():
     cache = {}
     assert gather.robots_allowed("http://127.0.0.1:1/x", timeout=1, cache=cache) is True
+
+
+# --- fetch:false, final_url and fetch health ---------------------------------
+
+
+def test_gather_skips_fetch_disabled_sources(tmp_path):
+    calls = []
+
+    def fetcher(url):
+        calls.append(url)
+        return "<html>x</html>"
+
+    result = run_gather(tmp_path, items=[item(1, fetchable=False)], fetcher=fetcher)
+    source = result["sources"][0]
+    assert source["status"] == "skipped"
+    assert source["error"] == "source fetch disabled"
+    assert source["text"] == ""
+    assert calls == [], "a fetch-disabled source must never hit the network"
+
+
+def test_gather_records_final_url_from_tuple_fetcher(tmp_path):
+    def fetcher(url):
+        return "<html>x</html>", "https://redirect.example/final"
+
+    result = run_gather(
+        tmp_path,
+        items=[item(1, "https://t.co/x")],
+        fetcher=fetcher,
+        extractor=lambda html: "text",
+    )
+    source = result["sources"][0]
+    assert source["status"] == "ok"
+    assert source["final_url"] == "https://redirect.example/final"
+
+
+def test_gather_records_final_url_equal_to_link_for_plain_fetcher(tmp_path):
+    result = run_gather(tmp_path, fetcher=lambda url: "<html>x</html>", extractor=lambda html: "text")
+    assert result["sources"][0]["final_url"] == "https://a.example/1"
+
+
+def test_update_fetch_health_tracks_success_and_failure_per_domain(tmp_path):
+    path = tmp_path / "fetch-health.json"
+    gathered = {
+        "sources": [
+            {"link": "https://news.xbox.com/a", "final_url": "https://news.xbox.com/a", "status": "ok", "text": "t"},
+            {"link": "https://xbox.com/b", "final_url": "https://xbox.com/b", "status": "fetch-error", "error": "boom"},
+            {"link": "https://ign.com/c", "final_url": "https://ign.com/c", "status": "skipped", "error": "source fetch disabled"},
+        ]
+    }
+    data = gather.update_fetch_health(gathered, path, now=NOW)
+    assert data["domains"]["xbox.com"]["successes"] == 1
+    assert data["domains"]["xbox.com"]["failures"] == 1
+    assert data["domains"]["xbox.com"]["last_failure_reason"] == "boom"
+    assert "ign.com" not in data["domains"], "a skipped source is not a fetch attempt"
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["updated_at"] == NOW.isoformat()
+
+
+def test_print_fetch_health_summary_lists_domains():
+    data = {"domains": {"xbox.com": {"successes": 1, "failures": 2}}}
+    lines = gather.print_fetch_health_summary(data)
+    assert lines == ["fetch health: xbox.com 1 ok / 2 failed"]

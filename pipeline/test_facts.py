@@ -1585,3 +1585,44 @@ def test_tier1_passing_mention_does_not_confirm_the_story(tmp_path):
         )
     assert "tier-1 source does not state the headline claim" in str(excinfo.value)
     assert not (tmp_path / "tokon-passing.json").exists()
+
+
+# --- unconfirmed sheets and stored grounding drops ---------------------------
+
+
+def test_ground_claims_details_returns_reasons():
+    src = source(tier=1, text="Nvidia confirmed the launch window for its next graphics card line.")
+    bad = claim(claim="Pre-order figure", value="368,000 pre-orders", source_url="https://a.example/1")
+    good = claim(claim="Nvidia confirmed the window", value="the launch window", source_url="https://a.example/1")
+    kept, dropped = facts.ground_claims_details([good, bad], [src])
+    assert kept == [good]
+    assert len(dropped) == 1
+    assert dropped[0]["claim"] is bad
+    assert "368000" in dropped[0]["reason"]
+
+
+def test_unconfirmed_story_writes_sheet_under_unconfirmed_dir(tmp_path):
+    data = gathered(sources=[source()])  # single tier-2 source, no attributed origin
+    generate = make_generate({"claims": [claim(kind="reported", origin="unstated")]})
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(data, output_dir=tmp_path, now=NOW, generate=generate)
+    assert not (tmp_path / "story-1.json").exists(), "no top-level confirmed sheet for a rejected story"
+    path = tmp_path / "unconfirmed" / "story-1.json"
+    assert path.is_file()
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["id"] == "story-1"
+    assert written["confirmation"]["confirmed"] is False
+    assert isinstance(written["origins"], list)
+    assert "claims" in written and "sources" in written
+    assert written["kinds"] == ["reported"]
+
+
+def test_confirmed_sheet_includes_grounding_block(tmp_path):
+    data = gathered(sources=[source(tier=1, text="test-origin reported the story.")])
+    result = facts.facts(
+        data, output_dir=tmp_path, now=NOW,
+        generate=make_generate({"claims": [claim()]}),
+    )
+    assert result["grounding"] == []
+    written = json.loads((tmp_path / "story-1.json").read_text(encoding="utf-8"))
+    assert "grounding" in written

@@ -38,7 +38,7 @@ DEFAULT_PERFORMANCE_PATH = PROJECT_ROOT / "data" / "topic-performance.json"
 
 DEFAULT_MIN_SCORE = 65
 DEFAULT_MIN_SCORE_CORROBORATED = 55
-DEFAULT_MAX_CANDIDATES_PER_RUN = 3
+DEFAULT_MAX_CANDIDATES_PER_RUN = 5
 DEFAULT_MODEL_CALL_BUDGET = 12
 #: Minimum distinct source URLs a cluster needs to be eligible. config.yaml's
 #: ``content_limits.min_sources`` is the single source of truth (shared with the
@@ -313,15 +313,67 @@ def load_min_sources(config: dict | None = None) -> int:
     return int(DEFAULT_MIN_SOURCES)
 
 
+def _countable_items(cluster_dict: dict) -> list[dict]:
+    """Member items that count toward the source floor.
+
+    Items whose feed disabled fetching (``fetchable: false``) and items
+    re-attributed to an unconfigured external domain (tier 3) cannot support a
+    story, so they never satisfy ``min_sources``.
+    """
+    countable: list[dict] = []
+    for item in cluster_dict.get("items") or []:
+        if item.get("fetchable") is False:
+            continue
+        tier = item.get("tier")
+        if tier is not None and str(tier) != "":
+            try:
+                if int(tier) == 3:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        countable.append(item)
+    return countable
+
+
 def source_urls(cluster_dict: dict) -> list[str]:
-    """The cluster's distinct, normalized member URLs (its source URLs)."""
-    links = [str(item.get("link") or "") for item in cluster_dict.get("items") or []]
+    """The cluster's distinct, normalized source URLs that count toward eligibility."""
+    links = [str(item.get("link") or "") for item in _countable_items(cluster_dict)]
     return cluster._normalized_urls(links)
 
 
 def source_count(cluster_dict: dict) -> int:
-    """How many distinct source URLs a cluster has (a one-source story is not eligible)."""
+    """How many distinct countable source URLs a cluster has (one-source stories are not eligible)."""
     return len(source_urls(cluster_dict))
+
+
+def filter_excluded_items(
+    items: list[dict] | None,
+    patterns: Iterable[str] | None = None,
+    *,
+    on_excluded: Any = None,
+) -> list[dict]:
+    """Drop feed items whose headline matches a format-exclusion pattern.
+
+    Applied before clustering so a promo headline can never join a story and
+    inflate its source count. Logs one line per matched pattern and, when
+    ``on_excluded`` is given, calls ``on_excluded(pattern, count)`` for each.
+    """
+    if patterns is None:
+        patterns = load_exclude_title_patterns()
+    patterns = list(patterns)
+    kept: list[dict] = []
+    counts: dict[str, int] = {}
+    for item in items or []:
+        pattern = cluster.excluded_title_pattern(str(item.get("title") or ""), patterns)
+        if pattern is None:
+            kept.append(item)
+        else:
+            counts[pattern] = counts.get(pattern, 0) + 1
+    for pattern, count in counts.items():
+        logger.info("item exclusion: dropped %d item(s) matching %r", count, pattern)
+        if on_excluded is not None:
+            on_excluded(pattern, count)
+    return kept
 
 
 def min_score_for(
@@ -600,6 +652,7 @@ __all__ = [
     "DEFAULT_RELEVANCE_KEYWORDS",
     "DEFAULT_WEIGHTS",
     "NEWS_DATE_SIGNAL_PATTERN",
+    "filter_excluded_items",
     "guess_category",
     "has_news_signal",
     "ineligible_reason",

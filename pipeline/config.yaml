@@ -397,7 +397,7 @@ score:
   # fail confirmation are recorded in data/failed.json under "unconfirmed",
   # keyed by their member-URL hash, and skipped for the same membership until
   # the failed cooldown lapses.
-  max_candidates_per_run: 3
+  max_candidates_per_run: 5
   model_call_budget: 12
   # News value: a headline that matches one of news_verbs (as a whole word or
   # phrase) earns news_bonus extra points. A borderline single-source story is
@@ -589,6 +589,7 @@ sources:
     owner: intel
     region: global
     categories: [hardware, pc, tech]
+    fetch: false
     # UNVERIFIED: test from Actions
 
   # Tier 2: reputable outlets
@@ -659,6 +660,7 @@ sources:
     owner: hookshot-media
     region: uk
     categories: [playstation, gaming-news]
+    fetch: false
     # verify owner
   - name: GameSpot
     site: https://www.gamespot.com
@@ -668,6 +670,7 @@ sources:
     owner: fandom
     region: us
     categories: [gaming-news]
+    fetch: false
     # verify owner
   - name: Dot Esports
     site: https://dotesports.com
@@ -677,6 +680,7 @@ sources:
     owner: dot-esports
     region: us
     categories: [esports]
+    fetch: false
     # verify owner
   - name: Esports News UK
     site: https://esports-news.co.uk

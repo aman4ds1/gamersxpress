@@ -831,17 +831,19 @@ def grounding_failure(
     return None
 
 
-def ground_claims(
+def ground_claims_details(
     claims: list[dict],
     sources: list[dict],
     *,
     story_id: str = "",
 ) -> tuple[list[dict], list[dict]]:
-    """Drop claims whose value or label is not supported by their own source.
+    """Drop unsupported claims, returning ``(kept, dropped_details)``.
 
-    Each claim is checked against its own source's text; the source's
-    publication date (feed ``published``, else the URL date) is passed as the
-    grounding anchor, so a feed-only date token is never treated as ungrounded.
+    Each entry in ``dropped_details`` is ``{"claim": <claim>, "reason": <str>}``
+    so the caller can persist why a claim was discarded. Each claim is checked
+    against its own source's text; the source's publication date (feed
+    ``published``, else the URL date) is passed as the grounding anchor, so a
+    feed-only date token is never treated as ungrounded.
     """
     by_url = _sources_by_url(sources)
     kept: list[dict] = []
@@ -856,7 +858,7 @@ def ground_claims(
         if reason is None:
             kept.append(claim)
         else:
-            dropped.append(claim)
+            dropped.append({"claim": claim, "reason": reason})
             logger.warning(
                 "story %s: dropping ungrounded claim from %s (%s): %r",
                 story_id or "?",
@@ -865,6 +867,17 @@ def ground_claims(
                 claim.get("claim"),
             )
     return kept, dropped
+
+
+def ground_claims(
+    claims: list[dict],
+    sources: list[dict],
+    *,
+    story_id: str = "",
+) -> tuple[list[dict], list[dict]]:
+    """Drop claims whose value or label is not supported by their own source."""
+    kept, dropped_details = ground_claims_details(claims, sources, story_id=story_id)
+    return kept, [entry["claim"] for entry in dropped_details]
 
 
 # --- bylines: a company post's speaker is the person it names -----------------
@@ -1931,6 +1944,52 @@ def coherence_check(
     return kept, dropped, primary
 
 
+def _write_unconfirmed_sheet(
+    output_dir: Path,
+    name: str,
+    now: dt.datetime,
+    confirmation: dict,
+    central: Optional[dict],
+    kept: list[dict],
+    claims: list[dict],
+    sheet_sources: list[dict],
+    dropped: list[dict],
+) -> Optional[Path]:
+    """Persist a rejected story's sheet under ``<output_dir>/unconfirmed/``.
+
+    Unconfirmed stories are dropped from the run, but saving the sheet lets the
+    owner inspect exactly what the extractor saw and why it was not confirmed.
+    Failures here are logged, never raised -- the story still raises
+    :class:`UnconfirmedStory`.
+    """
+    payload = {
+        "id": name,
+        "generated_at": now.isoformat(),
+        "confirmation": confirmation,
+        "central_claim": central,
+        "kinds": sorted({str(claim.get("kind")) for claim in claims if claim.get("kind")}),
+        "origins": list(confirmation.get("origins") or []),
+        "sources": sheet_sources,
+        "claims": claims,
+        "coherence": {
+            "dropped_claims": [
+                {"claim": claim.get("claim"), "source_url": claim.get("source_url")}
+                for claim in dropped
+            ],
+        },
+    }
+    directory = Path(output_dir) / "unconfirmed"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{name}.json"
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        logger.info("story %s: wrote unconfirmed sheet -> %s", name, path)
+        return path
+    except OSError as exc:  # noqa: BLE001 - never block the raise on a write failure
+        logger.warning("story %s: could not write unconfirmed sheet (%s)", name, exc)
+        return None
+
+
 def facts(
     gathered: dict,
     *,
@@ -2022,7 +2081,8 @@ def facts(
 
     # A claim's value must stay inside its own source text: figures, names and
     # absolute qualifiers the source never states are dropped before merging.
-    kept, ungrounded = ground_claims(kept, sources, story_id=name)
+    kept, ungrounded_details = ground_claims_details(kept, sources, story_id=name)
+    ungrounded = [entry["claim"] for entry in ungrounded_details]
     if ungrounded:
         logger.warning("story %s: dropped %d ungrounded claim(s)", name, len(ungrounded))
 
@@ -2102,14 +2162,6 @@ def facts(
             rule="unconfirmed",
             reason="tier-1 source does not state the headline claim",
         )
-    if not confirmation["confirmed"]:
-        message = (
-            f"story {name}: needs one tier-1 source stating the headline claim "
-            f"or two independent origins supporting it; got {confirmation}"
-        )
-        logger.warning("%s", message)
-        raise UnconfirmedStory(message)
-
     # Only sources that contributed at least one claim are listed in the sheet;
     # a source that yielded no claim is never cited by the article.
     claimed_urls = {_source_url_key(url) for claim in claims for url in claim["source_urls"]}
@@ -2122,12 +2174,27 @@ def facts(
         if _source_url_key(source.get("link")) in claimed_urls
     ]
 
+    if not confirmation["confirmed"]:
+        message = (
+            f"story {name}: needs one tier-1 source stating the headline claim "
+            f"or two independent origins supporting it; got {confirmation}"
+        )
+        logger.warning("%s", message)
+        _write_unconfirmed_sheet(
+            output_dir, name, now, confirmation, central, kept, claims, sheet_sources, dropped
+        )
+        raise UnconfirmedStory(message)
+
     payload = {
         "id": name,
         "generated_at": now.isoformat(),
         "confirmation": confirmation,
         "sources": sheet_sources,
         "claims": claims,
+        "grounding": [
+            {"claim": entry["claim"].get("claim"), "reason": entry["reason"]}
+            for entry in ungrounded_details
+        ],
         "coherence": {
             "checked": bool(primary),
             "primary_entities": primary,
@@ -2177,6 +2244,7 @@ __all__ = [
     "entity_aliases",
     "extract_claims",
     "ground_claims",
+    "ground_claims_details",
     "grounding_failure",
     "load_origin_aliases",
     "merge_claims",

@@ -45,6 +45,8 @@ import os
 import shutil
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -106,6 +108,18 @@ DEFAULT_READINESS_MIN_CLAIMS = 6
 #: sheet ready to write from, however many of them there are.
 _READY_CLAIM_KINDS = frozenset({"confirmed", "reported", "estimate", "statement"})
 
+#: Minimum extracted characters a gathered source needs before it counts toward
+#: a candidate's post-gather source floor. Mirrors the facts prompt's usefulness
+#: floor; a page that yielded less than this is treated as unusable.
+READINESS_MIN_SOURCE_CHARS = 400
+
+
+def _tier_value(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
 
 def _facts_readiness(
     payload: dict,
@@ -116,13 +130,17 @@ def _facts_readiness(
     """Whether a facts sheet is ready for the writer, and why not when it is not.
 
     Ready means at least ``min_sources`` distinct contributing sources (the sheet
-    lists only sources that produced a claim) and at least ``min_claims`` claims
-    whose kind is confirmed, reported, estimate or statement. A rumor or opinion
-    never counts. Returns ``(ready, reason)`` where ``reason`` is
-    ``"insufficient sources"`` or ``"too few facts"`` when not ready.
+    lists only sources that produced a claim; tier-3 pages never count) and at
+    least ``min_claims`` claims whose kind is confirmed, reported, estimate or
+    statement. A rumor or opinion never counts. Returns ``(ready, reason)`` where
+    ``reason`` is ``"insufficient sources"`` or ``"too few facts"``.
     """
     sources = payload.get("sources") or []
-    links = [str(source.get("link") or "") for source in sources]
+    links = [
+        str(source.get("link") or "")
+        for source in sources
+        if _tier_value(source.get("tier")) != 3
+    ]
     contributing = len(cluster._normalized_urls(links))
     if contributing < int(min_sources):
         return False, "insufficient sources"
@@ -131,6 +149,50 @@ def _facts_readiness(
     if usable < int(min_claims):
         return False, "too few facts"
     return True, None
+
+
+def _countable_gathered_sources(gathered: dict) -> list[dict]:
+    """Gathered sources that can support a story and hold usable text.
+
+    A post-gather version of the score-stage source floor: a source counts only
+    when it was fetched successfully, produced enough text to extract claims
+    from, did not disable fetching, and was not demoted to tier 3 (an external
+    page on an unconfigured domain). This lets the run reject a candidate before
+    spending any model call on it.
+    """
+    usable: list[dict] = []
+    for source in gathered.get("sources") or []:
+        if str(source.get("status") or "") != "ok":
+            continue
+        if len(str(source.get("text") or "")) < READINESS_MIN_SOURCE_CHARS:
+            continue
+        if source.get("fetchable") is False:
+            continue
+        if _tier_value(source.get("tier")) == 3:
+            continue
+        usable.append(source)
+    return usable
+
+
+class _Timings:
+    """Accumulate per-stage wall-clock durations for one run."""
+
+    def __init__(self, clock: Callable[[], float] = time.perf_counter) -> None:
+        self._clock = clock
+        self.durations: dict[str, float] = {}
+
+    @contextmanager
+    def stage(self, name: str):
+        start = self._clock()
+        try:
+            yield
+        finally:
+            self.durations[name] = round(
+                self.durations.get(name, 0.0) + (self._clock() - start), 3
+            )
+
+    def as_dict(self) -> dict[str, float]:
+        return dict(self.durations)
 
 
 @dataclass
@@ -156,6 +218,7 @@ class Paths:
     candidates_dir: Path
     feed_cache: Path
     feed_health: Path
+    fetch_health: Path
 
     @property
     def last_run(self) -> Path:
@@ -199,6 +262,7 @@ def default_paths(dry_run: bool = False, dry_run_dir: str | Path | None = None) 
             candidates_dir=data / "candidates",
             feed_cache=data / "feed-cache.json",
             feed_health=data / "reports" / "feed-health.json",
+            fetch_health=data / "reports" / "fetch-health.json",
         )
 
     base = Path(dry_run_dir) if dry_run_dir else Path(tempfile.mkdtemp(prefix="gx-dryrun-"))
@@ -228,6 +292,7 @@ def default_paths(dry_run: bool = False, dry_run_dir: str | Path | None = None) 
         candidates_dir=base / "candidates",
         feed_cache=base / "feed-cache.json",
         feed_health=base / "reports" / "feed-health.json",
+        fetch_health=base / "reports" / "fetch-health.json",
     )
 
 
@@ -359,6 +424,12 @@ def run(
     # min_sources is the shared content_limits value, read through the gates
     # config so the score gate, the readiness check and the publish gate agree.
     readiness_min_sources = int(gates_config.get("min_sources", score_stage.DEFAULT_MIN_SOURCES))
+    exclude_patterns = score_stage.load_exclude_title_patterns(raw_config)
+    try:
+        sources = ingest_stage.load_sources(config_path)
+    except ingest_stage.ConfigError:
+        sources = []
+    timings = _Timings()
 
     paths = paths or default_paths(dry_run, dry_run_dir)
     run_state = RunState()
@@ -386,16 +457,22 @@ def run(
 
     def finish(status: str, error: str | None, *, exit_code: int | None = None, **extra: Any) -> RunResult:
         code = _STATUS_EXIT.get(status, EXIT_CONFIG) if exit_code is None else exit_code
+        durations = timings.as_dict()
         report = {
             "status": status,
             "error": error,
             "exit_code": code,
             "generated_at": now.isoformat(),
             "breaker": dict(breaker),
+            "timings": durations,
+            "model_calls": run_state.calls,
             **run_state.report(),
             **extra,
         }
         publish_stage.write_last_run(report, paths.last_run)
+        for stage_name, seconds in durations.items():
+            logger.info("stage timing: %s %.3fs", stage_name, seconds)
+        gather_stage.print_fetch_health_summary(gather_stage.load_fetch_health(paths.fetch_health))
         return RunResult(status, run_state, error, report, code)
 
     if publish_mode not in modes:
@@ -412,42 +489,53 @@ def run(
         return finish("paused", f"daily cap reached ({published_today}/{daily_cap})")
 
     try:
-        if dry_run:
-            items = dryrun_stage.sample_pool(now).get("items") or []
-        else:
-            ingested = ingest_fn(
-                config_path,
-                output_dir=paths.candidates_dir,
-                cache_path=paths.feed_cache,
-                health_path=paths.feed_health,
+        with timings.stage("ingest"):
+            if dry_run:
+                items = dryrun_stage.sample_pool(now).get("items") or []
+            else:
+                ingested = ingest_fn(
+                    config_path,
+                    output_dir=paths.candidates_dir,
+                    cache_path=paths.feed_cache,
+                    health_path=paths.feed_health,
+                )
+                items = ingested.get("items") or []
+            # Drop promo/format headlines before they can cluster, so a deal
+            # post can never join a story and inflate its source count.
+            items = score_stage.filter_excluded_items(items, exclude_patterns)
+
+        with timings.stage("cluster"):
+            pool = cluster.load_pool(paths.pool)
+            cluster.merge_items(pool, items, now=now, max_age=stale_after or cluster.DEFAULT_STALE_AFTER)
+            # Credit each item to the source that owns its link before clustering
+            # (a Wire item linking to IGN becomes IGN; unknown domains drop to
+            # tier 3), then re-filter the merged pool so exclusion applies to
+            # stale items carried over from earlier runs too.
+            ingest_stage.reattribute_items(pool.get("items") or [], sources)
+            pool["items"] = score_stage.filter_excluded_items(pool.get("items") or [], exclude_patterns)
+            cluster.save_pool(pool, now=now, path=paths.pool)
+
+            seen = cluster.load_seen(paths.seen)
+            failed = cluster.load_failed(paths.failed)
+            cluster_section = raw_config.get("cluster") or {}
+            seen_cooldown = dt.timedelta(
+                days=float(cluster_section.get("seen_cooldown_days", cluster.SEEN_COOLDOWN.days))
             )
-            items = ingested.get("items") or []
-
-        pool = cluster.load_pool(paths.pool)
-        cluster.merge_items(pool, items, now=now, max_age=stale_after or cluster.DEFAULT_STALE_AFTER)
-        cluster.save_pool(pool, now=now, path=paths.pool)
-
-        seen = cluster.load_seen(paths.seen)
-        failed = cluster.load_failed(paths.failed)
-        cluster_section = raw_config.get("cluster") or {}
-        seen_cooldown = dt.timedelta(
-            days=float(cluster_section.get("seen_cooldown_days", cluster.SEEN_COOLDOWN.days))
-        )
-        failed_cooldown_hours = int(
-            cluster_section.get("failed_cooldown_hours", cluster.DEFAULT_FAILED_COOLDOWN_HOURS)
-        )
-        min_event_overlap = int(
-            cluster_section.get("min_event_overlap", cluster.DEFAULT_EVENT_OVERLAP)
-        )
-        clusters = cluster.cluster_items(
-            pool.get("items"),
-            now=now,
-            seen=seen,
-            failed=failed,
-            cooldown=seen_cooldown,
-            failed_cooldown_hours=failed_cooldown_hours,
-            min_event_overlap=min_event_overlap,
-        )
+            failed_cooldown_hours = int(
+                cluster_section.get("failed_cooldown_hours", cluster.DEFAULT_FAILED_COOLDOWN_HOURS)
+            )
+            min_event_overlap = int(
+                cluster_section.get("min_event_overlap", cluster.DEFAULT_EVENT_OVERLAP)
+            )
+            clusters = cluster.cluster_items(
+                pool.get("items"),
+                now=now,
+                seen=seen,
+                failed=failed,
+                cooldown=seen_cooldown,
+                failed_cooldown_hours=failed_cooldown_hours,
+                min_event_overlap=min_event_overlap,
+            )
         if not clusters:
             return finish("nothing", "no new stories to cover")
         min_score = float(score_section.get("min_score", score_stage.DEFAULT_MIN_SCORE))
@@ -469,22 +557,23 @@ def run(
         # has max_candidates_per_run of them (or none are left).
         candidates: list[dict] = []
         remaining = list(clusters)
-        while len(candidates) < max_candidates:
-            candidate = score_stage.pick(
-                remaining,
-                min_score=min_score,
-                min_score_corroborated=min_score_corroborated,
-                weights=weights,
-                performance=performance,
-                min_sources=readiness_min_sources,
-            )
-            if candidate is None:
-                break
-            candidates.append(candidate)
-            remaining = [
-                cluster_dict for cluster_dict in remaining
-                if cluster_dict.get("id") != candidate.get("id")
-            ]
+        with timings.stage("score"):
+            while len(candidates) < max_candidates:
+                candidate = score_stage.pick(
+                    remaining,
+                    min_score=min_score,
+                    min_score_corroborated=min_score_corroborated,
+                    weights=weights,
+                    performance=performance,
+                    min_sources=readiness_min_sources,
+                )
+                if candidate is None:
+                    break
+                candidates.append(candidate)
+                remaining = [
+                    cluster_dict for cluster_dict in remaining
+                    if cluster_dict.get("id") != candidate.get("id")
+                ]
         if not candidates:
             return finish("nothing", "no story scored high enough")
 
@@ -543,6 +632,8 @@ def run(
                 "outcome": outcome,
                 "max_candidates_per_run": max_candidates,
                 "model_call_budget": budget,
+                "model_calls": run_state.calls,
+                "timings": timings.as_dict(),
                 "candidates": candidates_report,
                 "skipped": skipped,
             }
@@ -580,16 +671,43 @@ def run(
                     run_state.calls, budget,
                 )
                 break
-            if dry_run:
-                gathered = dryrun_stage.sample_gathered(cluster_id, now)
-            else:
-                gathered = gather_fn(candidate, output_dir=paths.gathered_dir, id=cluster_id)
-            try:
-                facts = facts_fn(
-                    gathered, id=cluster_id, output_dir=paths.facts_dir,
-                    generate=generate, run_state=run_state, now=now,
-                    title=candidate.get("title"), entities=candidate.get("entities"),
+            with timings.stage("gather"):
+                if dry_run:
+                    gathered = dryrun_stage.sample_gathered(cluster_id, now)
+                else:
+                    gathered = gather_fn(candidate, output_dir=paths.gathered_dir, id=cluster_id)
+            # Credit each source to the domain its page finally resolved to and
+            # record the fetch outcome per domain for the owner's health report.
+            ingest_stage.reattribute_gathered(gathered, sources)
+            gather_stage.update_fetch_health(gathered, paths.fetch_health, now=now)
+
+            # Cheap readiness: reject a candidate whose gathered sources cannot
+            # reach the source floor before spending any model call on it.
+            countable = _countable_gathered_sources(gathered)
+            if len(countable) < readiness_min_sources:
+                cluster.record_unconfirmed(failed, cluster_id, now=now)
+                failed["unconfirmed"][str(cluster_id)]["reason"] = "insufficient sources"
+                cluster.save_failed(failed, paths.failed)
+                candidates_report.append(
+                    _candidate_entry(
+                        candidate, confirmed=False, reason="insufficient sources", outcome="not ready"
+                    )
                 )
+                logger.warning(
+                    "candidate %s not ready: insufficient sources (%d usable < %d)",
+                    cluster_id, len(countable), readiness_min_sources,
+                )
+                gathered = None
+                facts = None
+                continue
+
+            try:
+                with timings.stage("facts"):
+                    facts = facts_fn(
+                        gathered, id=cluster_id, output_dir=paths.facts_dir,
+                        generate=generate, run_state=run_state, now=now,
+                        title=candidate.get("title"), entities=candidate.get("entities"),
+                    )
             except facts_stage.UnconfirmedStory:
                 cluster.record_unconfirmed(failed, cluster_id, now=now)
                 cluster.save_failed(failed, paths.failed)
@@ -636,7 +754,8 @@ def run(
                 return finish("nothing", "model budget spent before any candidate could be tried")
             return finish("nothing", "no eligible candidate confirmed itself")
 
-        writer = write_fn(facts, run_state=run_state, generate=generate)
+        with timings.stage("write"):
+            writer = write_fn(facts, run_state=run_state, generate=generate)
 
         # The writer produced an article, so a later verify or gate failure counts
         # as an attempt against this story; skips and provider outages never reach
@@ -652,35 +771,36 @@ def run(
 
         provisional_slug = seo_stage.slugify(chosen.get("title") or cluster_id)
         draft = writer.value
-        verify_report = verify_fn(
-            draft, facts, run_state=run_state, generate=generate,
-            report_dir=paths.reports_dir, id=cluster_id,
-        )
-
-        # One repair attempt: an article_rejected verdict with unsupported clauses
-        # gets a single writer call to delete or re-ground them, then a full
-        # re-verification. A verifier_output_invalid verdict (no usable verdict)
-        # is never repaired, and no article is ever repaired twice.
-        if verify_report.failure_reason == "article_rejected" and verify_report.unsupported:
-            changed_clauses = list(verify_report.unsupported)
-            repaired = repair_fn(
-                draft, changed_clauses, facts, run_state=run_state, generate=generate,
-            )
-            publish_stage.save_repair(
-                draft, repaired.value, slug=provisional_slug, drafts_dir=paths.drafts_dir,
-                changed_clauses=changed_clauses,
-            )
-            draft = repaired.value
+        with timings.stage("verify"):
             verify_report = verify_fn(
                 draft, facts, run_state=run_state, generate=generate,
                 report_dir=paths.reports_dir, id=cluster_id,
-                repair={
-                    "attempted": True,
-                    "changed_clauses": changed_clauses,
-                    "original_chars": len(writer.value),
-                    "repaired_chars": len(repaired.value),
-                },
             )
+
+            # One repair attempt: an article_rejected verdict with unsupported
+            # clauses gets a single writer call to delete or re-ground them, then
+            # a full re-verification. A verifier_output_invalid verdict (no usable
+            # verdict) is never repaired, and no article is ever repaired twice.
+            if verify_report.failure_reason == "article_rejected" and verify_report.unsupported:
+                changed_clauses = list(verify_report.unsupported)
+                repaired = repair_fn(
+                    draft, changed_clauses, facts, run_state=run_state, generate=generate,
+                )
+                publish_stage.save_repair(
+                    draft, repaired.value, slug=provisional_slug, drafts_dir=paths.drafts_dir,
+                    changed_clauses=changed_clauses,
+                )
+                draft = repaired.value
+                verify_report = verify_fn(
+                    draft, facts, run_state=run_state, generate=generate,
+                    report_dir=paths.reports_dir, id=cluster_id,
+                    repair={
+                        "attempted": True,
+                        "changed_clauses": changed_clauses,
+                        "original_chars": len(writer.value),
+                        "repaired_chars": len(repaired.value),
+                    },
+                )
 
         if not verify_report.passed:
             reason = verify_report.failure_reason or "unknown"
@@ -694,32 +814,35 @@ def run(
                 failures=list(verify_report.unsupported) + list(verify_report.unmatched_numbers) or ["verify failed"],
             )
 
-        seo = seo_fn(
-            draft, facts, run_state=run_state, generate=generate,
-            entities_path=paths.entities, articles_dir=paths.articles_dir,
-            drafts_dir=paths.drafts_dir, config=verify_config,
-        )
+        with timings.stage("seo"):
+            seo = seo_fn(
+                draft, facts, run_state=run_state, generate=generate,
+                entities_path=paths.entities, articles_dir=paths.articles_dir,
+                drafts_dir=paths.drafts_dir, config=verify_config,
+            )
         slug = seo["slug"]
 
         cover_staging = Path(tempfile.mkdtemp(prefix="gx-cover-"))
         try:
-            cover = cover_fn(
-                slug, seo["title"], seo["category"],
-                output_dir=cover_staging, fonts_dir=paths.fonts_dir,
-            )
+            with timings.stage("publish"):
+                cover = cover_fn(
+                    slug, seo["title"], seo["category"],
+                    output_dir=cover_staging, fonts_dir=paths.fonts_dir,
+                )
 
-            index = link_stage.build_index(_article_records(paths.articles_dir))
-            linked = link_fn(draft, index, self_id=slug, now=now)
-            body = _body_of(linked.article)
-            front = publish_stage.build_front_matter(facts, seo, cover)
-            article = publish_stage.assemble_article(body, front)
+                index = link_stage.build_index(_article_records(paths.articles_dir))
+                linked = link_fn(draft, index, self_id=slug, now=now)
+                body = _body_of(linked.article)
+                front = publish_stage.build_front_matter(facts, seo, cover)
+                article = publish_stage.assemble_article(body, front)
 
-            gate_result = gates_fn(
-                article, slug=slug, facts=facts, cluster_id=cluster_id, gathered=gathered,
-                verify_report=verify_report.to_dict(), run_state=run_state, config=gates_config,
-                articles_dir=paths.articles_dir, page_template=paths.page_template, now=now,
-                link_checker=link_checker, site_checks=site_checks,
-            )
+            with timings.stage("gates"):
+                gate_result = gates_fn(
+                    article, slug=slug, facts=facts, cluster_id=cluster_id, gathered=gathered,
+                    verify_report=verify_report.to_dict(), run_state=run_state, config=gates_config,
+                    articles_dir=paths.articles_dir, page_template=paths.page_template, now=now,
+                    link_checker=link_checker, site_checks=site_checks,
+                )
             if not gate_result.passed:
                 _record_attempt("gate failure")
                 return _fail(
@@ -730,12 +853,13 @@ def run(
                     gates=gate_result.to_dict(),
                 )
 
-            result = publish_stage.publish(
-                article, slug=slug, title=seo["title"], category=seo["category"], mode=publish_mode,
-                cover_path=cover.get("path"), cluster_id=cluster_id, cluster=chosen,
-                articles_dir=paths.articles_dir, covers_dir=paths.covers_dir,
-                log_path=paths.log, seen_path=paths.seen, now=now,
-            )
+            with timings.stage("publish"):
+                result = publish_stage.publish(
+                    article, slug=slug, title=seo["title"], category=seo["category"], mode=publish_mode,
+                    cover_path=cover.get("path"), cluster_id=cluster_id, cluster=chosen,
+                    articles_dir=paths.articles_dir, covers_dir=paths.covers_dir,
+                    log_path=paths.log, seen_path=paths.seen, now=now,
+                )
         finally:
             shutil.rmtree(cover_staging, ignore_errors=True)
 

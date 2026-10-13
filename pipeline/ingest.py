@@ -235,6 +235,49 @@ def normalize_url(url: str) -> str:
     )
 
 
+#: Country-code second-level labels whose registrable domain is three labels
+#: (``esports-news.co.uk``), not two. Kept small on purpose: the pipeline only
+#: needs to compare the domains of configured sources and feed item links, and a
+#: wrong guess would silently re-attribute a page. See :func:`registered_domain`.
+_MULTI_LABEL_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "sch.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au",
+    "co.in", "net.in", "org.in", "gen.in", "firm.in", "ind.in",
+    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
+    "co.nz", "net.nz", "org.nz", "govt.nz",
+    "co.za", "org.za",
+    "com.br", "net.br", "org.br",
+    "com.cn", "com.tw", "com.sg", "com.hk", "com.my", "com.tr",
+    "co.kr", "or.kr",
+})
+
+
+def registered_domain(value: str) -> str:
+    """The registrable domain of a URL or bare host, lowercased, no ``www.``.
+
+    ``news.xbox.com`` -> ``xbox.com``, ``www.pushsquare.com`` -> ``pushsquare.com``
+    and ``esports-news.co.uk`` -> ``esports-news.co.uk``. Uses a small built-in
+    list of multi-label suffixes so no extra dependency is needed; an unknown
+    host falls back to its last two labels, and ``""`` stays ``""``.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parts = urllib.parse.urlsplit(text if "//" in text else f"//{text}")
+    host = (parts.netloc or parts.path).strip().lower()
+    host = host.split("@")[-1].split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return ""
+    labels = [label for label in host.split(".") if label]
+    if len(labels) <= 2:
+        return ".".join(labels)
+    if ".".join(labels[-2:]) in _MULTI_LABEL_SUFFIXES:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
 def _http_fetch(feed_url: str, *, etag: Optional[str] = None, last_modified: Optional[str] = None) -> HttpResponse:
     """Fetch one feed, sending conditional headers when we already have either."""
     headers = {"User-Agent": USER_AGENT}
@@ -330,9 +373,101 @@ def process_feed(source: dict, content: bytes, now: dt.datetime, window: dt.time
                 "tier": source["tier"],
                 "owner": source["owner"],
                 "region": source["region"],
+                "discovered_via": source["name"],
+                "source_domain": registered_domain(source.get("site") or ""),
+                "fetchable": bool(source.get("fetch", True)),
             }
         )
     return FeedCandidates(len(entries), newest.isoformat() if newest else None, kept)
+
+
+def _source_index(sources: list[dict] | None) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Index configured sources by registrable domain and by name."""
+    by_domain: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
+    for source in sources or []:
+        if not isinstance(source, dict):
+            continue
+        domain = registered_domain(source.get("site") or "")
+        if domain and domain not in by_domain:
+            by_domain[domain] = source
+        name = source.get("name")
+        if name:
+            by_name[str(name)] = source
+    return by_domain, by_name
+
+
+def _tier_of(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def reattribute_item(
+    item: dict,
+    *,
+    by_domain: dict[str, dict],
+    by_name: dict[str, dict],
+    link_key: str = "link",
+) -> dict:
+    """Attribute an item to the source that owns its (final) link.
+
+    A feed item is initially credited to the feed it arrived from. If the link
+    it points at belongs to a *different* configured source, credit that source
+    instead (a Wire item linking to IGN becomes IGN). A link on an unconfigured
+    domain is demoted to tier 3 so it can never confirm a story.
+
+    Items with no known feed domain (e.g. synthetic dry-run fixtures) are left
+    untouched. The function is idempotent.
+    """
+    link = item.get(link_key) or item.get("link")
+    link_domain = registered_domain(str(link or ""))
+    if not link_domain:
+        return item
+    feed_name = item.get("source_name")
+    source_domain = registered_domain(str(item.get("source_domain") or ""))
+    if not source_domain and feed_name:
+        feed = by_name.get(str(feed_name))
+        if feed is not None:
+            source_domain = registered_domain(str(feed.get("site") or ""))
+    if not source_domain:
+        return item
+    item.setdefault("discovered_via", feed_name)
+    if link_domain == source_domain:
+        return item
+    target = by_domain.get(link_domain)
+    item["external"] = True
+    if target is not None:
+        item["source_name"] = target.get("name", item.get("source_name"))
+        item["tier"] = target.get("tier", item.get("tier"))
+        item["owner"] = target.get("owner", item.get("owner"))
+        if target.get("region"):
+            item["region"] = target["region"]
+        item["fetchable"] = bool(target.get("fetch", True))
+    else:
+        item["source_name"] = link_domain
+        item["tier"] = 3
+        item["owner"] = link_domain
+    return item
+
+
+def reattribute_items(items: list[dict] | None, sources: list[dict] | None) -> list[dict]:
+    """Re-attribute a pool of feed items in place; returns the same list."""
+    by_domain, by_name = _source_index(sources)
+    for item in items or []:
+        if isinstance(item, dict):
+            reattribute_item(item, by_domain=by_domain, by_name=by_name)
+    return list(items or [])
+
+
+def reattribute_gathered(gathered: dict, sources: list[dict] | None) -> dict:
+    """Re-attribute gathered sources using their post-redirect ``final_url``."""
+    by_domain, by_name = _source_index(sources)
+    for source in gathered.get("sources") or []:
+        if isinstance(source, dict):
+            reattribute_item(source, by_domain=by_domain, by_name=by_name, link_key="final_url")
+    return gathered
 
 
 def _looks_like_html(resp: HttpResponse) -> bool:
@@ -528,7 +663,11 @@ __all__ = [
     "load_sources",
     "load_freshness",
     "normalize_url",
+    "registered_domain",
     "process_feed",
+    "reattribute_item",
+    "reattribute_items",
+    "reattribute_gathered",
     "classify",
     "run",
 ]

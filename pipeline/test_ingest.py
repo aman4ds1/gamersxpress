@@ -155,6 +155,88 @@ def test_normalize_url():
     assert ingest.normalize_url("") == ""
 
 
+# --- registrable domains / re-attribution ------------------------------------
+
+
+def test_registered_domain_handles_multilabel_suffixes():
+    assert ingest.registered_domain("https://news.xbox.com/x") == "xbox.com"
+    assert ingest.registered_domain("https://www.pushsquare.com/feeds/latest") == "pushsquare.com"
+    assert ingest.registered_domain("https://esports-news.co.uk/feed") == "esports-news.co.uk"
+    assert ingest.registered_domain("https://thebridge.in/x") == "thebridge.in"
+    assert ingest.registered_domain("ign.com") == "ign.com"
+    assert ingest.registered_domain("") == ""
+
+
+def test_process_feed_records_discovery_and_fetch_flag():
+    content = rss(item_xml("Meta", "https://news.xbox.com/m", "Thu, 09 Oct 2026 09:00:00 +0000"))
+    source = base_source(name="Xbox Wire", site="https://news.xbox.com", tier=1, owner="microsoft", fetch=False)
+    item = ingest.process_feed(source, content, NOW).items[0]
+    assert item["discovered_via"] == "Xbox Wire"
+    assert item["source_domain"] == "xbox.com"
+    assert item["fetchable"] is False
+
+
+def _reattribution_sources():
+    return [
+        base_source(name="Xbox Wire", site="https://news.xbox.com", tier=1, owner="microsoft"),
+        base_source(name="IGN", site="https://www.ign.com", tier=2, owner="ign-entertainment"),
+    ]
+
+
+def test_reattribute_item_credits_configured_source_owning_the_link():
+    items = [{
+        "title": "t", "link": "https://www.ign.com/articles/x", "source_name": "Xbox Wire",
+        "tier": 1, "owner": "microsoft", "region": "us", "source_domain": "xbox.com", "fetchable": True,
+    }]
+    ingest.reattribute_items(items, _reattribution_sources())
+    assert items[0]["source_name"] == "IGN"
+    assert items[0]["tier"] == 2
+    assert items[0]["owner"] == "ign-entertainment"
+    assert items[0]["external"] is True
+    assert items[0]["discovered_via"] == "Xbox Wire"
+    ingest_again = [dict(items[0])]
+    ingest.reattribute_items(ingest_again, _reattribution_sources())
+    assert ingest_again[0]["tier"] == 2, "re-attribution must be idempotent"
+
+
+def test_reattribute_item_demotes_unknown_external_to_tier3():
+    items = [{
+        "title": "t", "link": "https://random.example/x", "source_name": "Xbox Wire",
+        "tier": 1, "owner": "microsoft", "region": "us", "source_domain": "xbox.com",
+    }]
+    ingest.reattribute_items(items, _reattribution_sources())
+    assert items[0]["tier"] == 3
+    assert items[0]["owner"] == "random.example"
+    assert items[0]["external"] is True
+
+
+def test_reattribute_item_keeps_owned_link_untouched():
+    items = [{
+        "title": "t", "link": "https://news.xbox.com/x", "source_name": "Xbox Wire",
+        "tier": 1, "owner": "microsoft", "region": "us", "source_domain": "xbox.com",
+    }]
+    ingest.reattribute_items(items, _reattribution_sources())
+    assert items[0]["tier"] == 1
+    assert "external" not in items[0]
+
+
+def test_reattribute_item_skips_items_with_no_known_feed_domain():
+    items = [{"title": "t", "link": "https://a.example/1", "source_name": "Tier One A", "tier": 1}]
+    ingest.reattribute_items(items, _reattribution_sources())
+    assert items[0]["tier"] == 1
+    assert "external" not in items[0]
+
+
+def test_reattribute_gathered_uses_final_url():
+    gathered = {"id": "s", "sources": [{
+        "link": "https://t.co/x", "final_url": "https://www.ign.com/articles/x",
+        "source_name": "Xbox Wire", "tier": 1, "owner": "microsoft",
+    }]}
+    ingest.reattribute_gathered(gathered, _reattribution_sources())
+    assert gathered["sources"][0]["source_name"] == "IGN"
+    assert gathered["sources"][0]["tier"] == 2
+
+
 # --- feed processing ---------------------------------------------------------
 
 
