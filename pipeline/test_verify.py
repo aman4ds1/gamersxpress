@@ -44,7 +44,7 @@ def model(clauses=None, unsupported=None, rumors=None, regional=None, costs=None
     return {
         "clauses": clauses
         if clauses is not None
-        else [{"clause": "The console costs $499", "supported": True, "fact_id": "F1"}],
+        else [{"clause": "The console costs $499", "fact_ids": ["F1"], "match": "exact", "difference": ""}],
         "unsupported_claims": unsupported or [],
         "rumors_stated_as_fact": rumors or [],
         "unsupported_regional": regional or [],
@@ -162,7 +162,9 @@ def test_wrong_price_fails_code_check_even_if_model_agrees(tmp_path):
         article,
         sheet(),
         run_state=providers.RunState(),
-        generate=make_generate(model([{"clause": "The console costs $599", "supported": True, "fact_id": "F1"}])),
+        generate=make_generate(
+            model([{"clause": "The console costs $599", "fact_ids": ["F1"], "match": "exact", "difference": ""}])
+        ),
         report_dir=tmp_path,
         verify_config=config(),
     )
@@ -172,7 +174,9 @@ def test_wrong_price_fails_code_check_even_if_model_agrees(tmp_path):
 
 def test_invented_claim_fails_model_check(tmp_path):
     payload = model(
-        clauses=[{"clause": "Free games forever", "supported": False}],
+        clauses=[
+            {"clause": "Free games forever", "fact_ids": [], "match": "none", "difference": "not in the sheet"}
+        ],
         unsupported=["Free games forever"],
     )
     report = verify_module.verify(
@@ -248,20 +252,28 @@ def test_unsupported_benefit_sentence_fails_against_facts_F10_to_F12(tmp_path):
         clauses=[
             {
                 "clause": "Embark trains in-house AI models to detect cheating",
-                "supported": True,
-                "fact_id": "F10",
+                "fact_ids": ["F10"],
+                "match": "exact",
+                "difference": "",
             },
             {
                 "clause": "Uses kernel-level anti-cheat from Denuvo",
-                "supported": True,
-                "fact_id": "F11",
+                "fact_ids": ["F11"],
+                "match": "exact",
+                "difference": "",
             },
             {
                 "clause": "Detects cheaters using Anybrain's AI service",
-                "supported": True,
-                "fact_id": "F12",
+                "fact_ids": ["F12"],
+                "match": "exact",
+                "difference": "",
             },
-            {"clause": ANTICHEAT_SENTENCE, "supported": False},
+            {
+                "clause": ANTICHEAT_SENTENCE,
+                "fact_ids": [],
+                "match": "none",
+                "difference": "the sheet does not say players receive security",
+            },
         ],
         unsupported=[ANTICHEAT_SENTENCE],
     )
@@ -327,11 +339,12 @@ DMZ_ARTICLE = "Deploy with vehicles or cash, and each deployment costs $100,000 
 def test_clause_level_check_flags_unsupported_part_of_mixed_sentence(tmp_path):
     payload = model(
         clauses=[
-            {"clause": "Deploy with vehicles or cash", "supported": False},
+            {"clause": "Deploy with vehicles or cash", "fact_ids": [], "match": "none", "difference": "not in the sheet"},
             {
                 "clause": "each deployment costs $100,000 DMZ Cash",
-                "supported": True,
-                "fact_id": "F1",
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "difference": "",
             },
         ],
         unsupported=["Deploy with vehicles or cash"],
@@ -347,7 +360,7 @@ def test_clause_level_check_flags_unsupported_part_of_mixed_sentence(tmp_path):
     assert report.passed is False
     assert report.unsupported == ["Deploy with vehicles or cash"]
     assert len(report.model_sentences) == 2
-    assert report.model_sentences[1]["fact_id"] == "F1"
+    assert report.model_sentences[1]["fact_ids"] == ["F1"]
 
 
 def test_cost_described_as_received_fails(tmp_path):
@@ -356,8 +369,9 @@ def test_cost_described_as_received_fails(tmp_path):
         clauses=[
             {
                 "clause": "Players get $100,000 DMZ Cash to deploy",
-                "supported": True,
-                "fact_id": "F1",
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "difference": "",
             }
         ],
         costs=["Players get $100,000 DMZ Cash to deploy"],
@@ -380,8 +394,9 @@ def test_invented_label_mid_tier_options_fails(tmp_path):
         clauses=[
             {
                 "clause": "Mid-tier options cost $100,000 DMZ Cash",
-                "supported": True,
-                "fact_id": "F1",
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "difference": "",
             }
         ],
         labels=["mid-tier options"],
@@ -404,8 +419,9 @@ def test_category_claim_fails(tmp_path):
         clauses=[
             {
                 "clause": "The extraction shooter deployment costs $100,000 DMZ Cash",
-                "supported": True,
-                "fact_id": "F1",
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "difference": "",
             }
         ],
         categories=["the game is an extraction shooter"],
@@ -424,7 +440,9 @@ def test_category_claim_fails(tmp_path):
 
 def test_unsupported_list_is_deduplicated(tmp_path):
     payload = model(
-        clauses=[{"clause": "Each deployment costs $100,000 DMZ Cash", "supported": False}],
+        clauses=[
+            {"clause": "Each deployment costs $100,000 DMZ Cash", "fact_ids": [], "match": "none", "difference": "not in the sheet"}
+        ],
         unsupported=["Each deployment costs $100,000 DMZ Cash"],
         costs=["Each deployment costs $100,000 DMZ Cash"],
     )
@@ -441,7 +459,9 @@ def test_unsupported_list_is_deduplicated(tmp_path):
 
 
 def test_supported_clause_without_cited_fact_fails(tmp_path):
-    payload = model(clauses=[{"clause": "The console costs $499", "supported": True}])
+    payload = model(
+        clauses=[{"clause": "The console costs $499", "fact_ids": [], "match": "exact", "difference": ""}]
+    )
     report = verify_module.verify(
         ARTICLE,
         sheet(),
@@ -550,7 +570,9 @@ def test_malformed_verifier_output_is_verifier_output_invalid(tmp_path):
 
 
 def test_supported_clause_with_unknown_fact_id_fails(tmp_path):
-    payload = model(clauses=[{"clause": "The console costs $499", "supported": True, "fact_id": "F99"}])
+    payload = model(
+        clauses=[{"clause": "The console costs $499", "fact_ids": ["F99"], "match": "exact", "difference": ""}]
+    )
     report = verify_module.verify(
         ARTICLE,
         sheet(),
@@ -565,7 +587,9 @@ def test_supported_clause_with_unknown_fact_id_fails(tmp_path):
 
 
 def test_unsupported_article_is_article_rejected(tmp_path):
-    payload = model(clauses=[{"clause": "The console costs $499", "supported": True, "fact_id": "F1"}])
+    payload = model(
+        clauses=[{"clause": "The console costs $499", "fact_ids": ["F1"], "match": "exact", "difference": ""}]
+    )
     report = verify_module.verify(
         "The console costs $599 and a $899 bundle.\n",
         sheet(),
@@ -582,7 +606,9 @@ def test_unsupported_article_is_article_rejected(tmp_path):
 
 def test_invented_claim_is_article_rejected(tmp_path):
     payload = model(
-        clauses=[{"clause": "Free games forever", "supported": False}],
+        clauses=[
+            {"clause": "Free games forever", "fact_ids": [], "match": "none", "difference": "not in the sheet"}
+        ],
         unsupported=["Free games forever"],
     )
     report = verify_module.verify(
@@ -614,7 +640,9 @@ def test_passing_report_has_no_failure_reason(tmp_path):
 def test_build_prompt_numbers_facts_and_cites_ids():
     prompt = verify_module.build_prompt("Body.", sheet(claim("The console costs $499")))
     assert "F1: 'Console price'" in prompt
-    assert "fact_id" in prompt
+    assert "[kind confirmed]" in prompt
+    assert "fact_ids" in prompt
+    assert "match" in prompt
 
 
 # --- family guard ------------------------------------------------------------
@@ -931,3 +959,178 @@ def test_shipped_config_whitelists_year_in_heading():
     cfg = verify_module.load_verify_config()
     result = verify_module.code_check("## 2026 roadmap\nThe console costs $499.\n", sheet(), cfg)
     assert result["ok"] is True
+
+
+def test_load_verify_config_reads_relative_time_words(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("verify:\n  relative_time_words:\n    - today\n    - soon\n", encoding="utf-8")
+    cfg = verify_module.load_verify_config(path)
+    assert cfg["relative_time_words"] == ("today", "soon")
+
+
+def test_load_verify_config_defaults_relative_time_words(tmp_path):
+    cfg = verify_module.load_verify_config(tmp_path / "missing.yaml")
+    assert cfg["relative_time_words"] == verify_module.DEFAULT_RELATIVE_TIME_WORDS
+
+
+# --- strict verifier clauses -------------------------------------------------
+
+
+def statement_sheet():
+    return {
+        "id": "stm-1",
+        "generated_at": "2026-10-09T12:00:00+00:00",
+        "sources": [
+            {
+                "source_name": "Famitsu",
+                "link": "https://famitsu.example/tokon",
+                "tier": 1,
+                "owner": "kadokawa",
+                "region": "jp",
+            }
+        ],
+        "claims": [
+            {
+                "claim": "Phoenix Cyclops was added as DLC rather than a day-one fighter",
+                "value": "Phoenix Cyclops was added as DLC rather than a day-one fighter",
+                "source_url": "https://famitsu.example/tokon",
+                "confidence": 0.9,
+                "kind": "statement",
+                "origin": "Takeshi Yamanaka",
+                "affiliation": "Capcom",
+            }
+        ],
+    }
+
+
+WRONG_SPEAKER_CLAUSE = (
+    "The decision to launch Phoenix Cyclops as DLC rather than a day-one fighter "
+    "was explained by the narrative team"
+)
+RIGHT_SPEAKER_CLAUSE = (
+    "Takeshi Yamanaka said Phoenix Cyclops was added as DLC rather than a day-one fighter"
+)
+
+
+def test_statement_clause_crediting_the_wrong_speaker_is_unsupported(tmp_path):
+    payload = model(
+        clauses=[
+            {"clause": WRONG_SPEAKER_CLAUSE, "fact_ids": ["F1"], "match": "exact", "difference": ""}
+        ]
+    )
+    report = verify_module.verify(
+        WRONG_SPEAKER_CLAUSE + ".\n",
+        statement_sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert WRONG_SPEAKER_CLAUSE in report.unsupported
+
+
+def test_statement_clause_naming_the_speaker_passes(tmp_path):
+    payload = model(
+        clauses=[
+            {"clause": RIGHT_SPEAKER_CLAUSE, "fact_ids": ["F1"], "match": "exact", "difference": ""}
+        ]
+    )
+    report = verify_module.verify(
+        RIGHT_SPEAKER_CLAUSE + ".\n",
+        statement_sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is True
+
+
+def style_sheet():
+    return {
+        "id": "style-1",
+        "generated_at": "2026-10-09T12:00:00+00:00",
+        "sources": [
+            {"source_name": "Famitsu", "link": "https://famitsu.example/tokon", "tier": 1, "region": "jp"}
+        ],
+        "claims": [
+            {
+                "claim": "A more exciting fighting style",
+                "value": "a more exciting fighting style",
+                "source_url": "https://famitsu.example/tokon",
+                "confidence": 0.9,
+                "kind": "confirmed",
+            },
+            {
+                "claim": "The game offers something unexpected",
+                "value": "something unexpected",
+                "source_url": "https://famitsu.example/tokon",
+                "confidence": 0.9,
+                "kind": "confirmed",
+            },
+        ],
+    }
+
+
+def test_partial_match_is_unsupported_even_with_a_difference_note(tmp_path):
+    clause = "an unexpected fighting style"
+    payload = model(
+        clauses=[
+            {
+                "clause": clause,
+                "fact_ids": ["F1", "F2"],
+                "match": "partial",
+                "difference": "the sheet says a more exciting style and keeps unexpected separate",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        clause + ".\n",
+        style_sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert clause in report.unsupported
+
+
+def test_relative_time_word_outside_quotes_is_unsupported(tmp_path):
+    clause = "The console launches today"
+    payload = model(
+        clauses=[{"clause": clause, "fact_ids": ["F1"], "match": "exact", "difference": ""}]
+    )
+    report = verify_module.verify(
+        clause + ".\n",
+        sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert clause in report.unsupported
+
+
+def test_relative_time_word_inside_a_quoted_name_is_allowed():
+    assert verify_module._relative_time_hits('the "Today Show" panel', ("today",)) == []
+
+
+def test_missing_match_is_verifier_output_invalid(tmp_path):
+    payload = model(clauses=[{"clause": "The console costs $499", "fact_ids": ["F1"], "difference": ""}])
+    report = verify_module.verify(
+        ARTICLE,
+        sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "verifier_output_invalid"
+    assert "missing required key 'match'" in report.error

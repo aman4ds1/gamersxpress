@@ -5,15 +5,19 @@ family guard from PLAN.md principle 4:
 
 1. **Model check.** The ``verifier`` role (a different model family than the
    writer) receives the article and the facts sheet (claims numbered F1, F2, ...)
-   and must return JSON saying, for every factual clause, which sheet claim
-   supports it (citing its fact id; a clause is one claim a sentence makes; a
-   sentence with a supported and an unsupported part is split so the unsupported
-   clause is flagged), plus any unsupported claim, any rumor stated as fact, any
-   region-specific price or availability missing from the sheet, any cost
-   described as something the player receives, any label the article invents,
-   and any category claim the sheet does not state. Every clause marked
-   supported must cite a known fact id. Missing, malformed, schema-invalid or
-   truncated output is a FAIL, never a pass.
+   and must return JSON saying, for every factual clause, which sheet claim(s)
+   support it (``fact_ids``), how it matches (``match``: ``exact``,
+   ``paraphrase``, ``partial`` or ``none``) and, for a partial or absent match, a
+   short ``difference`` note. A clause is a pass only when its ``match`` is
+   ``exact`` or ``paraphrase``, it cites the supporting fact id(s) and its
+   ``difference`` is empty. A ``partial`` or ``none`` match, any non-empty
+   ``difference``, a clause resting on a ``statement`` fact whose speaker the
+   clause does not name, and a relative-time word outside a quoted name are all
+   unsupported. The same reply also lists any unsupported claim, any rumor
+   stated as fact, any region-specific price or availability missing from the
+   sheet, any cost described as something the player receives, any label the
+   article invents, and any category claim the sheet does not state. Missing,
+   malformed, schema-invalid or truncated output is a FAIL, never a pass.
 
    ``generate`` is called *without* a ``json_schema`` on purpose: with one, a
    parse error inside the provider layer becomes ``ProviderError`` retries and
@@ -47,6 +51,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -77,10 +82,14 @@ VERIFIER_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "clause": {"type": "string"},
-                    "supported": {"type": "boolean"},
-                    "fact_id": {"type": "string"},
+                    "fact_ids": {"type": "array", "items": {"type": "string"}},
+                    "match": {
+                        "type": "string",
+                        "enum": ["exact", "paraphrase", "partial", "none"],
+                    },
+                    "difference": {"type": "string"},
                 },
-                "required": ["clause", "supported", "fact_id"],
+                "required": ["clause", "fact_ids", "match", "difference"],
                 "additionalProperties": False,
             },
         },
@@ -103,31 +112,69 @@ VERIFIER_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+#: Relative-time words a clause may never rely on (PLAN.md: write calendar
+#: dates, never words that expire). A clause that still uses one is unsupported
+#: no matter what the model says, unless the word is inside a quoted name.
+DEFAULT_RELATIVE_TIME_WORDS: tuple[str, ...] = (
+    "today", "now", "currently", "tonight", "this week", "yesterday",
+    "tomorrow", "recently", "soon",
+)
+
+#: A quoted span (straight or curly double quotes) is a name, not reader text;
+#: relative-time words inside it are ignored.
+_QUOTED_SPAN_RE = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
+
+
 SYSTEM_INSTRUCTION = (
     "You are an independent fact checker. You receive a news article and the "
     "verified facts sheet it was written from. Each fact in the sheet is "
     "numbered F1, F2, ... and you must cite those ids. The article passes only "
-    "if every factual clause is supported by a claim in the sheet.\n"
+    "if every factual clause is fully supported by the sheet.\n"
     "Split each factual sentence into its clauses (every separate claim it "
     "makes). A sentence with one supported part and one unsupported part must "
     "be split so the unsupported clause is flagged on its own: \"deploy with "
     "vehicles or cash\" is two clauses, \"deploy with vehicles\" and \"deploy "
     "with cash\".\n"
+    "A clause is supported only when one fact, or a short list of facts that "
+    "each state a distinct part of it, states every element of the clause: who "
+    "said or did it (the speaker, the outlet, or the fact's attribution), "
+    "qualifier and hedge words (could, may, expected, first, only, full, "
+    "reportedly), the time or date, numbers, and the relationship between the "
+    "ideas. If the clause changes any of these relative to the facts, it is "
+    "\"partial\" and unsupported, even when the meaning is close. \"Close "
+    "enough\" is not a pass: if you notice a difference, set match to "
+    "\"partial\" (or \"none\") and record it in \"difference\"; never note a "
+    "difference and then pass the clause.\n"
     "Reply with JSON only, no prose and no code fences, in exactly this shape:\n"
-    '{"clauses":[{"clause":"...","supported":true,"fact_id":"F1"}],'
-    '"unsupported_claims":["..."],"rumors_stated_as_fact":["..."],'
-    '"unsupported_regional":["..."],"costs_described_as_received":["..."],'
-    '"invented_labels":["..."],"category_claims":["..."]}\n'
+    '{"clauses":[{"clause":"...","fact_ids":["F1"],"match":"exact",'
+    '"difference":""}],"unsupported_claims":["..."],'
+    '"rumors_stated_as_fact":["..."],"unsupported_regional":["..."],'
+    '"costs_described_as_received":["..."],"invented_labels":["..."],'
+    '"category_claims":["..."]}\n'
     "List every factual clause of the article in \"clauses\". Keep the "
-    "\"clause\" text short. Mark a clause \"supported\" only when you can cite "
-    "the exact sheet claim: put that claim's id (F1, F2, ...) in \"fact_id\". "
-    "Always include the fact_id field in every clause: it must be non-empty for "
-    "a supported clause and \"\" for an unsupported one (never omit the key). "
-    "Do not copy fact-sheet text into the response: the id is "
-    "enough. In \"unsupported_claims\" list any factual clause (full text) the "
-    "sheet does not support. In \"rumors_stated_as_fact\" list anything the "
-    "sheet marks as a rumor (kind \"rumor\") that the article states as fact. "
-    "In \"unsupported_regional\" list any region-specific price or availability "
+    "\"clause\" text short. For each clause put the number(s) of the sheet "
+    "fact(s) it rests on in \"fact_ids\" (always include the key; use [] when "
+    "no fact applies). Set \"match\" to exactly one of \"exact\" (the fact "
+    "states the clause word for word), \"paraphrase\" (the fact states the same "
+    "thing in different words, keeping every element), \"partial\" (the fact "
+    "states only part of it, or changes a speaker, qualifier, date, number or "
+    "relationship) or \"none\". A clause whose match is \"partial\" or \"none\" "
+    "is unsupported. In \"difference\" give a short note naming what is missing "
+    "or changed whenever \"match\" is \"partial\" or \"none\"; return \"\" when "
+    "\"match\" is \"exact\" or \"paraphrase\".\n"
+    "When a cited fact's kind is \"statement\", the clause must name the same "
+    "speaker as that fact, or attribute it with \"says\" or \"according to\" "
+    "and that speaker; a clause that credits the statement to a group (\"the "
+    "team\", \"the narrative team\") or to anyone other than the fact's speaker "
+    "is unsupported.\n"
+    "Never accept a clause that uses a relative-time word (today, now, "
+    "currently, tonight, this week, yesterday, tomorrow, recently, soon) when "
+    "the facts give a calendar date; such a clause is unsupported unless the "
+    "word is part of a quoted name.\n"
+    "In \"unsupported_claims\" list any factual clause (full text) the sheet "
+    "does not support. In \"rumors_stated_as_fact\" list anything the sheet "
+    "marks as a rumor (kind \"rumor\") that the article states as fact. In "
+    "\"unsupported_regional\" list any region-specific price or availability "
     "the article states that the sheet does not contain. In "
     "\"costs_described_as_received\" list clauses that describe a price or cost "
     "from the sheet as something the player receives, earns or is given. In "
@@ -186,6 +233,99 @@ class VerifyReport:
 # --- model check -------------------------------------------------------------
 
 
+def _fold(text: object) -> str:
+    """Lowercase, diacritics-folded text for tolerant phrase matching."""
+    decomposed = unicodedata.normalize("NFKD", str(text or "").lower())
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
+def _mentions(text: object, name: object) -> bool:
+    """True when ``name`` appears in ``text`` on word boundaries, folded."""
+    haystack = _fold(text)
+    needle = _fold(name).strip()
+    if not needle:
+        return False
+    return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack) is not None
+
+
+def _relative_time_hits(text: object, words: tuple[str, ...]) -> list[str]:
+    """Relative-time words in ``text`` outside any quoted span (model-independent)."""
+    folded = _fold(text)
+    spans = [(match.start(), match.end()) for match in _QUOTED_SPAN_RE.finditer(folded)]
+    hits: list[str] = []
+    for word in words:
+        needle = _fold(word).strip()
+        if not needle:
+            continue
+        for match in re.finditer(rf"(?<!\w){re.escape(needle)}(?!\w)", folded):
+            if any(start <= match.start() and match.end() <= end for start, end in spans):
+                continue
+            hits.append(match.group(0))
+    return hits
+
+
+def _facts_by_id(facts: Any) -> dict[str, dict]:
+    """The sheet's claims keyed by their number (F1, F2, ...)."""
+    claims = facts.get("claims") if isinstance(facts, dict) else None
+    if not isinstance(claims, list):
+        return {}
+    return {
+        f"F{index}": claim
+        for index, claim in enumerate(claims, start=1)
+        if isinstance(claim, dict)
+    }
+
+
+def _link_key(url: object) -> str:
+    """Match key for a source URL: scheme/``www.``, fragment and trailing slash dropped."""
+    text = str(url or "").strip().lower()
+    text = re.sub(r"^https?://", "", text)
+    text = re.sub(r"^www\.", "", text)
+    return text.split("#", 1)[0].rstrip("/")
+
+
+def _fact_speakers(claim: dict, facts: dict) -> list[str]:
+    """Names a ``statement`` fact may be attributed to: its origin/affiliation, or
+    the outlet that published it when the speaker is unstated."""
+    names: list[str] = []
+    for key in ("origin", "affiliation"):
+        value = str(claim.get(key) or "").strip()
+        if value and value.lower() != "unstated":
+            names.append(value)
+    if names:
+        return names
+    url_key = _link_key(claim.get("source_url"))
+    for source in facts.get("sources") or []:
+        if not isinstance(source, dict):
+            continue
+        if url_key and _link_key(source.get("link")) == url_key:
+            name = str(source.get("source_name") or "").strip()
+            if name:
+                names.append(name)
+    return names
+
+
+def _clause_supported(item: dict) -> bool:
+    """A model clause passes only on an exact or paraphrase match with no difference."""
+    if item.get("match") not in ("exact", "paraphrase"):
+        return False
+    return not str(item.get("difference") or "").strip()
+
+
+def _statement_attribution_ok(item: dict, facts: dict, by_id: dict[str, dict]) -> bool:
+    """A clause resting on a ``statement`` fact must name that fact's speaker."""
+    for fact_id in item.get("fact_ids") or []:
+        claim = by_id.get(str(fact_id))
+        if not isinstance(claim, dict):
+            continue
+        if str(claim.get("kind") or "").strip().lower() != "statement":
+            continue
+        speakers = _fact_speakers(claim, facts)
+        if speakers and not any(_mentions(item.get("clause"), name) for name in speakers):
+            return False
+    return True
+
+
 def _numbered_facts(facts: dict) -> str:
     claims = facts.get("claims")
     if not isinstance(claims, list) or not claims:
@@ -194,7 +334,18 @@ def _numbered_facts(facts: dict) -> str:
     for index, claim in enumerate(claims, start=1):
         text = str(claim.get("claim", "")).strip()
         value = str(claim.get("value", "")).strip()
-        lines.append(f"F{index}: {text!r}" + (f" (value: {value!r})" if value else ""))
+        line = f"F{index}: {text!r}" + (f" (value: {value!r})" if value else "")
+        attribution: list[str] = []
+        kind = str(claim.get("kind") or "").strip()
+        if kind:
+            attribution.append(f"kind {kind}")
+        for field_name in ("origin", "affiliation"):
+            name = str(claim.get(field_name) or "").strip()
+            if name and name.lower() != "unstated":
+                attribution.append(f"{field_name} {name}")
+        if attribution:
+            line += f" [{'; '.join(attribution)}]"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -231,13 +382,14 @@ def _extract_json(text: str) -> Any:
 
 
 def _with_clause_defaults(data: Any) -> Any:
-    """Return ``data`` with a missing ``fact_id`` on each clause filled as ``""``.
+    """Return ``data`` with a missing ``fact_ids``/``difference`` filled by default.
 
-    The schema lists ``fact_id`` in ``required`` so strict JSON-schema providers
-    accept it, and the prompt asks for ``""`` on unsupported clauses. This keeps
-    the reader tolerant of an output that omits the key: ``""`` and a missing
-    key are the same. Non-dict payloads are returned untouched for
-    :func:`schema_errors` to reject.
+    The schema lists every property in ``required`` so strict JSON-schema
+    providers accept it, and the prompt asks for ``[]``/``""`` on clauses where
+    they do not apply. This keeps the reader tolerant of an output that omits
+    those keys. ``match`` is deliberately *not* defaulted: a missing ``match``
+    is a malformed verdict and must fail schema validation. Non-dict payloads are
+    returned untouched for :func:`schema_errors` to reject.
     """
     if not isinstance(data, dict):
         return data
@@ -245,7 +397,11 @@ def _with_clause_defaults(data: Any) -> Any:
     if not isinstance(clauses, list):
         return data
     normalized = [
-        {**clause, "fact_id": clause.get("fact_id", "")}
+        {
+            **clause,
+            "fact_ids": clause.get("fact_ids", []),
+            "difference": clause.get("difference", ""),
+        }
         if isinstance(clause, dict)
         else clause
         for clause in clauses
@@ -260,6 +416,7 @@ def _model_check(
     run_state: RunState | None,
     generate: Callable[..., Generation],
     prompt: str | None,
+    relative_time_words: tuple[str, ...] = DEFAULT_RELATIVE_TIME_WORDS,
     **kwargs: Any,
 ) -> tuple[Generation, dict]:
     prompt = prompt if prompt is not None else build_prompt(article, facts)
@@ -304,26 +461,30 @@ def _model_check(
     if errors:
         return generation, {**empty, "error": "verifier JSON failed schema validation: " + "; ".join(errors)}
 
-    # Every supported clause must cite the sheet claim it rests on by its fact
-    # id (F1, F2, ... from the prompt). A cited id we did not number is a
-    # hallucinated reference, so it is an invalid output, not a rejection.
+    # A clause that claims support (an exact or paraphrase match with an empty
+    # difference) must cite at least one sheet fact id. A cited id we did not
+    # number is a hallucinated reference, so it is an invalid output, not a
+    # rejection.
     clauses = data["clauses"]
     missing_fact = [
         item["clause"]
         for item in clauses
-        if item.get("supported") and not str(item.get("fact_id") or "").strip()
+        if _clause_supported(item) and not item.get("fact_ids")
     ]
     if missing_fact:
         return generation, {
             **empty,
-            "error": "clause marked supported without a cited fact_id: " + "; ".join(missing_fact),
+            "error": "clause marked exact or paraphrase without a cited fact_id: "
+            + "; ".join(missing_fact),
         }
     known_ids = _known_fact_ids(facts)
     if known_ids is not None:
         unknown_ids = {
-            str(item.get("fact_id") or "")
+            str(fact_id)
             for item in clauses
-            if item.get("supported") and str(item.get("fact_id") or "").strip() not in known_ids
+            if _clause_supported(item)
+            for fact_id in item.get("fact_ids") or []
+            if str(fact_id) not in known_ids
         }
         if unknown_ids:
             return generation, {
@@ -331,7 +492,21 @@ def _model_check(
                 "error": "clause cites a fact_id not in the sheet: " + "; ".join(sorted(unknown_ids)),
             }
 
-    unsupported_clauses = [item["clause"] for item in clauses if not item.get("supported")]
+    # Code rules on top of the model's verdict, independent of its reasoning: a
+    # partial or absent match, or any recorded difference, is unsupported; a
+    # clause resting on a statement fact must name that fact's speaker; and a
+    # relative-time word outside a quoted name is unsupported. The verifier may
+    # not note a difference and then pass the clause.
+    by_id = _facts_by_id(facts)
+    unsupported_clauses: list[str] = []
+    for item in clauses:
+        clause = item["clause"]
+        if (
+            not _clause_supported(item)
+            or not _statement_attribution_ok(item, facts, by_id)
+            or _relative_time_hits(clause, relative_time_words)
+        ):
+            unsupported_clauses.append(clause)
     ok = not (
         unsupported_clauses
         or data["unsupported_claims"]
@@ -371,9 +546,15 @@ def load_verify_config(path: str | Path | None = None) -> dict:
             whitelist.append({"pattern": entry, "context": None})
         elif isinstance(entry, dict) and entry.get("pattern"):
             whitelist.append({"pattern": entry["pattern"], "context": entry.get("context")})
+    words = section.get("relative_time_words")
+    if isinstance(words, (list, tuple)):
+        relative_time_words = tuple(str(word) for word in words if str(word).strip())
+    else:
+        relative_time_words = DEFAULT_RELATIVE_TIME_WORDS
     return {
         "list_markers": section.get("list_markers") or DEFAULT_LIST_MARKERS,
         "whitelist": whitelist,
+        "relative_time_words": relative_time_words,
     }
 
 
@@ -749,11 +930,17 @@ def verify(
     writer_families = getattr(run_state, "writer_families", None) if run_state is not None else None
     writer_families = list(writer_families) if writer_families else ([writer_family] if writer_family else [])
 
+    config = verify_config if verify_config is not None else load_verify_config(config_path)
     generation, model_result = _model_check(
-        article, sheet, run_state=run_state, generate=generate, prompt=prompt, **kwargs
+        article,
+        sheet,
+        run_state=run_state,
+        generate=generate,
+        prompt=prompt,
+        relative_time_words=config.get("relative_time_words", DEFAULT_RELATIVE_TIME_WORDS),
+        **kwargs,
     )
 
-    config = verify_config if verify_config is not None else load_verify_config(config_path)
     code_result = code_check(article, sheet, config)
     duplicate_sources = find_sources_heading(article)
 

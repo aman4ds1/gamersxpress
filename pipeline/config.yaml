@@ -251,11 +251,25 @@ facts:
 # token fully matches `pattern` is ignored, and if `context` is set the value's
 # raw line must also match that regex. This covers harmless numbers such as a
 # calendar year used in a heading.
+# `relative_time_words`: a clause that uses one of these is unsupported, no
+# matter what the model says, unless the word is inside a quoted name. This is
+# the code-level half of the "calendar dates, not words that expire" rule and
+# runs independently of the model verdict.
 verify:
   list_markers: '^\s*(?:[-*+]|\d{1,3}[.)])\s+'
   number_whitelist:
     - pattern: '^(?:19|20)\d{2}$'
       context: '^#{1,6}\s'
+  relative_time_words:
+    - today
+    - now
+    - currently
+    - tonight
+    - this week
+    - yesterday
+    - tomorrow
+    - recently
+    - soon
 
 # Single source of truth for content length limits: the SEO stage
 # (pipeline/seo.py), the publish gates (pipeline/gates.py) and the Node site

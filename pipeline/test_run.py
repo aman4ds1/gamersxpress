@@ -595,7 +595,10 @@ NEW_CLAIM = "The card includes a free game bundle."
 
 def verdict_json(*unsupported):
     return json.dumps({
-        "clauses": [{"clause": clause, "supported": False} for clause in unsupported],
+        "clauses": [
+            {"clause": clause, "fact_ids": [], "match": "none", "difference": "not in the sheet"}
+            for clause in unsupported
+        ],
         "unsupported_claims": [],
         "rumors_stated_as_fact": [],
         "unsupported_regional": [],

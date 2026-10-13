@@ -159,12 +159,14 @@ def _seo_json() -> dict:
 
 def _verifier_json(scenario: str) -> str:
     unsupported = ["Nvidia will ship next month"] if scenario == "fail-verify" else []
+    failed = scenario == "fail-verify"
     payload = {
         "clauses": [
             {
                 "clause": "Nvidia confirmed the launch window for its next graphics card line.",
-                "supported": scenario != "fail-verify",
-                "fact_id": "F1",
+                "fact_ids": [] if failed else ["F1"],
+                "match": "none" if failed else "exact",
+                "difference": "the sheet does not state a ship date" if failed else "",
             }
         ],
         "unsupported_claims": unsupported,
