@@ -534,3 +534,21 @@ def test_category_is_content_based_not_feed_based():
     assert len(clusters) == 1
     assert clusters[0]["category"] == "playstation"
 
+
+# --- entity stop-list --------------------------------------------------------
+
+
+def test_entity_stop_list_rejects_calendar_and_generic_phrases():
+    assert cluster.is_stop_entity("November")
+    assert cluster.is_stop_entity("Monday")
+    assert cluster.is_stop_entity("2nd")
+    assert cluster.is_stop_entity("Year 1 DLC")
+    assert cluster.is_stop_entity("new")
+    assert not cluster.is_stop_entity("Marvel Tōkon: Fighting Souls")
+    assert not cluster.is_stop_entity("Phoenix Cyclops")
+
+
+def test_entities_drop_stop_words_but_keep_real_names():
+    items = [{"title": "Phoenix Cyclops joins on November 2"}]
+    assert cluster._entities(items) == ["Phoenix Cyclops"]
+

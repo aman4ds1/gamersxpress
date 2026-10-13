@@ -1217,16 +1217,24 @@ def test_merged_claim_is_not_confirmed_by_a_tier1_source_missing_a_specific():
 # --- Tōkon spellings, feed-date grounding and the tier-1 central claim --------
 
 
-def test_tokon_spelling_variants_merge_into_one_surviving_entity():
+def test_tokon_spelling_variants_merge_into_one_canonical_entity():
     # The same game is spelled "MARVEL Tōkon" once and "Marvel Tōkon" twice; with
     # exact counting each spelling falls short of "Phoenix Cyclops" (3) and the
     # game is lost. Folding case and diacritics merges them into one surviving
-    # entity.
+    # canonical entity, and its parts stay aliases used only for matching.
     headlines = [
         "MARVEL Tōkon: Fighting Souls adds Phoenix Cyclops",
         "Marvel Tōkon: Fighting Souls adds Phoenix Cyclops",
         "Marvel Tōkon: Fighting Souls adds Phoenix Cyclops",
     ]
+    canonical = facts.canonical_entities(title=headlines[0], source_titles=headlines[1:])
+    assert canonical == ["Marvel Tōkon: Fighting Souls", "Phoenix Cyclops"]
+    aliases = facts.entity_aliases("Marvel Tōkon: Fighting Souls")
+    assert aliases == ["marvel tōkon", "fighting souls"]
+    assert all(alias not in canonical for alias in aliases)
+
+    # The aliases are still the matching surface, so a claim naming only a part
+    # of the title is recognized as on-topic.
     primary = facts.primary_entities(title=headlines[0], source_titles=headlines[1:])
     assert "phoenix cyclops" in primary
     assert "marvel tōkon: fighting souls" in primary
@@ -1371,3 +1379,82 @@ def test_no_tier1_source_keeps_the_old_headline_overlap_central_rule():
     merged = [facts._merge_group(group) for group in groups]
     central = facts.central_claim(merged, title=title)
     assert central is merged[0]
+
+
+# --- entity stop-list, headline entities and the central-overlap guard --------
+
+
+def test_months_weekdays_and_generic_phrases_are_never_entities():
+    title = (
+        "Marvel Tōkon: Fighting Souls reveals its Year 1 DLC roster, "
+        "starting with Phoenix Cyclops on 2nd November"
+    )
+    source_titles = [
+        "Marvel Tōkon: Fighting Souls Year 1 DLC roster arrives in November",
+        "Phoenix Cyclops joins Marvel Tōkon: Fighting Souls on November 2",
+    ]
+    canonical = facts.canonical_entities(title=title, source_titles=source_titles)
+    assert canonical == ["Marvel Tōkon: Fighting Souls", "Phoenix Cyclops"]
+    assert not any("november" in entity.lower() for entity in canonical)
+    assert not any("dlc" in entity.lower() for entity in canonical)
+    assert not any("year" in entity.lower() for entity in canonical)
+
+
+def test_headline_entity_mentioned_only_once_still_survives():
+    # The seed headline names "Acme Hero" and no other headline repeats it; a
+    # headline entity is kept even though its support count is one.
+    primary = facts.primary_entities(
+        title="Acme Hero launches today",
+        source_titles=["the studio announced a new game"],
+    )
+    assert "acme hero" in primary
+
+
+def test_seo_canonical_entities_contain_no_alias_only_entries():
+    canonical = facts.canonical_entities(
+        title="Marvel Tōkon: Fighting Souls adds Phoenix Cyclops",
+        source_titles=["Phoenix Cyclops joins Marvel Tōkon: Fighting Souls"],
+    )
+    aliases: set[str] = set()
+    for entity in canonical:
+        aliases.update(facts.entity_aliases(entity))
+    assert not (set(canonical) & aliases), "an alias must never be its own entity"
+    assert "marvel tōkon" not in canonical
+    assert "fighting souls" not in canonical
+
+
+def test_tier1_passing_mention_does_not_confirm_the_story(tmp_path):
+    # A tier-1 source's only claim is about something else; it names the game in
+    # its headline but never states the headline's fact. Two outlets agreeing on
+    # that passing claim must not confirm the story.
+    official = source(
+        link="https://blog.playstation.com/tokon",
+        name="PlayStation Blog",
+        tier=1,
+        owner="sony",
+        title="Marvel Tōkon: Fighting Souls news roundup",
+        text="Marvel Tōkon: Fighting Souls news roundup. The blog covers many topics.",
+    )
+    outlet = source(
+        link="https://eurogamer.net/tokon",
+        name="Eurogamer",
+        tier=2,
+        owner="ign-entertainment",
+        title="Marvel Tōkon: Fighting Souls news roundup",
+        text="Marvel Tōkon: Fighting Souls news roundup. The blog covers many topics.",
+    )
+    generate = per_source_generate([
+        {"claims": [claim(claim="The blog covers many topics", value="a roundup", source_url=official["link"], origin="sony")]},
+        {"claims": [claim(claim="The blog covers many topics", value="a roundup", source_url=outlet["link"], origin="unstated")]},
+    ])[0]
+    with pytest.raises(facts.UnconfirmedStory) as excinfo:
+        facts.facts(
+            gathered("tokon-passing", [official, outlet]),
+            id="tokon-passing",
+            title="Marvel Tōkon: Fighting Souls reveals Phoenix Cyclops",
+            output_dir=tmp_path,
+            now=NOW,
+            generate=generate,
+        )
+    assert "tier-1 source does not state the headline claim" in str(excinfo.value)
+    assert not (tmp_path / "tokon-passing.json").exists()

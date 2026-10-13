@@ -214,6 +214,35 @@ facts:
     - soon
     - next week
     - out now
+  # Entity stop-list (pipeline/cluster.py). A name phrase that is only one of
+  # these never becomes an entity: calendar and weekday words, bare ordinals,
+  # and generic news phrasing ("year 1 dlc", "new", "update", "season",
+  # "release", "roster", "edition"). Matched case- and accent-insensitively; a
+  # multi-word phrase is dropped when every one of its words is listed here or
+  # is a bare number. Month/weekday/ordinal defaults live in cluster.py, so this
+  # list only needs the extra editorial phrasing.
+  entity_stop_list:
+    - year
+    - dlc
+    - season
+    - seasons
+    - release
+    - released
+    - releases
+    - release date
+    - update
+    - updates
+    - new
+    - roster
+    - edition
+    - editions
+    - year 1 dlc
+  # A tier-1 source only sets the story's central claim when its own claim
+  # restates at least this fraction of the seed headline's significant tokens
+  # (its canonical entity words, month names and numbers). A tier-1 source that
+  # mentions the topic only in passing leaves the story unconfirmed: it is the
+  # headline's fact the story must establish, not any tier-1 sentence.
+  min_central_overlap: 0.5
 
 # Verifier stage (pipeline/verify.py; PLAN.md principle 4 / stage 6).
 # `list_markers` is stripped from the start of each body line before values are

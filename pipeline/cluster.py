@@ -53,9 +53,12 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable
 
+import yaml
+
 from ingest import normalize_url
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name("config.yaml")
 DEFAULT_POOL_PATH = PROJECT_ROOT / "data" / "pool.json"
 DEFAULT_SEEN_PATH = PROJECT_ROOT / "data" / "seen.json"
 DEFAULT_FAILED_PATH = PROJECT_ROOT / "data" / "failed.json"
@@ -323,6 +326,85 @@ def load_known_names(path: str | Path | None = None) -> frozenset[str]:
     result = frozenset(names)
     _KNOWN_NAMES_CACHE[resolved] = result
     return result
+
+
+# --- entity stop-list --------------------------------------------------------
+#
+# Calendar and weekday words, bare ordinals and generic news phrasing look like
+# proper nouns because headlines are title-cased, but they never identify a
+# story. They are never treated as entities (``data/entities.json`` has no such
+# names). The editorial words can be extended from
+# ``facts.entity_stop_list`` in config.yaml; the calendar defaults stay in code
+# so extraction still works when config.yaml is missing.
+
+_DEFAULT_ENTITY_STOP = frozenset({
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct",
+    "nov", "dec",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+})
+
+#: Bare ordinals ("first".."twelfth") are stop words, and a numeric ordinal is
+#: matched by :data:`_ORDINAL_RE`.
+_DEFAULT_ENTITY_STOP = _DEFAULT_ENTITY_STOP | frozenset({
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+    "eighth", "ninth", "tenth", "eleventh", "twelfth",
+})
+
+_ORDINAL_RE = re.compile(r"^\d+(?:st|nd|rd|th)$")
+
+_ENTITY_STOP_CACHE: dict[str, frozenset[str]] = {}
+
+
+def entity_stop_list(path: str | Path | None = None) -> frozenset[str]:
+    """Lowercased words and phrases that never name a story entity.
+
+    Combines the built-in calendar/ordinal defaults with
+    ``facts.entity_stop_list`` from config.yaml, so the owner can extend the
+    list without touching code. A missing or malformed file yields the defaults.
+    Cached per resolved path.
+    """
+    resolved = str(Path(path).resolve()) if path else str(DEFAULT_CONFIG_PATH.resolve())
+    cached = _ENTITY_STOP_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+    stop = set(_DEFAULT_ENTITY_STOP)
+    try:
+        raw = yaml.safe_load(Path(resolved).read_text(encoding="utf-8")) or {}
+        entries = (raw.get("facts") or {}).get("entity_stop_list") or []
+    except (OSError, yaml.YAMLError):
+        entries = []
+    for entry in entries:
+        text = re.sub(r"\s+", " ", strip_diacritics(str(entry)).lower()).strip()
+        if text:
+            stop.add(text)
+    result = frozenset(stop)
+    _ENTITY_STOP_CACHE[resolved] = result
+    return result
+
+
+def is_stop_entity(name: object, *, stop: Iterable[str] | None = None) -> bool:
+    """True when ``name`` is only stop words and never a real entity.
+
+    A phrase is a stop entity when it is listed verbatim, or when every one of
+    its words is a stop word or a bare number/ordinal ("Year 1 DLC"). Names that
+    merely contain a stop word ("New World") are kept.
+    """
+    stop_set = entity_stop_list() if stop is None else frozenset(stop)
+    folded = re.sub(r"\s+", " ", strip_diacritics(str(name or "")).lower()).strip()
+    if not folded:
+        return True
+    if folded in stop_set:
+        return True
+    words = re.findall(r"[^\W_]+", folded)
+    if not words:
+        return True
+    return all(
+        word in stop_set or word.isdigit() or _ORDINAL_RE.match(word)
+        for word in words
+    )
 
 
 def _story_phrase_tokens(title: str) -> list[list[str]]:
@@ -1002,9 +1084,12 @@ def _seen_entity_type_match(
 
 
 def _entities(items: list[dict]) -> list[str]:
+    stop = entity_stop_list()
     collected: dict[str, str] = {}
     for item in items:
         for entity in named_entities(item.get("title", ""), include_leading=True):
+            if is_stop_entity(entity, stop=stop):
+                continue
             collected.setdefault(entity, entity.title())
     return sorted(collected.values())
 
@@ -1205,6 +1290,8 @@ __all__ = [
     "excluded_title_pattern",
     "DEFAULT_ENTITIES_PATH",
     "load_known_names",
+    "entity_stop_list",
+    "is_stop_entity",
     "load_pool",
     "load_seen",
     "mark_seen",

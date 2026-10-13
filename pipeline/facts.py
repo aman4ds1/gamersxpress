@@ -69,7 +69,7 @@ Output is written to ``data/facts/<id>.json``:
       "confirmation": {"tier1_sources": 1, "tier3_sources": 0, "origins": [...], "rule": "...", "confirmed": true},
       "sources": [{"source_name", "link", "title", "tier", "owner", "region"}],
       "claims": [{"claim", "value", "source_urls": [...], "origin", "affiliation", "confidence", "kind", "central"}],
-      "coherence": {"checked": true, "primary_entities": [...], "dropped_claims": [...]},
+      "coherence": {"checked": true, "primary_entities": [...], "canonical_entities": [...], "dropped_claims": [...]},
       "extractor": {"provider", "model", "family"},
       "fingerprint": {"format": 1, "value": "<hash of id + model chain + prompt settings>"}
     }
@@ -1309,6 +1309,73 @@ def _title_overlap_score(claim: dict, title_tokens: set[str]) -> int:
     return len(title_tokens & _word_tokens(text))
 
 
+#: A tier-1 source only sets the central claim when its own claim restates at
+#: least this fraction of the seed headline's significant tokens. Overridable
+#: through ``facts.min_central_overlap`` in config.yaml.
+DEFAULT_MIN_CENTRAL_OVERLAP = 0.5
+
+
+def _min_central_overlap() -> float:
+    """The configured headline-overlap threshold for a tier-1 central claim."""
+    config = load_config().get("facts") or {}
+    try:
+        value = float(config.get("min_central_overlap", DEFAULT_MIN_CENTRAL_OVERLAP))
+    except (TypeError, ValueError):
+        value = DEFAULT_MIN_CENTRAL_OVERLAP
+    return min(max(value, 0.0), 1.0)
+
+
+def _headline_significant_units(title: str, canonical: list[str]) -> list[tuple[str, str]]:
+    """The headline's significant tokens: each entity, month and number once.
+
+    "Significant token" means an entity, a date or a number, not each word of a
+    long headline: a compound headline ("... but Xbox Game Pass ...") is not
+    failed just because a claim about its main fact omits the other clause. A
+    stop entity such as "Year 1 DLC" is no entity, but its bare number still
+    counts here.
+    """
+    units: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, value: str) -> None:
+        key = (kind, value)
+        if value and key not in seen:
+            seen.add(key)
+            units.append(key)
+
+    for entity in canonical or []:
+        add("entity", entity)
+    for month in re.findall(r"[a-z]+", cluster.strip_diacritics(title).lower()):
+        if month in _MONTHS:
+            add("token", month)
+    for token in _value_key_tokens(title):
+        if token not in _MONTHS:
+            add("token", token)
+    return units
+
+
+def _claim_names_entity(text: str, entity: str) -> bool:
+    """True when the claim's text names the entity or any of its aliases."""
+    if cluster.contains_entity(text, entity):
+        return True
+    return any(cluster.contains_entity(text, alias) for alias in entity_aliases(entity))
+
+
+def _claim_overlap_fraction(claim: dict, units: list[tuple[str, str]]) -> float:
+    """The share of the headline's significant units the claim restates."""
+    if not units:
+        return 1.0
+    text = f"{str(claim.get('claim', ''))} {str(claim.get('value', ''))}"
+    tokens = _word_tokens(cluster.strip_diacritics(text))
+    shared = 0
+    for kind, value in units:
+        if kind == "token":
+            shared += value in tokens
+        else:
+            shared += _claim_names_entity(text, value)
+    return shared / len(units)
+
+
 def central_claim(claims: list[dict], *, title: str = "") -> Optional[dict]:
     """Pick the claim that restates the cluster's seed headline.
 
@@ -1341,6 +1408,9 @@ def _preferred_central_index(
     groups: list[list[dict]],
     sources: list[dict],
     title: str,
+    *,
+    canonical: list[str] | None = None,
+    min_overlap: float | None = None,
 ) -> Optional[tuple[int, str]]:
     """The group to center on, preferring a tier-1 source's own claims.
 
@@ -1348,14 +1418,21 @@ def _preferred_central_index(
     takes its central claim from that source's claims: the headline-overlap
     pick is restricted to claims the tier-1 source itself wrote, so the fact the
     headline states is the fact the tier-1 source restates, and the other
-    outlets' versions corroborate it rather than driving the central wording.
-    Returns ``(group_index, url_key)``, or None when no headline is given, no
-    tier-1 claim overlaps it, or no tier-1 source exists (the plain headline
-    overlap rule applies to all claims then).
+    outlets' versions corroborate it rather than driving the central wording. A
+    tier-1 claim must also restate at least ``min_overlap`` (default
+    ``facts.min_central_overlap``) of the seed headline's significant tokens: a
+    passing mention is not the headline's fact. Returns ``(group_index,
+    url_key)``, or None when no headline is given, no tier-1 claim reaches the
+    threshold, or no tier-1 source exists (the plain headline overlap rule
+    applies to all claims then).
     """
     title = str(title or "").strip()
     if not title:
         return None
+    if canonical is None:
+        canonical = canonical_entities(title=title)
+    threshold = _min_central_overlap() if min_overlap is None else min_overlap
+    units = _headline_significant_units(title, canonical)
     title_tokens = _word_tokens(title)
     tier1_urls = {
         _source_url_key(source.get("link"))
@@ -1368,6 +1445,8 @@ def _preferred_central_index(
         for index, group in enumerate(groups):
             for claim in group:
                 if _source_url_key(claim.get("source_url")) not in tier1_urls:
+                    continue
+                if _claim_overlap_fraction(claim, units) < threshold:
                     continue
                 score = _title_overlap_score(claim, title_tokens)
                 key = (
@@ -1419,26 +1498,20 @@ def _best_display_entity(variants: list[str], exact_counts: dict[str, int]) -> s
     return max(variants, key=quality)
 
 
-def primary_entities(
-    *,
-    title: str | None = None,
-    source_titles: list[str] | None = None,
-    entities: list[str] | None = None,
+def _chosen_display_entities(
+    title: str | None,
+    source_titles: list[str] | None,
 ) -> list[str]:
-    """The entities that define the story's subject, with their sub-entities.
+    """One best-display phrase per folded entity the headlines support.
 
     Counts each full name phrase (:func:`cluster.story_phrases`) across the
     cluster title and the source headlines, folding case and diacritics so
     spelling variants of one name ("Marvel Tōkon", "MARVEL Tōkon") merge into a
     single count. Keeps every entity whose folded count is at least half of the
     highest count and that more than one headline carries, plus every entity the
-    seed headline itself names (so an off-topic neighbour's own name never
-    becomes a subject); the best display form (preferring proper casing and
-    diacritics) survives. Each surviving phrase is expanded into itself plus the
-    sub-entities its connectors split it into (:func:`cluster.sub_entities`), so
-    a claim that names only part of a long phrase ("Call of Duty" inside "Call
-    of Duty: Modern Warfare 4") is still recognized as on-topic. Falls back to
-    the cluster's reported entities when no headline parses.
+    seed headline itself names (so an entity the headline mentions only once is
+    still kept); the best display form (preferring proper casing and diacritics)
+    survives. The result is one phrase per folded entity, in folded-name order.
     """
     folded: dict[str, int] = {}
     exact_counts: dict[str, int] = {}
@@ -1453,26 +1526,100 @@ def primary_entities(
             displays.setdefault(key, [])
             if entity not in displays[key]:
                 displays[key].append(entity)
-    if folded:
-        top = max(folded.values())
-        # Support-based entities must be carried by more than one headline (so a
-        # neighbouring off-topic source's own name never becomes a subject) and
-        # by at least half as many headlines as the most-supported one.
-        floor_kept = {
-            key
-            for key, count in folded.items()
-            if count >= 2 and count * 2 >= top
-        }
-        headline_kept = (
-            {_fold_entity(entity) for entity in cluster.story_phrases(title) or []}
-            if title else set()
-        )
-        kept = floor_kept | headline_kept
-        chosen = [_best_display_entity(displays[key], exact_counts) for key in kept]
-        return _expand_entities(chosen)
-    return _expand_entities(
-        [str(entity).strip().lower() for entity in (entities or []) if str(entity).strip()]
+    if not folded:
+        return []
+    top = max(folded.values())
+    floor_kept = {
+        key
+        for key, count in folded.items()
+        if count >= 2 and count * 2 >= top
+    }
+    headline_kept = (
+        {_fold_entity(entity) for entity in cluster.story_phrases(title) or []}
+        if title else set()
     )
+    kept = floor_kept | headline_kept
+    return [_best_display_entity(displays[key], exact_counts) for key in sorted(kept)]
+
+
+def primary_entities(
+    *,
+    title: str | None = None,
+    source_titles: list[str] | None = None,
+    entities: list[str] | None = None,
+) -> list[str]:
+    """The entities that define the story's subject, with their sub-entities.
+
+    The supported, best-display name phrases (:func:`_chosen_display_entities`,
+    never a stop word such as a month, a weekday or "Year 1 DLC") are each
+    expanded into themselves plus the sub-entities their connectors split them
+    into (:func:`cluster.sub_entities`), so a claim that names only part of a
+    long phrase ("Call of Duty" inside "Call of Duty: Modern Warfare 4") is still
+    recognized as on-topic. Falls back to the cluster's reported entities when no
+    headline parses.
+    """
+    chosen = _chosen_display_entities(title, source_titles)
+    if not chosen:
+        chosen = [str(entity).strip() for entity in (entities or []) if str(entity).strip()]
+    stop = cluster.entity_stop_list()
+    chosen = [entity for entity in chosen if not cluster.is_stop_entity(entity, stop=stop)]
+    return _expand_entities(chosen)
+
+
+def canonical_entities(
+    *,
+    title: str | None = None,
+    source_titles: list[str] | None = None,
+    entities: list[str] | None = None,
+) -> list[str]:
+    """The story's canonical entities, one per concept, for SEO and hubs.
+
+    The same supported, best-display phrases as :func:`primary_entities` but
+    without the sub-entity expansion: a colon/subtitle phrase stays one canonical
+    entity ("Marvel Tōkon: Fighting Souls") and its parts are aliases used only
+    for matching (:func:`entity_aliases`), never listed here. Stop words are
+    dropped and folded duplicates collapse, so the SEO entities list can never
+    contain an alias-only entry.
+    """
+    chosen = _chosen_display_entities(title, source_titles)
+    if not chosen:
+        chosen = [str(entity).strip() for entity in (entities or []) if str(entity).strip()]
+    stop = cluster.entity_stop_list()
+    seen: set[str] = set()
+    canonical: list[str] = []
+    for entity in chosen:
+        if cluster.is_stop_entity(entity, stop=stop):
+            continue
+        key = _fold_entity(entity)
+        if key in seen:
+            continue
+        seen.add(key)
+        canonical.append(entity)
+    return sorted(canonical)
+
+
+def entity_aliases(canonical: str) -> list[str]:
+    """The matching aliases of one canonical entity: its subtitle/connector parts.
+
+    "Marvel Tōkon: Fighting Souls" yields "marvel tōkon" and "fighting souls";
+    "Call of Duty: Modern Warfare 4" yields "call of duty" and "modern warfare
+    4". Aliases are lowercased but keep their diacritics, are never listed as
+    entities themselves, and stop words or a part equal to the whole are dropped.
+    """
+    whole = _fold_entity(canonical)
+    stop = cluster.entity_stop_list()
+    aliases: list[str] = []
+    for segment in re.split(r"[:]", str(canonical or "")):
+        part = re.sub(r"\s+", " ", segment).strip().lower()
+        if not part:
+            continue
+        key = _fold_entity(part)
+        if key == whole or key in {_fold_entity(alias) for alias in aliases}:
+            continue
+        if cluster.is_stop_entity(part, stop=stop):
+            continue
+        aliases.append(part)
+    return aliases
 
 
 def _expand_entities(entities: list[str]) -> list[str]:
@@ -1668,11 +1815,22 @@ def facts(
     # text before anything is counted or stored.
     kept = resolve_claim_origins(kept, sources, aliases=aliases, story_id=name)
 
+    # One canonical entity per concept, for SEO and hub pages; the flat
+    # primary-entity set is the matching surface used by the coherence check.
+    canonical = canonical_entities(
+        title=title,
+        source_titles=[str(source.get("title") or "") for source in sources],
+        entities=entities,
+    )
+    tier1_present = any(int(source.get("tier") or 0) == 1 for source in sources)
+
     # Same facts merge (by shared claim text, or by a shared date/figure plus
     # topic words) before the central claim is picked. The merged central
     # claim of a cluster with a tier-1 source takes that source's own wording.
     groups = _claim_groups(kept)
-    preferred_central = _preferred_central_index(groups, sources, title)
+    preferred_central = _preferred_central_index(
+        groups, sources, title, canonical=canonical
+    )
     if preferred_central is not None:
         prefer_index, prefer_url = preferred_central
         claims = [
@@ -1710,6 +1868,16 @@ def facts(
         allow_single_origin_attributed=allow_single,
         aliases=aliases,
     )
+    # A tier-1 source that only mentions the topic in passing does not confirm
+    # the story: it is the headline's fact the story must establish, not any
+    # tier-1 sentence. Two outlets' agreement never stands in for it.
+    if tier1_present and title and preferred_central is None:
+        confirmation = dict(confirmation)
+        confirmation.update(
+            confirmed=False,
+            rule="unconfirmed",
+            reason="tier-1 source does not state the headline claim",
+        )
     if not confirmation["confirmed"]:
         message = (
             f"story {name}: needs one tier-1 source stating the headline claim "
@@ -1739,6 +1907,7 @@ def facts(
         "coherence": {
             "checked": bool(primary),
             "primary_entities": primary,
+            "canonical_entities": canonical,
             "dropped_claims": [
                 {"claim": claim.get("claim"), "source_url": claim.get("source_url")}
                 for claim in dropped
@@ -1780,6 +1949,8 @@ __all__ = [
     "canonicalize_origin",
     "central_claim",
     "coherence_check",
+    "canonical_entities",
+    "entity_aliases",
     "extract_claims",
     "ground_claims",
     "grounding_failure",
