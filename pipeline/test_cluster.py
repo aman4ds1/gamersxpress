@@ -202,6 +202,20 @@ def test_generic_words_are_not_named_entities():
     assert "gears of war e-day" in cluster.named_entities(GEARS_SALES)
 
 
+def test_unicode_entity_names_are_not_truncated_at_the_accent():
+    # "Tōkon" used to split at the "ō" and yield the broken entity "marvel t".
+    entities = cluster.named_entities(
+        "Marvel Tōkon: Fighting Souls reveals its Year 1 DLC roster"
+    )
+    assert "marvel tokon fighting souls" in entities
+    assert "marvel t" not in entities
+
+
+def test_normalize_title_folds_accents_for_matching():
+    assert cluster.normalize_title("Marvel Tōkon: Fighting Souls") == "marvel tokon fighting souls"
+    assert cluster.strip_diacritics("Aleksander Grøndal") == "Aleksander Grondal"
+
+
 def test_story_type_separates_reviews_sales_and_announcements():
     assert cluster.story_type(GEARS_REVIEW) == "review"
     assert cluster.story_type(GEARS_SALES) == "sales"

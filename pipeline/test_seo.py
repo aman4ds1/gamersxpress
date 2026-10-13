@@ -350,6 +350,19 @@ def test_canonicalize_entities_maps_aliases_and_keeps_supported_new():
     assert new_entities == [{"canonical": "Arc Raiders", "aliases": []}]
 
 
+def test_canonicalize_entities_is_insensitive_to_accents():
+    # A diacritic entity ("Tōkon") must match the same name written plainly in
+    # the facts sheet instead of being dropped as unknown.
+    facts = {
+        "claims": [
+            {"claim": "Marvel Tokon: Fighting Souls reveals its roster.", "value": "Tokon",
+             "source_url": "https://x", "confidence": 0.9, "kind": "confirmed"}
+        ]
+    }
+    names, _new = seo.canonicalize_entities(["Marvel Tōkon: Fighting Souls"], facts, [])
+    assert names == ["Marvel Tōkon: Fighting Souls"]
+
+
 def test_canonicalize_text_rewrites_aliases():
     entities = [{"canonical": "PlayStation 5", "aliases": ["PS5"]}]
     assert seo.canonicalize_text("PS5 and PS5 Pro", entities) == "PlayStation 5 and PlayStation 5 Pro"

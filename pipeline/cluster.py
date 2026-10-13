@@ -48,6 +48,7 @@ import hashlib
 import json
 import logging
 import re
+import unicodedata
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable
@@ -78,7 +79,33 @@ SAME_EVENT_SIMILARITY = 0.85
 
 logger = logging.getLogger("gamersxpress.pipeline.cluster")
 
-_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*")
+# A word token is any Unicode word character run (letters and digits, including
+# accented letters such as "Tōkon") that may keep intra-word apostrophes or
+# hyphens. The ASCII-only pattern this replaces split "Tōkon" at the "ō" and
+# produced the truncated entity "marvel t".
+_WORD_RE = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*")
+
+# Explicit fold map for characters NFKD does not decompose (ø, æ, œ, ß, ...),
+# so a name written with them matches its ASCII spelling in every comparison.
+_DIACRITIC_FOLD = {
+    "ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "œ": "oe", "Œ": "OE",
+    "ß": "ss", "đ": "d", "Đ": "D", "ð": "d", "Ð": "D", "þ": "th", "Þ": "TH",
+    "ł": "l", "Ł": "L", "ı": "i", "İ": "I",
+}
+
+
+def strip_diacritics(text: object) -> str:
+    """Fold accents and special letters to their closest ASCII form.
+
+    NFKD plus combining-mark removal handles most accents ("Tōkon" -> "Tokon",
+    "Grøndal" -> "Grondal" via the explicit fold map). Folding is for matching
+    only: callers that display a name keep the original string.
+    """
+    folded = "".join(_DIACRITIC_FOLD.get(char, char) for char in str(text or ""))
+    decomposed = unicodedata.normalize("NFKD", folded)
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
 _LEADING_STOP = {
     "the", "a", "an", "new", "first", "why", "how", "what", "when", "who",
     "this", "that", "these", "those", "is", "are", "and", "but", "for",
@@ -134,8 +161,12 @@ _INCIDENTAL_ENTITIES = {
 
 
 def normalize_title(title: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace, for comparison."""
-    text = re.sub(r"[^a-z0-9\s]", " ", str(title or "").lower())
+    """Lowercase, fold accents, strip punctuation, collapse whitespace.
+
+    Accents are folded (:func:`strip_diacritics`) so "Tōkon" and "Tokon" compare
+    equal, which keeps every downstream comparison diacritics-insensitive.
+    """
+    text = re.sub(r"[^a-z0-9\s]", " ", strip_diacritics(title).lower())
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -180,7 +211,7 @@ def _ordered_entities(title: str, *, include_leading: bool = False) -> list[str]
     phrases: list[list[str]] = []
     current: list[str] = []
     for word in words:
-        lower = word.lower()
+        lower = strip_diacritics(word).lower()
         if current and lower in _ENTITY_CONNECTORS:
             current.append(lower)
         elif lower in _GENERIC_WORDS:
@@ -208,7 +239,7 @@ def _ordered_entities(title: str, *, include_leading: bool = False) -> list[str]
             continue
         if len(phrase) == 1:
             word = phrase[0]
-            if not include_leading and words and words[0].lower() == word:
+            if not include_leading and words and strip_diacritics(words[0]).lower() == word:
                 continue
             entities.append(word)
         else:
@@ -259,8 +290,9 @@ _STORY_BREAK_WORDS = frozenset({"for", "in", "on", "with", "and"})
 #: phrase (a list comma, a spaced dash).
 _STORY_INNER_PUNCT = frozenset({":"})
 _STORY_BREAK_PUNCT = frozenset({",", "-", "\u2013", "\u2014"})
-#: A name token (intra-word apostrophes/hyphens kept) or a separating punctuation.
-_STORY_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*|[:,\u2013\u2014-]")
+#: A name token (Unicode word chars, intra-word apostrophes/hyphens kept) or a
+#: separating punctuation.
+_STORY_TOKEN_RE = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*|[:,\u2013\u2014-]")
 
 _KNOWN_NAMES_CACHE: dict[str, frozenset[str]] = {}
 
@@ -298,7 +330,7 @@ def _story_phrase_tokens(title: str) -> list[list[str]]:
     phrases: list[list[str]] = []
     current: list[str] = []
     for token in _STORY_TOKEN_RE.findall(str(title or "")):
-        lower = token.lower()
+        lower = strip_diacritics(token).lower()
         if token in _STORY_INNER_PUNCT:
             if current:
                 current.append(token)
@@ -329,13 +361,13 @@ def _story_phrase_tokens(title: str) -> list[list[str]]:
 def _clean_story_phrase(tokens: list[str]) -> list[str]:
     """Strip leading/trailing glue words and stray punctuation from a phrase."""
     while tokens and (
-        tokens[0].lower() in _STORY_GLUE_WORDS
+        strip_diacritics(tokens[0]).lower() in _STORY_GLUE_WORDS
         or tokens[0] in _STORY_INNER_PUNCT
         or tokens[0] in _STORY_BREAK_PUNCT
     ):
         tokens = tokens[1:]
     while tokens and (
-        tokens[-1].lower() in _STORY_GLUE_WORDS
+        strip_diacritics(tokens[-1]).lower() in _STORY_GLUE_WORDS
         or tokens[-1] in _STORY_INNER_PUNCT
         or tokens[-1] in _STORY_BREAK_PUNCT
     ):
@@ -394,7 +426,7 @@ def sub_entities(name: str, *, known: Iterable[str] | None = None) -> list[str]:
     current: list[str] = []
     segments: list[list[str]] = []
     for token in _STORY_TOKEN_RE.findall(str(name or "")):
-        lower = token.lower()
+        lower = strip_diacritics(token).lower()
         if token in _STORY_INNER_PUNCT or token in _STORY_BREAK_PUNCT or lower in _STORY_BREAK_WORDS:
             if current:
                 segments.append(current)
@@ -1183,6 +1215,7 @@ __all__ = [
     "named_entities",
     "normalize_title",
     "proper_nouns",
+    "strip_diacritics",
     "same_story",
     "save_pool",
     "save_seen",

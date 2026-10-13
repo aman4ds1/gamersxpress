@@ -197,6 +197,23 @@ cluster:
 facts:
   max_claims_per_source: 15
   allow_single_origin_attributed: false
+  # Relative-time words the facts stage must convert to an absolute calendar
+  # date before the claim is trusted. A claim that keeps one ("begins today")
+  # cannot be verified and would make the page stale, so it is rewritten from
+  # the source's publication date or, when no date is known, dropped.
+  relative_time_words:
+    - today
+    - tonight
+    - now
+    - currently
+    - this week
+    - this weekend
+    - yesterday
+    - tomorrow
+    - recently
+    - soon
+    - next week
+    - out now
 
 # Verifier stage (pipeline/verify.py; PLAN.md principle 4 / stage 6).
 # `list_markers` is stripped from the start of each body line before values are
@@ -261,6 +278,7 @@ gates:
     - recently
     - soon
     - next week
+    - out now
   # Consumer offers (sales, trials, free weekends). A story may include one only
   # when the facts sheet gives its date range or start date; otherwise it fails.
   offer_phrases:

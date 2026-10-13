@@ -683,7 +683,7 @@ def test_facts_extracts_claims_from_a_feature_bullet_source(tmp_path):
 def test_facts_caps_claims_per_source(tmp_path):
     many = [claim(claim=f"Feature {i}", value=str(i), source_url="https://a.example/1") for i in range(5)]
     result = facts.facts(
-        gathered(sources=[source(tier=1)]),
+        gathered(sources=[source(tier=1, text="Feature figures: 0 1 2 3 4.")]),
         output_dir=tmp_path,
         now=NOW,
         max_claims_per_source=2,
@@ -744,6 +744,7 @@ def test_coherence_drops_claims_from_off_topic_sources(tmp_path):
             title="Gears of War: E-Day Sold 168,000 Copies on Steam",
             owner="co-a",
             tier=1,
+            text="Gears of War: E-Day sold 168,000 copies on Steam.",
         ),
         source(
             link="https://b.example/ace",
@@ -1095,3 +1096,106 @@ def test_fixture_test_date_claims_merge_into_one_claim_with_both_source_urls():
     assert len(combined) == 1, "the same test written two ways must merge into one claim"
     assert combined[0]["source_urls"] == [ARC_EUROGAMER, ARC_TECHPOWERUP]
     assert "13" in combined[0]["value"] and "october" in combined[0]["value"].lower()
+
+
+# --- relative time, grounding, bylines and merged confirmation (Tōkon fixes) ---
+
+
+def test_system_instruction_states_relative_time_grounding_and_byline_rules():
+    instruction = facts.SYSTEM_INSTRUCTION
+    assert "absolute calendar date" in instruction
+    assert "never add words of your own" in instruction
+    assert "and not" in instruction
+    assert "affiliation to the publishing outlet" in instruction
+    assert "design decision" in instruction
+
+
+def test_absolutize_relative_time_uses_the_source_date():
+    assert facts.absolutize_relative_time("begins today", dt.date(2026, 10, 7)) == "begins October 7, 2026"
+    assert facts.absolutize_relative_time("out now", "2026-10-07") == "October 7, 2026"
+    assert facts.absolutize_relative_time("ended yesterday", dt.date(2026, 10, 7)) == "ended October 6, 2026"
+    assert facts.absolutize_relative_time("arrives tomorrow", dt.date(2026, 10, 7)) == "arrives October 8, 2026"
+    assert facts.absolutize_relative_time("no dates here", None) == "no dates here"
+    assert facts.absolutize_relative_time("begins today", None) is None
+
+
+def test_facts_absolutizes_relative_time_from_the_source_url_date(tmp_path):
+    src = source(
+        link="https://blog.example/2026/10/07/cyclops",
+        name="Official Blog",
+        tier=1,
+        owner="co-a",
+        text="Phoenix Cyclops arrives today.",
+    )
+    payload = {
+        "claims": [
+            claim(claim="Phoenix Cyclops release", value="arrives today", source_url=src["link"])
+        ]
+    }
+    result = facts.facts(
+        gathered(sources=[src]), output_dir=tmp_path, now=NOW, generate=make_generate(payload)
+    )
+    assert result["claims"][0]["value"] == "arrives October 7, 2026"
+
+
+def test_grounding_drops_a_value_that_adds_a_qualifier_the_source_never_states():
+    source_text = "Phoenix Cyclops joins the Year 1 DLC roster on November 2."
+    unsupported = claim(claim="Roster revealed", value="full Year 1 DLC roster", source_url="https://x")
+    assert facts.grounding_failure(unsupported, source_text) is not None
+    supported = claim(claim="Roster revealed", value="Year 1 DLC roster", source_url="https://x")
+    assert facts.grounding_failure(supported, source_text) is None
+
+
+def test_grounding_rejects_a_label_that_adds_an_unsupported_contrast():
+    source_text = "The narrative team chose the Phoenix version for fresher visuals."
+    bad = claim(
+        claim="Reason why Phoenix Cyclops is DLC and not a day-one fighter",
+        value="fresher visuals",
+        source_url="https://x",
+    )
+    reason = facts.grounding_failure(bad, source_text)
+    assert reason is not None and "and not" in reason
+
+    good = claim(claim="Reason for the Phoenix version", value="fresher visuals", source_url="https://x")
+    assert facts.grounding_failure(good, source_text) is None
+
+
+def test_byline_org_replaces_the_publication_affiliation():
+    src = source(
+        link="https://blog.playstation.com/2026/10/07/cyclops",
+        name="PlayStation Blog",
+        owner="sony",
+        tier=1,
+        text=(
+            "Hello everyone! I'm Takeshi Yamanaka, Producer at Arc System Works. "
+            "The narrative team chose the Phoenix version for fresher visuals."
+        ),
+    )
+    claims = [
+        claim(
+            claim="Reason for the Phoenix version",
+            value="fresher visuals",
+            origin="takeshi yamanaka",
+            affiliation="playstation blog",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == "takeshi yamanaka"
+    assert resolved[0]["affiliation"] == "arc system works"
+
+
+def test_merged_claim_is_not_confirmed_by_a_tier1_source_missing_a_specific():
+    sources = [
+        source(link="https://a.example/1", name="Official", tier=1, owner="co-a"),
+        source(link="https://b.example/2", name="Outlet", tier=2, owner="co-b"),
+    ]
+    claims = [
+        claim(claim="Year 1 roster", value="Year 1 DLC roster", kind="reported", origin="sony", source_url="https://a.example/1"),
+        claim(claim="Year 1 roster", value="full Year 1 DLC roster", kind="reported", origin="sony", source_url="https://b.example/2"),
+    ]
+    merged = facts._merge_group(claims)
+    assert merged["value"] == "full Year 1 DLC roster", "the richer value merges forward"
+    result = facts.confirmation_from_sources(sources, claims=claims, merged=merged)
+    assert result["tier1_sources"] == 0, "the tier-1 source never wrote 'full'"
+    assert result["confirmed"] is False

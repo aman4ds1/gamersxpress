@@ -121,7 +121,7 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v5"
+PROMPT_VERSION = "facts-v6"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -229,7 +229,28 @@ SYSTEM_INSTRUCTION = (
     "For percentages and overlap or audience figures, state the exact "
     "relationship in words (for example 'overlap with players of X'), never a "
     "vague phrase. Any in-game currency amount must name the currency (for "
-    "example '100,000 in-game DMZ Cash'), never appear as a bare dollar figure."
+    "example '100,000 in-game DMZ Cash'), never appear as a bare dollar figure.\n"
+    "Write every date as an absolute calendar date, never a relative time word: "
+    "convert 'today', 'tonight', 'now', 'currently', 'out now', 'this week', "
+    "'this weekend', 'yesterday', 'tomorrow', 'recently', 'soon' and 'next week' "
+    "to the calendar date the article supports (using its publication date when "
+    "given). A value must not claim more than the article states: keep the exact "
+    "figures, names and dates the text gives, and never add words of your own "
+    "such as 'full', 'complete', 'all', 'every', 'only' or 'official' unless the "
+    "text uses them.\n"
+    "A claim label must not add a contrast the article never states: do not write "
+    "'and not', 'but not', 'rather than' or 'instead of' unless the article "
+    "itself states that contrast.\n"
+    "When the article is a company's own post and names a byline (for example "
+    "'I'm [Name], [role] at [Company]'), attribute statements and explanations to "
+    "that named person and use the company they name as the affiliation; never "
+    "set the affiliation to the publishing outlet and never leave a bylined "
+    "claim's origin 'unstated'.\n"
+    "A named person describing a plan, possibility, intention, design decision or "
+    "reason is a 'statement' attributed to that person (kind 'statement', origin "
+    "the speaker), never 'confirmed'; a company's own post describing features, "
+    "mechanics or a roster it is shipping is 'confirmed' and must carry the "
+    "publisher or named speaker as its origin."
 )
 
 
@@ -255,7 +276,13 @@ class UnconfirmedStory(Exception):
     """Not enough independent sources; the story must not be published."""
 
 
-def build_prompt(id: str, source: dict, *, max_claims: int = MAX_CLAIMS_PER_SOURCE) -> str:
+def build_prompt(
+    id: str,
+    source: dict,
+    *,
+    max_claims: int = MAX_CLAIMS_PER_SOURCE,
+    published: object = None,
+) -> str:
     """Build the extraction prompt for ONE source (one model call per source)."""
     parts = [SYSTEM_INSTRUCTION, "", f"Story ID: {id}", ""]
     parts.append(
@@ -263,6 +290,9 @@ def build_prompt(id: str, source: dict, *, max_claims: int = MAX_CLAIMS_PER_SOUR
         f"(tier {source['tier']}, owner {source['owner']}, region {source['region']})"
     )
     parts.append(f"URL: {source['link']}")
+    date = _as_date(published) or _source_published(source)
+    if date:
+        parts.append(f"PUBLISHED: {_MONTH_NAMES[date.month]} {date.day}, {date.year}")
     if source.get("title") and str(source["title"]).strip():
         parts.append(f"TITLE: {source['title']}")
     parts.append(
@@ -351,6 +381,273 @@ def _normalize_origin(origin: object) -> str:
 def _normalize_affiliation(affiliation: object) -> str:
     value = str(affiliation or "").strip().lower()
     return value if value != UNSTATED_ORIGIN else ""
+
+
+# --- relative time: absolutize before a claim can be trusted ------------------
+
+#: Relative-time words a claim must never keep: a page that says "runs today"
+#: goes stale the moment it is read. Overridable via ``facts.relative_time_words``
+#: in config.yaml; defaults keep the code usable without the config.
+DEFAULT_RELATIVE_TIME_WORDS = (
+    "today", "tonight", "now", "currently", "this week", "this weekend",
+    "yesterday", "tomorrow", "recently", "soon", "next week", "out now",
+)
+
+_MONTH_NAMES = (
+    "", "January", "February", "March", "April", "May", "June", "July",
+    "August", "September", "October", "November", "December",
+)
+
+#: ``published`` values are normally a date or an ISO datetime; parse either.
+_DATE_PREFIX_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+_LINK_DATE_RE = re.compile(r"/(\d{4})/(\d{2})/(\d{2})(?:/|$)")
+
+
+def _relative_time_words() -> tuple[str, ...]:
+    """The configured relative-time words, longest first for greedy matching."""
+    config = load_config().get("facts") or {}
+    words = config.get("relative_time_words")
+    if not isinstance(words, list) or not words:
+        words = list(DEFAULT_RELATIVE_TIME_WORDS)
+    cleaned = [str(word).strip().lower() for word in words if str(word).strip()]
+    return tuple(sorted(set(cleaned), key=len, reverse=True))
+
+
+def _as_date(value: object) -> Optional[dt.date]:
+    """Parse a date or ISO datetime string into a :class:`datetime.date`."""
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    match = _DATE_PREFIX_RE.match(str(value or "").strip())
+    if not match:
+        return None
+    try:
+        return dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def _source_published(source: dict) -> Optional[dt.date]:
+    """A source's publication date: its ``published`` field, else its URL date.
+
+    Gathered sources do not carry ``published`` today, but a dated URL path
+    (``/2026/10/07/``) is a reliable substitute. When neither is present the
+    claim has no date and a relative-time value cannot be made absolute.
+    """
+    published = _as_date(source.get("published"))
+    if published:
+        return published
+    match = _LINK_DATE_RE.search(str(source.get("link") or ""))
+    if not match:
+        return None
+    try:
+        return dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def absolutize_relative_time(value: object, published: object) -> Optional[str]:
+    """Rewrite relative-time words in ``value`` to an absolute calendar date.
+
+    Returns the rewritten value, the unchanged value when it holds no
+    relative-time word, or ``None`` when it does but ``published`` gives no date
+    to convert from (the caller drops that claim rather than store a stale one).
+    "begins today" with an October 7, 2026 date becomes "begins October 7,
+    2026"; "yesterday" and "tomorrow" shift by a day.
+    """
+    text = str(value or "")
+    words = _relative_time_words()
+    if not text or not words:
+        return text
+    pattern = re.compile(
+        r"(?<!\w)(" + "|".join(re.escape(word) for word in words) + r")(?!\w)",
+        re.IGNORECASE,
+    )
+    if not pattern.search(text):
+        return text
+    published_date = _as_date(published)
+    if published_date is None:
+        return None
+
+    def replace(match: re.Match) -> str:
+        word = match.group(0).lower()
+        delta = {"yesterday": -1, "tomorrow": 1}.get(word, 0)
+        day = published_date + dt.timedelta(days=delta)
+        return f"{_MONTH_NAMES[day.month]} {day.day}, {day.year}"
+
+    return pattern.sub(replace, text)
+
+
+def _absolutize_claims(
+    claims: list[dict],
+    sources: list[dict],
+    *,
+    story_id: str = "",
+) -> tuple[list[dict], list[dict]]:
+    """Replace relative-time values with dates; drop claims with no date."""
+    by_url = _sources_by_url(sources)
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for claim in claims:
+        source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
+        rewritten = absolutize_relative_time(claim.get("value"), _source_published(source))
+        if rewritten is None:
+            dropped.append(claim)
+            logger.warning(
+                "story %s: dropping claim with a relative time and no date: %r",
+                story_id or "?",
+                claim.get("value"),
+            )
+            continue
+        kept.append({**claim, "value": rewritten})
+    return kept, dropped
+
+
+# --- grounding: a claim's value must stay inside its own source ---------------
+
+_GROUNDING_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+_GROUNDING_WORD_RE = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*")
+
+#: Absolute qualifiers that only a source may state. A value that adds one on
+#: its own ("full", "complete") claims more than the article does.
+_ABSOLUTE_QUALIFIERS = (
+    "full", "complete", "entire", "all", "every", "only",
+    "first-ever", "official", "officially", "out now", "currently",
+)
+
+#: Contrast connectives that must be stated by the source before a claim label
+#: may use them ("... and not a day-one fighter").
+_CONTRAST_MARKERS = ("and not", "but not", "rather than", "instead of")
+
+
+def _numbers_in(text: object) -> set[str]:
+    """Digit figures in ``text`` with thousands separators removed."""
+    return {
+        match.replace(",", "").rstrip(".")
+        for match in _GROUNDING_NUMBER_RE.findall(str(text or ""))
+    }
+
+
+def _capitalized_terms(text: object) -> set[str]:
+    """Folded capitalized terms in a value, ignoring its first (sentence) word.
+
+    Sentence-initial capitalization is not evidence, so "The" is skipped while
+    real names and acronyms ("PvE", "Steam", "October") are checked against the
+    source text. Folded for comparison, so "Tōkon" matches "Tokon".
+    """
+    raw = str(text or "")
+    tokens = _GROUNDING_WORD_RE.findall(raw)
+    terms: set[str] = set()
+    for index, token in enumerate(tokens):
+        if index == 0:
+            continue
+        if token[0].isupper() and any(char.isalpha() for char in token):
+            terms.add(cluster.strip_diacritics(token).lower())
+    return terms
+
+
+def _word_in(text: object, phrase: str) -> bool:
+    """True when ``phrase`` appears in ``text`` on word boundaries, folded."""
+    haystack = cluster.strip_diacritics(text).lower()
+    needle = cluster.strip_diacritics(phrase).lower()
+    if not needle:
+        return False
+    return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack) is not None
+
+
+def grounding_failure(claim: dict, source_text: object) -> Optional[str]:
+    """Why a claim's value or label goes beyond its source, or ``None``.
+
+    Checked against the claim's own source text, diacritics-insensitive: every
+    number in the value must appear in the text, every capitalized name or
+    acronym the value uses must appear in the text, an absolute qualifier
+    ("full", "complete") is allowed only when the text uses it, and a contrast
+    connective in the label ("and not", "rather than") is allowed only when the
+    text states it.
+    """
+    value = str(claim.get("value") or "")
+    label = str(claim.get("claim") or "")
+    source = str(source_text or "")
+    haystack = cluster.strip_diacritics(source).lower()
+    missing_numbers = _numbers_in(value) - _numbers_in(source)
+    if missing_numbers:
+        return f"value states {sorted(missing_numbers)} the source never gives"
+    for term in _capitalized_terms(value):
+        if not _word_in(source, term):
+            return f"value names {term!r} the source never gives"
+    for qualifier in _ABSOLUTE_QUALIFIERS:
+        if _word_in(value, qualifier) and not _word_in(source, qualifier):
+            return f"value uses {qualifier!r} the source never states"
+    for marker in _CONTRAST_MARKERS:
+        if _word_in(label, marker) and not _word_in(source, marker):
+            return f"label adds the contrast {marker!r} the source never states"
+    return None
+
+
+def ground_claims(
+    claims: list[dict],
+    sources: list[dict],
+    *,
+    story_id: str = "",
+) -> tuple[list[dict], list[dict]]:
+    """Drop claims whose value or label is not supported by their own source."""
+    by_url = _sources_by_url(sources)
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for claim in claims:
+        source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
+        reason = grounding_failure(claim, source.get("text") or "")
+        if reason is None:
+            kept.append(claim)
+        else:
+            dropped.append(claim)
+            logger.warning(
+                "story %s: dropping ungrounded claim from %s (%s): %r",
+                story_id or "?",
+                claim.get("source_url"),
+                reason,
+                claim.get("claim"),
+            )
+    return kept, dropped
+
+
+# --- bylines: a company post's speaker is the person it names -----------------
+
+#: A company's own post often opens with its author: "I'm <Name>, <role> at
+#: <Company>". Only this explicit self-introduction is trusted, so ordinary
+#: prose that mentions a name is never mistaken for a byline.
+_BYLINE_RE = re.compile(
+    r"\bI(?:['’]m| am)\s+"
+    r"([^\W_][\w'’-]*(?:\s+[^\W_][\w'’-]*){0,3}?)\s*,\s*"
+    r"[^.\n]{0,80}?\b(?:at|of|for)\s+"
+    r"([^\W_][\w'’&\-]*(?:\s+[^\W_][\w'’&\-]*){0,4})",
+    re.IGNORECASE,
+)
+
+
+def _extract_byline(text: object) -> tuple[str, str]:
+    """The ``(name, organization)`` a company post's byline states, or ``("", "")``."""
+    match = _BYLINE_RE.search(str(text or ""))
+    if not match:
+        return "", ""
+    return match.group(1).strip(), match.group(2).strip()
+
+
+def _is_publication(name: object, source: dict) -> bool:
+    """True when ``name`` is the publishing outlet itself, not a speaker's org.
+
+    A publication ("PlayStation Blog") is not the organization a bylined person
+    speaks for, so it must be replaced by the byline's own organization.
+    """
+    key = _origin_key(name)
+    if not key:
+        return False
+    for field in ("source_name", "owner"):
+        target = _origin_key(source.get(field))
+        if target and (key == target or _contains_name(key, target)):
+            return True
+    return False
 
 
 # --- origin canonicalization and verification --------------------------------
@@ -506,6 +803,7 @@ def resolve_claim_origins(
     for claim in claims:
         source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
         text = str(source.get("text") or "")
+        byline_name, byline_org = _extract_byline(text)
         kept: list[str] = []
         for token in str(claim.get("origin") or "").split(";"):
             token = token.strip()
@@ -524,7 +822,16 @@ def resolve_claim_origins(
                     claim.get("source_url"),
                     UNSTATED_ORIGIN,
                 )
+        origin = "; ".join(kept) if kept else UNSTATED_ORIGIN
+        # A company post must never leave its speaker unstated: when the article
+        # names a byline, that person produced the claim.
+        if origin == UNSTATED_ORIGIN and byline_name and _origin_in_text(byline_name, text, aliases):
+            origin = canonicalize_origin(byline_name, aliases) or UNSTATED_ORIGIN
         affiliation = _normalize_affiliation(claim.get("affiliation"))
+        if affiliation and _is_publication(affiliation, source):
+            # The extractor named the publishing outlet, not the speaker's
+            # organization; the byline's own organization is the real one.
+            affiliation = byline_org
         if affiliation and _origin_in_text(affiliation, text, aliases):
             canonical_affiliation = canonicalize_origin(affiliation, aliases)
             if canonical_affiliation == UNSTATED_ORIGIN:
@@ -534,7 +841,7 @@ def resolve_claim_origins(
         resolved.append(
             {
                 **claim,
-                "origin": "; ".join(kept) if kept else UNSTATED_ORIGIN,
+                "origin": origin,
                 "affiliation": canonical_affiliation,
             }
         )
@@ -698,7 +1005,44 @@ def _merge_group(group: list[dict]) -> dict:
         "affiliation": _merge_affiliations(group),
         "confidence": min(float(claim["confidence"]) for claim in group),
         "kind": min((claim["kind"] for claim in group), key=KIND_STRENGTH.get),
+        # Each source's own wording, so confirmation can require that a
+        # confirming source actually states the merged value's specifics and a
+        # tier-1 source never backs words only another source used.
+        "versions": [
+            {"source_url": claim["source_url"], "value": str(claim["value"])}
+            for claim in group
+        ],
     }
+
+
+def _value_specifics(value: object) -> set[str]:
+    """The concrete bits of a value: its figures and absolute qualifiers."""
+    specifics = _numbers_in(value)
+    for qualifier in _ABSOLUTE_QUALIFIERS:
+        if _word_in(value, qualifier):
+            specifics.add(qualifier)
+    return specifics
+
+
+def _version_supports(merged: dict, version_value: object) -> bool:
+    """True when a source's own value carries every specific the merged value has.
+
+    A merged fact (for example "full Year 1 DLC roster") must not be confirmed by
+    a source whose own value omits a specific word ("Year 1 DLC roster"): the
+    tier-1 source would be backing words it never wrote.
+    """
+    specifics = _value_specifics(merged.get("value"))
+    if not specifics:
+        return True
+    return specifics <= _value_specifics(version_value)
+
+
+def _merged_version_for(merged: dict, url_key: str) -> Optional[str]:
+    """The value one source contributed to a merged claim, or ``None``."""
+    for version in merged.get("versions") or []:
+        if _source_url_key(version.get("source_url")) == url_key:
+            return version.get("value")
+    return None
 
 
 def merge_claims(claims: list[dict]) -> list[dict]:
@@ -787,6 +1131,7 @@ def confirmation_from_sources(
     sources: list[dict],
     *,
     claims: list[dict] | None = None,
+    merged: dict | None = None,
     allow_single_origin_attributed: bool = False,
     aliases: dict[str, str] | None = None,
 ) -> dict:
@@ -804,15 +1149,24 @@ def confirmation_from_sources(
     central fact (``source_url`` singular, or ``source_urls`` on merged claims);
     confirmation is about who produced that claim, so the origins of any other
     claim never count.
+
+    ``merged`` is the merged central claim: when given, a tier-1 source counts
+    only if its own value carries every specific of the merged value, so a tier-1
+    source never confirms wording that only another source stated.
     """
     by_url = _sources_by_url(sources)
     origins = _confirmation_origins(claims, by_url, aliases=aliases)
     if claims is not None:
         claim_urls = {_claim_source_url_key(claim) for claim in claims}
-        tier1 = sum(
-            1 for source in sources
-            if source["tier"] == 1 and _source_url_key(source.get("link")) in claim_urls
-        )
+        tier1 = 0
+        for source in sources:
+            if source["tier"] != 1 or _source_url_key(source.get("link")) not in claim_urls:
+                continue
+            if merged is not None:
+                version_value = _merged_version_for(merged, _source_url_key(source.get("link")))
+                if version_value is None or not _version_supports(merged, version_value):
+                    continue
+            tier1 += 1
         tier3 = sum(
             1 for source in sources
             if source["tier"] == 3 and _source_url_key(source.get("link")) in claim_urls
@@ -1038,7 +1392,7 @@ def facts(
     fingerprint = cluster.stage_fingerprint(
         name, "facts", PROMPT_VERSION, SYSTEM_INSTRUCTION, CLAIM_SCHEMA,
         _extraction_chain(), MAX_SOURCE_CHARS, MAX_FIELD_CHARS, max_claims,
-        allow_single, HEDGE_WORDS, sorted(aliases.items()),
+        allow_single, HEDGE_WORDS, sorted(aliases.items()), _relative_time_words(),
     )
     path = output_dir / f"{name}.json"
     if cluster.stored_fingerprint(path) == fingerprint:
@@ -1084,6 +1438,16 @@ def facts(
     if dropped:
         logger.warning("story %s: dropped %d off-topic claim(s) from off-topic sources", name, len(dropped))
 
+    # A claim's value must stay inside its own source text: figures, names and
+    # absolute qualifiers the source never states are dropped before merging.
+    kept, ungrounded = ground_claims(kept, sources, story_id=name)
+    if ungrounded:
+        logger.warning("story %s: dropped %d ungrounded claim(s)", name, len(ungrounded))
+
+    # Relative-time values are converted to absolute dates using each source's
+    # publication date; a relative claim with no date to convert from is dropped.
+    kept = _absolutize_claims(kept, sources, story_id=name)[0]
+
     # Origins are canonicalized and verified against each claim's own source
     # text before anything is counted or stored.
     kept = resolve_claim_origins(kept, sources, aliases=aliases, story_id=name)
@@ -1114,6 +1478,7 @@ def facts(
     confirmation = confirmation_from_sources(
         sources,
         claims=central_group if central_group is not None else kept,
+        merged=central,
         allow_single_origin_attributed=allow_single,
         aliases=aliases,
     )
@@ -1173,6 +1538,7 @@ __all__ = [
     "CLAIM_SCHEMA",
     "CONFIRMING_KINDS",
     "DEFAULT_ORIGIN_ALIASES_PATH",
+    "DEFAULT_RELATIVE_TIME_WORDS",
     "HEDGE_WORDS",
     "KIND_STRENGTH",
     "MAX_FIELD_CHARS",
@@ -1181,11 +1547,14 @@ __all__ = [
     "UNSTATED_ORIGIN",
     "FactsError",
     "UnconfirmedStory",
+    "absolutize_relative_time",
     "build_prompt",
     "canonicalize_origin",
     "central_claim",
     "coherence_check",
     "extract_claims",
+    "ground_claims",
+    "grounding_failure",
     "load_origin_aliases",
     "merge_claims",
     "primary_entities",

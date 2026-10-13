@@ -47,6 +47,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+import cluster
 import verify
 from gates import load_content_limits, load_content_rules
 from json_schema import schema_errors
@@ -239,13 +240,23 @@ def save_entities(entities: list[dict], path: str | Path | None = None) -> Path:
     return path
 
 
+def _entity_key(name: object) -> str:
+    """Match key for an entity name: accent-folded and lowercased.
+
+    Folding (:func:`cluster.strip_diacritics`) means "Marvel Tōkon: Fighting
+    Souls" and "Marvel Tokon Fighting Souls" are the same entity, so a name with
+    diacritics is never dropped as unknown.
+    """
+    return cluster.strip_diacritics(name).lower()
+
+
 def _alias_index(entities: Iterable[dict]) -> dict[str, str]:
     index: dict[str, str] = {}
     for entity in entities:
         canonical = entity["canonical"]
-        index[canonical.lower()] = canonical
+        index[_entity_key(canonical)] = canonical
         for alias in entity.get("aliases", []):
-            index[alias.lower()] = canonical
+            index[_entity_key(alias)] = canonical
     return index
 
 
@@ -261,7 +272,7 @@ def canonicalize_entities(
     caller can persist it only after the whole result validates.
     """
     index = _alias_index(entities)
-    facts_text = _facts_text(facts).lower()
+    facts_text = _entity_key(_facts_text(facts))
     out: list[str] = []
     new_entities: list[dict] = []
     known = {entity["canonical"] for entity in entities}
@@ -269,9 +280,10 @@ def canonicalize_entities(
         name = str(raw).strip()
         if not name:
             continue
-        canonical = index.get(name.lower())
+        key = _entity_key(name)
+        canonical = index.get(key)
         if canonical is None:
-            if name.lower() not in facts_text:
+            if key not in facts_text:
                 logger.info("dropping entity %r: not supported by the facts sheet", name)
                 continue
             canonical = name
