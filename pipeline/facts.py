@@ -188,12 +188,21 @@ CLAIM_SCHEMA: dict[str, Any] = {
                     "affiliation": {"type": "string"},
                     "kind": {"type": "string", "enum": list(KIND_STRENGTH)},
                 },
-                "required": ["claim", "value", "source_url", "confidence", "origin", "kind"],
+                "required": [
+                    "claim",
+                    "value",
+                    "source_url",
+                    "confidence",
+                    "origin",
+                    "affiliation",
+                    "kind",
+                ],
                 "additionalProperties": False,
             },
         }
     },
     "required": ["claims"],
+    "additionalProperties": False,
 }
 
 SYSTEM_INSTRUCTION = (
@@ -215,8 +224,9 @@ SYSTEM_INSTRUCTION = (
     "to 'unstated'.\n"
     "affiliation names the organization a person speaks for, when the article "
     "states one (for example 'Embark Studios' for that studio's executive "
-    "producer); when the origin is a company itself, or the article names no "
-    "organization, set affiliation to an empty string.\n"
+    "producer). Always include the affiliation field in every claim: when the "
+    "origin is a company itself, or the article names no organization, set "
+    "affiliation to an empty string \"\" (never omit the key).\n"
     "kind is exactly one of: 'confirmed' (the company or an official source "
     "states it, with a named origin), 'reported' (an outlet citing a named "
     "source), 'estimate' (a third-party analyst or data estimate; never label "
@@ -336,6 +346,30 @@ def _clip_field(text: str, limit: int = MAX_FIELD_CHARS) -> str:
     return text[:limit].rstrip()
 
 
+def _with_claim_defaults(data: Any) -> Any:
+    """Return ``data`` with a missing ``affiliation`` filled in as ``""``.
+
+    Strict JSON schemas (Groq, OpenAI) require every property to appear in
+    ``required``, so the extraction prompt always returns ``affiliation`` and
+    uses ``""`` when there is none. This keeps our own reader tolerant of an
+    output that nevertheless omits the key: ``""`` and a missing key are the
+    same. Anything not shaped like a claims payload is returned untouched and
+    left to :func:`schema_errors` to reject.
+    """
+    if not isinstance(data, dict):
+        return data
+    claims = data.get("claims")
+    if not isinstance(claims, list):
+        return data
+    normalized = [
+        {**claim, "affiliation": claim.get("affiliation", "")}
+        if isinstance(claim, dict)
+        else claim
+        for claim in claims
+    ]
+    return {**data, "claims": normalized}
+
+
 def validate_claims(data: Any) -> list[dict]:
     """Validate the model output against CLAIM_SCHEMA and return the claims.
 
@@ -347,7 +381,12 @@ def validate_claims(data: Any) -> list[dict]:
     capped at ``reported`` because an unattributed claim is never confirmed and
     never an estimate (requirement: treat an unstated origin as at most
     reported).
+
+    A missing ``affiliation`` key is treated exactly like an empty string
+    before validation, so a model that omits the (now strictly required) key
+    still yields a valid claim.
     """
+    data = _with_claim_defaults(data)
     errors = schema_errors(data, CLAIM_SCHEMA)
     if errors:
         raise FactsError("; ".join(errors))

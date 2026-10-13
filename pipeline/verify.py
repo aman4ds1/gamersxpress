@@ -80,7 +80,7 @@ VERIFIER_SCHEMA: dict[str, Any] = {
                     "supported": {"type": "boolean"},
                     "fact_id": {"type": "string"},
                 },
-                "required": ["clause", "supported"],
+                "required": ["clause", "supported", "fact_id"],
                 "additionalProperties": False,
             },
         },
@@ -120,9 +120,10 @@ SYSTEM_INSTRUCTION = (
     '"invented_labels":["..."],"category_claims":["..."]}\n'
     "List every factual clause of the article in \"clauses\". Keep the "
     "\"clause\" text short. Mark a clause \"supported\" only when you can cite "
-    "the exact sheet claim: put that claim's id (F1, F2, ...) in \"fact_id\" "
-    "(non-empty and required for every supported clause; use \"\" when "
-    "unsupported). Do not copy fact-sheet text into the response: the id is "
+    "the exact sheet claim: put that claim's id (F1, F2, ...) in \"fact_id\". "
+    "Always include the fact_id field in every clause: it must be non-empty for "
+    "a supported clause and \"\" for an unsupported one (never omit the key). "
+    "Do not copy fact-sheet text into the response: the id is "
     "enough. In \"unsupported_claims\" list any factual clause (full text) the "
     "sheet does not support. In \"rumors_stated_as_fact\" list anything the "
     "sheet marks as a rumor (kind \"rumor\") that the article states as fact. "
@@ -229,6 +230,29 @@ def _extract_json(text: str) -> Any:
         raise
 
 
+def _with_clause_defaults(data: Any) -> Any:
+    """Return ``data`` with a missing ``fact_id`` on each clause filled as ``""``.
+
+    The schema lists ``fact_id`` in ``required`` so strict JSON-schema providers
+    accept it, and the prompt asks for ``""`` on unsupported clauses. This keeps
+    the reader tolerant of an output that omits the key: ``""`` and a missing
+    key are the same. Non-dict payloads are returned untouched for
+    :func:`schema_errors` to reject.
+    """
+    if not isinstance(data, dict):
+        return data
+    clauses = data.get("clauses")
+    if not isinstance(clauses, list):
+        return data
+    normalized = [
+        {**clause, "fact_id": clause.get("fact_id", "")}
+        if isinstance(clause, dict)
+        else clause
+        for clause in clauses
+    ]
+    return {**data, "clauses": normalized}
+
+
 def _model_check(
     article: Any,
     facts: Any,
@@ -275,6 +299,7 @@ def _model_check(
     else:
         return generation, {**empty, "error": "verifier returned no output"}
 
+    data = _with_clause_defaults(data)
     errors = schema_errors(data, VERIFIER_SCHEMA)
     if errors:
         return generation, {**empty, "error": "verifier JSON failed schema validation: " + "; ".join(errors)}
@@ -296,7 +321,7 @@ def _model_check(
     known_ids = _known_fact_ids(facts)
     if known_ids is not None:
         unknown_ids = {
-            str(item["fact_id"])
+            str(item.get("fact_id") or "")
             for item in clauses
             if item.get("supported") and str(item.get("fact_id") or "").strip() not in known_ids
         }
