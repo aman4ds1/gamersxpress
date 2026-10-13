@@ -11,10 +11,11 @@ from providers import Generation, RunState
 NOW = dt.datetime(2026, 10, 9, 12, 0, 0, tzinfo=dt.timezone.utc)
 
 
-def source(link="https://a.example/1", name="Alpha", tier=2, owner="co-a", region="us", text="Some body text about the story.", title=""):
+def source(link="https://a.example/1", name="Alpha", tier=2, owner="co-a", region="us", text="Some body text about the story.", title="", published=None):
     return {
         "link": link, "title": title, "source_name": name, "tier": tier, "owner": owner,
         "region": region, "status": "ok", "text": text, "error": None,
+        "published": published,
     }
 
 
@@ -1111,12 +1112,24 @@ def test_system_instruction_states_relative_time_grounding_and_byline_rules():
 
 
 def test_absolutize_relative_time_uses_the_source_date():
-    assert facts.absolutize_relative_time("begins today", dt.date(2026, 10, 7)) == "begins October 7, 2026"
-    assert facts.absolutize_relative_time("out now", "2026-10-07") == "October 7, 2026"
-    assert facts.absolutize_relative_time("ended yesterday", dt.date(2026, 10, 7)) == "ended October 6, 2026"
-    assert facts.absolutize_relative_time("arrives tomorrow", dt.date(2026, 10, 7)) == "arrives October 8, 2026"
+    assert facts.absolutize_relative_time("begins today", dt.date(2026, 10, 7)) == "begins on October 7, 2026"
+    assert facts.absolutize_relative_time("out now", "2026-10-07") == "available as of October 7, 2026"
+    assert facts.absolutize_relative_time("ended yesterday", dt.date(2026, 10, 7)) == "ended on October 6, 2026"
+    assert facts.absolutize_relative_time("arrives tomorrow", dt.date(2026, 10, 7)) == "arrives on October 8, 2026"
     assert facts.absolutize_relative_time("no dates here", None) == "no dates here"
     assert facts.absolutize_relative_time("begins today", None) is None
+
+
+def test_absolutize_relative_time_uses_grammatical_forms_never_a_bare_date():
+    assert facts.absolutize_relative_time("begins today", dt.date(2026, 10, 7)) == "begins on October 7, 2026"
+    assert (
+        facts.absolutize_relative_time("is out now on PS5 and PC", dt.date(2026, 10, 7))
+        == "is available on PS5 and PC as of October 7, 2026"
+    )
+    assert facts.absolutize_relative_time("now", dt.date(2026, 10, 7)) == "as of October 7, 2026"
+    assert facts.absolutize_relative_time("currently", dt.date(2026, 10, 7)) == "as of October 7, 2026"
+    assert facts.absolutize_relative_time("live now on Xbox", dt.date(2026, 10, 7)) == "live as of October 7, 2026 on Xbox"
+    assert facts.absolutize_relative_time("from today", dt.date(2026, 10, 7)) == "from October 7, 2026"
 
 
 def test_facts_absolutizes_relative_time_from_the_source_url_date(tmp_path):
@@ -1135,7 +1148,7 @@ def test_facts_absolutizes_relative_time_from_the_source_url_date(tmp_path):
     result = facts.facts(
         gathered(sources=[src]), output_dir=tmp_path, now=NOW, generate=make_generate(payload)
     )
-    assert result["claims"][0]["value"] == "arrives October 7, 2026"
+    assert result["claims"][0]["value"] == "arrives on October 7, 2026"
 
 
 def test_grounding_drops_a_value_that_adds_a_qualifier_the_source_never_states():
@@ -1199,3 +1212,162 @@ def test_merged_claim_is_not_confirmed_by_a_tier1_source_missing_a_specific():
     result = facts.confirmation_from_sources(sources, claims=claims, merged=merged)
     assert result["tier1_sources"] == 0, "the tier-1 source never wrote 'full'"
     assert result["confirmed"] is False
+
+
+# --- Tōkon spellings, feed-date grounding and the tier-1 central claim --------
+
+
+def test_tokon_spelling_variants_merge_into_one_surviving_entity():
+    # The same game is spelled "MARVEL Tōkon" once and "Marvel Tōkon" twice; with
+    # exact counting each spelling falls short of "Phoenix Cyclops" (3) and the
+    # game is lost. Folding case and diacritics merges them into one surviving
+    # entity.
+    headlines = [
+        "MARVEL Tōkon: Fighting Souls adds Phoenix Cyclops",
+        "Marvel Tōkon: Fighting Souls adds Phoenix Cyclops",
+        "Marvel Tōkon: Fighting Souls adds Phoenix Cyclops",
+    ]
+    primary = facts.primary_entities(title=headlines[0], source_titles=headlines[1:])
+    assert "phoenix cyclops" in primary
+    assert "marvel tōkon: fighting souls" in primary
+    assert "marvel tokon" in primary
+    assert "fighting souls" in primary
+
+
+def test_best_display_entity_prefers_proper_casing_and_diacritics():
+    variants = [
+        "MARVEL Tōkon: Fighting Souls",
+        "Marvel Tokon: Fighting Souls",
+        "Marvel Tōkon: Fighting Souls",
+    ]
+    assert (
+        facts._best_display_entity(variants, {"Marvel Tōkon: Fighting Souls": 2})
+        == "Marvel Tōkon: Fighting Souls"
+    )
+
+
+def test_grounding_keeps_a_date_the_feed_publishes_but_the_body_never_states():
+    body = (
+        "Marvel Tōkon: Fighting Souls unveils its Year 1 DLC roster. "
+        "Phoenix Cyclops arrives on November 2."
+    )
+    claim_ = claim(
+        claim="Phoenix Cyclops joins Marvel Tōkon: Fighting Souls on November 2, 2026",
+        value="Phoenix Cyclops joins Marvel Tōkon: Fighting Souls on November 2, 2026",
+        source_url="https://blog.playstation.com/tokon-year-1-roster",
+    )
+    src = source(
+        link=claim_["source_url"],
+        name="PlayStation Blog",
+        tier=1,
+        owner="sony",
+        published="2026-10-07T17:00:00+00:00",
+        text=body,
+    )
+    kept, dropped = facts.ground_claims([claim_], [src])
+    assert kept == [claim_] and dropped == []
+    assert facts.grounding_failure(claim_, body, anchor=dt.date(2026, 10, 7)) is None
+
+
+def test_grounding_still_drops_a_number_in_neither_body_nor_anchor():
+    body = "Marvel Tōkon: Fighting Souls Year 1 DLC details arrive in November."
+    claim_ = claim(
+        claim="Roster demand",
+        value="368,000 pre-orders recorded",
+        source_url="https://blog.playstation.com/tokon-year-1-roster",
+    )
+    reason = facts.grounding_failure(claim_, body, anchor=dt.date(2026, 10, 7))
+    assert reason is not None
+    assert "368000" in reason
+
+
+TOKON_TITLE = (
+    "Marvel Tōkon: Fighting Souls reveals its Year 1 DLC roster, "
+    "starting with Phoenix Cyclops on 2nd November"
+)
+TOKON_PS_URL = "https://blog.playstation.com/2026/10/07/tokon-year-1-roster"
+TOKON_EU_URL = (
+    "https://eurogamer.net/marvel-tokon-fighting-souls-year-1-dlc-roster-phoenix-cyclops"
+)
+
+
+def test_tokon_sheet_takes_its_central_claim_from_the_tier1_source(tmp_path):
+    ps_blog = source(
+        link=TOKON_PS_URL,
+        name="PlayStation Blog",
+        tier=1,
+        owner="sony",
+        published="2026-10-07T17:00:00+00:00",
+        title="MARVEL Tōkon: Fighting Souls unveils Year 1 DLC with Phoenix Cyclops",
+        text=(
+            "I'm Takeshi Yamanaka, Producer at Arc System Works. "
+            "Marvel Tōkon: Fighting Souls unveils its Year 1 DLC roster. "
+            "Phoenix Cyclops arrives on November 2."
+        ),
+    )
+    eurogamer = source(
+        link=TOKON_EU_URL,
+        name="Eurogamer",
+        tier=2,
+        owner="ign-entertainment",
+        region="uk",
+        title="Marvel Tōkon: Fighting Souls Year 1 DLC roster starts with Phoenix Cyclops",
+        text=(
+            "Marvel Tōkon: Fighting Souls Year 1 DLC roster begins with "
+            "Phoenix Cyclops on November 2."
+        ),
+    )
+    ps_claim = claim(
+        claim="Roster starts with Phoenix Cyclops on November 2",
+        value="Year 1 DLC roster starting with Phoenix Cyclops on November 2, 2026",
+        kind="confirmed",
+        origin="takeshi yamanaka",
+        source_url=TOKON_PS_URL,
+    )
+    # The outlet's own claim restates the headline more closely than the tier-1
+    # source's, so the old rule would pick it; the tier-1 rule must not.
+    eu_claim = claim(
+        claim=(
+            "Marvel Tōkon: Fighting Souls reveals its Year 1 DLC roster, "
+            "starting with Phoenix Cyclops on 2nd November"
+        ),
+        value="the roster starts with Phoenix Cyclops",
+        kind="reported",
+        origin="unstated",
+        source_url=TOKON_EU_URL,
+    )
+    generate = per_source_generate([{"claims": [ps_claim]}, {"claims": [eu_claim]}])[0]
+    result = facts.facts(
+        gathered("tokon-1", [ps_blog, eurogamer]),
+        id="tokon-1",
+        title=TOKON_TITLE,
+        output_dir=tmp_path,
+        now=NOW,
+        generate=generate,
+    )
+    assert result["confirmation"]["confirmed"] is True
+    assert result["confirmation"]["rule"] == "tier1"
+    assert result["confirmation"]["tier1_sources"] == 1
+    central = next(c for c in result["claims"] if c["central"])
+    assert central["source_urls"] == [TOKON_PS_URL]
+    assert central["value"] == "Year 1 DLC roster starting with Phoenix Cyclops on November 2, 2026"
+    corroboration = [c for c in result["claims"] if not c["central"]]
+    assert [c["source_urls"] for c in corroboration] == [[TOKON_EU_URL]]
+
+
+def test_no_tier1_source_keeps_the_old_headline_overlap_central_rule():
+    title = "Gears of War: E-Day Sold 1 Million on Steam"
+    claims = [
+        claim(
+            claim="Gears of War: E-Day sales reach 1 million on Steam",
+            value="1 million",
+            source_url="https://a.example/1",
+        ),
+        claim(claim="Unrelated footnote", value="a detail", source_url="https://b.example/2"),
+    ]
+    groups = facts._claim_groups(claims)
+    sources = [source(link=c["source_url"], tier=2) for c in claims]
+    assert facts._preferred_central_index(groups, sources, title) is None
+    merged = [facts._merge_group(group) for group in groups]
+    central = facts.central_claim(merged, title=title)
+    assert central is merged[0]

@@ -93,6 +93,7 @@ import datetime as dt
 import json
 import logging
 import re
+import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -431,9 +432,10 @@ def _as_date(value: object) -> Optional[dt.date]:
 def _source_published(source: dict) -> Optional[dt.date]:
     """A source's publication date: its ``published`` field, else its URL date.
 
-    Gathered sources do not carry ``published`` today, but a dated URL path
-    (``/2026/10/07/``) is a reliable substitute. When neither is present the
-    claim has no date and a relative-time value cannot be made absolute.
+    Gathered sources carry ``published`` (the feed item's date, carried through
+    the gather stage); a dated URL path (``/2026/10/07/``) is the fallback.
+    When neither is present the claim has no date to absolutize from, and a
+    feed-only figure cannot be grounded against it.
     """
     published = _as_date(source.get("published"))
     if published:
@@ -447,14 +449,35 @@ def _source_published(source: dict) -> Optional[dt.date]:
         return None
 
 
+#: Words that already introduce a date: "from today" must become "from <date>",
+#: never "from on <date>".
+_DATE_PREPOSITIONS = (
+    "as of", "from", "on", "until", "till", "through", "by", "after", "before",
+)
+
+
+def _follows_date_preposition(text: str, match: re.Match) -> bool:
+    """True when the matched phrase follows a date preposition ("from today")."""
+    prefix = text[: match.start()].rstrip().lower()
+    return any(
+        re.search(rf"(?<!\w){re.escape(prep)}(?!\w)\s*$", prefix)
+        for prep in _DATE_PREPOSITIONS
+    )
+
+
 def absolutize_relative_time(value: object, published: object) -> Optional[str]:
-    """Rewrite relative-time words in ``value`` to an absolute calendar date.
+    """Rewrite relative-time words in ``value`` to grammatical absolute dates.
+
+    Every rewrite keeps the date attached to a preposition, so a sentence never
+    ends up with a bare calendar date: "begins today" becomes "begins on October
+    7, 2026", "is out now on PS5 and PC" becomes "is available on PS5 and PC as
+    of October 7, 2026", and "now" or "currently" become "as of <date>". When a
+    phrase already follows a date preposition ("from today") the duplicate "on"
+    is dropped. "yesterday" and "tomorrow" shift by a day.
 
     Returns the rewritten value, the unchanged value when it holds no
     relative-time word, or ``None`` when it does but ``published`` gives no date
     to convert from (the caller drops that claim rather than store a stale one).
-    "begins today" with an October 7, 2026 date becomes "begins October 7,
-    2026"; "yesterday" and "tomorrow" shift by a day.
     """
     text = str(value or "")
     words = _relative_time_words()
@@ -470,13 +493,30 @@ def absolutize_relative_time(value: object, published: object) -> Optional[str]:
     if published_date is None:
         return None
 
-    def replace(match: re.Match) -> str:
-        word = match.group(0).lower()
-        delta = {"yesterday": -1, "tomorrow": 1}.get(word, 0)
-        day = published_date + dt.timedelta(days=delta)
+    def _date(day: dt.date) -> str:
         return f"{_MONTH_NAMES[day.month]} {day.day}, {day.year}"
 
-    return pattern.sub(replace, text)
+    had_out_now = False
+
+    def replace(match: re.Match) -> str:
+        nonlocal had_out_now
+        word = match.group(0).lower()
+        if word == "out now":
+            # "is out now on PS5 and PC" rewrites to "is available on PS5 and
+            # PC"; the "as of <date>" clause is appended once, at the end.
+            had_out_now = True
+            return "available"
+        delta = {"yesterday": -1, "tomorrow": 1}.get(word, 0)
+        day = published_date + dt.timedelta(days=delta)
+        if word in ("now", "currently"):
+            return f"as of {_date(day)}"
+        prefix = "" if _follows_date_preposition(text, match) else "on "
+        return prefix + _date(day)
+
+    rewritten = pattern.sub(replace, text)
+    if had_out_now:
+        rewritten = f"{rewritten} as of {_date(published_date)}"
+    return rewritten
 
 
 def _absolutize_claims(
@@ -556,7 +596,39 @@ def _word_in(text: object, phrase: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack) is not None
 
 
-def grounding_failure(claim: dict, source_text: object) -> Optional[str]:
+def _anchor_tokens(anchor: Optional[dt.date]) -> tuple[set[str], set[str]]:
+    """The figures and month names an anchor publication date grounds.
+
+    A claim may state the feed item's own publication date even when the body
+    only gives it relatively ("out now", "today"): every component of
+    ``anchor`` -- year, month and day, in any common format, the month's name
+    and abbreviation included -- counts as grounded, because those tokens come
+    from the feed/URL date rather than the article text.
+    """
+    if anchor is None:
+        return set(), set()
+    figures = {
+        str(anchor.year),
+        f"{anchor.year:02d}"[-2:],
+        str(anchor.month),
+        f"{anchor.month:02d}",
+        str(anchor.day),
+        f"{anchor.day:02d}",
+    }
+    terms: set[str] = set()
+    if 1 <= anchor.month <= 12:
+        name = _MONTH_NAMES[anchor.month].lower()
+        terms.add(name)
+        terms.add(name[:3])
+    return figures, terms
+
+
+def grounding_failure(
+    claim: dict,
+    source_text: object,
+    *,
+    anchor: Optional[dt.date] = None,
+) -> Optional[str]:
     """Why a claim's value or label goes beyond its source, or ``None``.
 
     Checked against the claim's own source text, diacritics-insensitive: every
@@ -564,16 +636,21 @@ def grounding_failure(claim: dict, source_text: object) -> Optional[str]:
     acronym the value uses must appear in the text, an absolute qualifier
     ("full", "complete") is allowed only when the text uses it, and a contrast
     connective in the label ("and not", "rather than") is allowed only when the
-    text states it.
+    text states it. ``anchor`` is the source's publication date: figures equal
+    to any component of it (year, month, day, in any common format, the month's
+    name and abbreviation included) count as grounded too, because such tokens
+    come from the feed/URL date rather than the article body.
     """
     value = str(claim.get("value") or "")
     label = str(claim.get("claim") or "")
     source = str(source_text or "")
-    haystack = cluster.strip_diacritics(source).lower()
-    missing_numbers = _numbers_in(value) - _numbers_in(source)
+    anchor_figures, anchor_terms = _anchor_tokens(anchor)
+    missing_numbers = _numbers_in(value) - _numbers_in(source) - anchor_figures
     if missing_numbers:
         return f"value states {sorted(missing_numbers)} the source never gives"
     for term in _capitalized_terms(value):
+        if term in anchor_terms:
+            continue
         if not _word_in(source, term):
             return f"value names {term!r} the source never gives"
     for qualifier in _ABSOLUTE_QUALIFIERS:
@@ -591,13 +668,22 @@ def ground_claims(
     *,
     story_id: str = "",
 ) -> tuple[list[dict], list[dict]]:
-    """Drop claims whose value or label is not supported by their own source."""
+    """Drop claims whose value or label is not supported by their own source.
+
+    Each claim is checked against its own source's text; the source's
+    publication date (feed ``published``, else the URL date) is passed as the
+    grounding anchor, so a feed-only date token is never treated as ungrounded.
+    """
     by_url = _sources_by_url(sources)
     kept: list[dict] = []
     dropped: list[dict] = []
     for claim in claims:
         source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
-        reason = grounding_failure(claim, source.get("text") or "")
+        reason = grounding_failure(
+            claim,
+            source.get("text") or "",
+            anchor=_source_published(source),
+        )
         if reason is None:
             kept.append(claim)
         else:
@@ -994,9 +1080,23 @@ def _merge_affiliations(group: list[dict]) -> str:
     return "; ".join(named)
 
 
-def _merge_group(group: list[dict]) -> dict:
-    """Collapse the claims of one fact (same fact) into one."""
-    best = min(group, key=_merge_score)
+def _merge_group(group: list[dict], *, prefer_url: str | None = None) -> dict:
+    """Collapse the claims of one fact (same fact) into one.
+
+    ``prefer_url`` names the source whose wording should represent the merged
+    fact: the central claim takes the tier-1 source's own value (so the source
+    that confirms it is the source that wrote it), while the other sources'
+    versions are kept as corroboration.
+    """
+    candidates = group
+    if prefer_url is not None:
+        preferred = [
+            claim for claim in group
+            if _source_url_key(claim.get("source_url")) == prefer_url
+        ]
+        if preferred:
+            candidates = preferred
+    best = min(candidates, key=_merge_score)
     return {
         "claim": str(best["claim"]),
         "value": str(best["value"]),
@@ -1037,12 +1137,21 @@ def _version_supports(merged: dict, version_value: object) -> bool:
     return specifics <= _value_specifics(version_value)
 
 
-def _merged_version_for(merged: dict, url_key: str) -> Optional[str]:
-    """The value one source contributed to a merged claim, or ``None``."""
-    for version in merged.get("versions") or []:
-        if _source_url_key(version.get("source_url")) == url_key:
-            return version.get("value")
-    return None
+def _source_supports(merged: dict, url_key: str) -> bool:
+    """True when one source's own value backs the merged fact.
+
+    A tier-1 source confirms only as long as one of its claims carries every
+    specific of the merged value: it never confirms wording that only another
+    source stated. When the source stated the fact more than once (for example
+    splitting a date into its own claim), any of its versions may support it.
+    """
+    versions = [
+        version for version in merged.get("versions") or []
+        if _source_url_key(version.get("source_url")) == url_key
+    ]
+    return bool(versions) and any(
+        _version_supports(merged, version.get("value")) for version in versions
+    )
 
 
 def merge_claims(claims: list[dict]) -> list[dict]:
@@ -1162,10 +1271,8 @@ def confirmation_from_sources(
         for source in sources:
             if source["tier"] != 1 or _source_url_key(source.get("link")) not in claim_urls:
                 continue
-            if merged is not None:
-                version_value = _merged_version_for(merged, _source_url_key(source.get("link")))
-                if version_value is None or not _version_supports(merged, version_value):
-                    continue
+            if merged is not None and not _source_supports(merged, _source_url_key(source.get("link"))):
+                continue
             tier1 += 1
         tier3 = sum(
             1 for source in sources
@@ -1230,6 +1337,88 @@ def central_claim(claims: list[dict], *, title: str = "") -> Optional[dict]:
     return best
 
 
+def _preferred_central_index(
+    groups: list[list[dict]],
+    sources: list[dict],
+    title: str,
+) -> Optional[tuple[int, str]]:
+    """The group to center on, preferring a tier-1 source's own claims.
+
+    A cluster that has a tier-1 source (a company's or platform's own post)
+    takes its central claim from that source's claims: the headline-overlap
+    pick is restricted to claims the tier-1 source itself wrote, so the fact the
+    headline states is the fact the tier-1 source restates, and the other
+    outlets' versions corroborate it rather than driving the central wording.
+    Returns ``(group_index, url_key)``, or None when no headline is given, no
+    tier-1 claim overlaps it, or no tier-1 source exists (the plain headline
+    overlap rule applies to all claims then).
+    """
+    title = str(title or "").strip()
+    if not title:
+        return None
+    title_tokens = _word_tokens(title)
+    tier1_urls = {
+        _source_url_key(source.get("link"))
+        for source in sources
+        if source.get("tier") == 1
+    }
+    best: Optional[tuple[int, str]] = None
+    best_key = (0, 0, "")
+    if tier1_urls:
+        for index, group in enumerate(groups):
+            for claim in group:
+                if _source_url_key(claim.get("source_url")) not in tier1_urls:
+                    continue
+                score = _title_overlap_score(claim, title_tokens)
+                key = (
+                    score,
+                    len(str(claim.get("claim", ""))) + len(str(claim.get("value", ""))),
+                    str(claim.get("claim", "")),
+                )
+                if score > 0 and key > best_key:
+                    best, best_key = (
+                        (index, _source_url_key(claim.get("source_url"))),
+                        key,
+                    )
+    return best
+
+
+def _fold_entity(entity: object) -> str:
+    """Case- and diacritics-fold an entity so spelling variants count together."""
+    return cluster.strip_diacritics(str(entity or "")).lower()
+
+
+def _accented_char_count(text: str) -> int:
+    """Count base characters that carry diacritics ("ō" in "Tōkon")."""
+    return sum(
+        1
+        for char in text
+        if unicodedata.combining(char) == 0 and len(unicodedata.normalize("NFKD", char)) > 1
+    )
+
+
+def _best_display_entity(variants: list[str], exact_counts: dict[str, int]) -> str:
+    """The most reliably spelled display form of one folded entity.
+
+    Prefer proper casing and diacritics over ALL-CAPS ASCII forms, then the
+    most frequent spelling, then the longest explicit form.
+    """
+    def quality(name: str):
+        words = [word for word in name.split() if word]
+        title_case = bool(words) and all(
+            word[0].isupper() and (len(word) == 1 or word[1:].islower())
+            for word in words
+        )
+        return (
+            _accented_char_count(name),
+            title_case,
+            exact_counts.get(name, 0),
+            len(name),
+        )
+
+    return max(variants, key=quality)
+
+
 def primary_entities(
     *,
     title: str | None = None,
@@ -1239,21 +1428,48 @@ def primary_entities(
     """The entities that define the story's subject, with their sub-entities.
 
     Counts each full name phrase (:func:`cluster.story_phrases`) across the
-    cluster title and the source headlines and keeps those with the highest
-    support. Each surviving phrase is expanded into itself plus the sub-entities
-    its connectors split it into (:func:`cluster.sub_entities`), so a claim that
-    names only part of a long phrase ("Call of Duty" inside "Call of Duty:
-    Modern Warfare 4") is still recognized as on-topic. Falls back to the
-    cluster's reported entities when no headline parses.
+    cluster title and the source headlines, folding case and diacritics so
+    spelling variants of one name ("Marvel Tōkon", "MARVEL Tōkon") merge into a
+    single count. Keeps every entity whose folded count is at least half of the
+    highest count and that more than one headline carries, plus every entity the
+    seed headline itself names (so an off-topic neighbour's own name never
+    becomes a subject); the best display form (preferring proper casing and
+    diacritics) survives. Each surviving phrase is expanded into itself plus the
+    sub-entities its connectors split it into (:func:`cluster.sub_entities`), so
+    a claim that names only part of a long phrase ("Call of Duty" inside "Call
+    of Duty: Modern Warfare 4") is still recognized as on-topic. Falls back to
+    the cluster's reported entities when no headline parses.
     """
-    counts: Counter[str] = Counter()
+    folded: dict[str, int] = {}
+    exact_counts: dict[str, int] = {}
+    displays: dict[str, list[str]] = {}
     for candidate in [title, *(source_titles or [])]:
-        if candidate:
-            for entity in cluster.story_phrases(candidate):
-                counts[entity] += 1
-    if counts:
-        top = max(counts.values())
-        return _expand_entities(sorted(entity for entity, count in counts.items() if count == top))
+        if not candidate:
+            continue
+        for entity in cluster.story_phrases(candidate):
+            exact_counts[entity] = exact_counts.get(entity, 0) + 1
+            key = _fold_entity(entity)
+            folded[key] = folded.get(key, 0) + 1
+            displays.setdefault(key, [])
+            if entity not in displays[key]:
+                displays[key].append(entity)
+    if folded:
+        top = max(folded.values())
+        # Support-based entities must be carried by more than one headline (so a
+        # neighbouring off-topic source's own name never becomes a subject) and
+        # by at least half as many headlines as the most-supported one.
+        floor_kept = {
+            key
+            for key, count in folded.items()
+            if count >= 2 and count * 2 >= top
+        }
+        headline_kept = (
+            {_fold_entity(entity) for entity in cluster.story_phrases(title) or []}
+            if title else set()
+        )
+        kept = floor_kept | headline_kept
+        chosen = [_best_display_entity(displays[key], exact_counts) for key in kept]
+        return _expand_entities(chosen)
     return _expand_entities(
         [str(entity).strip().lower() for entity in (entities or []) if str(entity).strip()]
     )
@@ -1453,14 +1669,26 @@ def facts(
     kept = resolve_claim_origins(kept, sources, aliases=aliases, story_id=name)
 
     # Same facts merge (by shared claim text, or by a shared date/figure plus
-    # topic words) before the central claim is picked.
+    # topic words) before the central claim is picked. The merged central
+    # claim of a cluster with a tier-1 source takes that source's own wording.
     groups = _claim_groups(kept)
-    claims = [_merge_group(group) for group in groups]
+    preferred_central = _preferred_central_index(groups, sources, title)
+    if preferred_central is not None:
+        prefer_index, prefer_url = preferred_central
+        claims = [
+            _merge_group(group, prefer_url=prefer_url)
+            if index == prefer_index
+            else _merge_group(group)
+            for index, group in enumerate(groups)
+        ]
+        central = claims[prefer_index]
+    else:
+        claims = [_merge_group(group) for group in groups]
+        central = central_claim(claims, title=title)
 
     # The cluster seed headline (the cluster title) is restated by one claim;
     # mark that claim central and confirm only it, so origins supporting any
     # other claim never confirm the story.
-    central = central_claim(claims, title=title) if title else None
     for claim in claims:
         claim["central"] = claim is central
     central_group = groups[claims.index(central)] if central is not None else None

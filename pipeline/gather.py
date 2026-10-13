@@ -15,8 +15,8 @@ Output is written to ``data/gathered/<cluster-id>.json``:
       "sources": [
         {
           "link": "...", "title": "...", "source_name": "...", "tier": 1,
-          "owner": "...", "region": "us", "status": "ok", "text": "<full text>",
-          "error": null
+          "owner": "...", "region": "us", "published": "...", "status": "ok",
+          "text": "<full text>", "error": null
         }
       ]
     }
@@ -59,7 +59,7 @@ FETCH_TIMEOUT_SECONDS = 20
 REQUEST_DELAY_SECONDS = 1.0
 # Bump when fetch/extract handling that can change the stored text is tuned, so
 # previously-gathered files read as stale and are re-fetched.
-GATHER_SETTINGS_VERSION = 1
+GATHER_SETTINGS_VERSION = 2
 
 logger = logging.getLogger("gamersxpress.pipeline.gather")
 
@@ -170,6 +170,7 @@ def gather(
             "tier": item.get("tier"),
             "owner": item.get("owner", "?"),
             "region": item.get("region", "?"),
+            "published": item.get("published"),
         }
         if robots and not robots_call(url):
             source = {**base, "status": "denied-robots", "text": "", "error": "disallowed by robots.txt"}

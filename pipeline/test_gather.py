@@ -16,8 +16,8 @@ def cluster(items):
     return {"id": "story-1", "title": "Story", "items": items}
 
 
-def item(id=1, link="https://a.example/1", name="Source A", tier=1, owner="co-a", region="us"):
-    return {"link": link, "source_name": name, "tier": tier, "owner": owner, "region": region, "id": id}
+def item(id=1, link="https://a.example/1", name="Source A", tier=1, owner="co-a", region="us", published=None):
+    return {"link": link, "source_name": name, "tier": tier, "owner": owner, "region": region, "published": published, "id": id}
 
 
 def always_true(_url):
@@ -116,12 +116,18 @@ def test_gather_empty_body_and_empty_text(tmp_path):
 
 
 def test_gather_preserves_source_metadata(tmp_path):
-    result = run_gather(tmp_path, fetcher=lambda url: "<html>x</html>", extractor=lambda html: "text")
+    result = run_gather(
+        tmp_path,
+        items=[item(published="2026-10-07T17:00:00+00:00")],
+        fetcher=lambda url: "<html>x</html>",
+        extractor=lambda html: "text",
+    )
     source = result["sources"][0]
     assert source["tier"] == 1
     assert source["owner"] == "co-a"
     assert source["region"] == "us"
     assert source["source_name"] == "Source A"
+    assert source["published"] == "2026-10-07T17:00:00+00:00"
 
 
 def test_gather_reuses_file_when_fingerprint_matches(tmp_path):
