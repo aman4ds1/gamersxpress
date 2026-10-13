@@ -118,11 +118,13 @@ def test_content_limits_are_read_from_config():
         "min_description": 70,
         "max_description": 160,
         "min_words": 200,
+        "min_sources": 2,
     }
     assert CONFIG["max_title"] == limits["max_title"]
     assert CONFIG["min_description"] == limits["min_description"]
     assert CONFIG["max_description"] == limits["max_description"]
     assert CONFIG["min_words"] == limits["min_words"]
+    assert CONFIG["min_sources"] == limits["min_sources"]
 
 
 def test_min_words_boundary_uses_the_config_limit():

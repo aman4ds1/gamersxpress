@@ -345,7 +345,11 @@ def test_unconfirmed_first_then_confirmed_publishes_second(tmp_path):
         item("Call of Duty game returns to a modern campaign", "https://a.example/2", owner="owner-b"),
     ]
     second = [
-        item(dryrun.SAMPLE_TITLE, "https://b.example/1", owner="owner-c", age_hours=2),
+        # Older than the first story so the CoD cluster (fresh, itself two-tier-1)
+        # is picked first and its failure is what the loop records; the sample is
+        # still fresh enough to publish once the first candidate is dropped.
+        item(dryrun.SAMPLE_TITLE, "https://b.example/1", owner="owner-c", age_hours=12),
+        item(dryrun.SAMPLE_TITLE, "https://b.example/2", owner="owner-d", age_hours=12),
     ]
 
     def facts_fn(gathered, *, id, output_dir, generate, run_state, now, title, entities, **kwargs):
@@ -388,8 +392,11 @@ def test_all_candidates_unconfirmed_is_nothing_without_breaker_change(tmp_path):
     paths = make_paths(tmp_path)
     items = [
         item("Gears of War game film casting announced", "https://c.example/1", owner="owner-c1", age_hours=1),
+        item("Gears of War game film casting announced", "https://c.example/4", owner="owner-c4", age_hours=1),
         item("The Legend of Zelda game movie adds a director", "https://c.example/2", owner="owner-c2", age_hours=2),
+        item("The Legend of Zelda game movie adds a director", "https://c.example/5", owner="owner-c5", age_hours=2),
         item("Rocket League introduces a new game mode", "https://c.example/3", owner="owner-c3", age_hours=3),
+        item("Rocket League introduces a new game mode", "https://c.example/6", owner="owner-c6", age_hours=3),
     ]
 
     def always_unconfirmed(gathered, *, id=None, output_dir=None, generate=None,
@@ -477,6 +484,8 @@ def test_model_call_budget_stops_candidate_attempts(tmp_path):
     items = [
         item("Halo returns to Xbox Game Pass", "https://h.example/1", owner="owner-h1", age_hours=1),
         item("A new Titanfall game campaign is in development", "https://t.example/1", owner="owner-t1", age_hours=2),
+        item("Halo returns to Xbox Game Pass", "https://h.example/2", owner="owner-h2", age_hours=1),
+        item("A new Titanfall game campaign is in development", "https://t.example/2", owner="owner-t2", age_hours=2),
     ]
     calls = {"gather": 0}
 
@@ -736,3 +745,103 @@ def test_verifier_output_invalid_does_not_trigger_a_repair(tmp_path):
     assert not (drafts / "original.md").exists()
     assert not (drafts / "repaired.md").exists()
     assert verify_report_file(paths, result)["repair"] is None
+
+
+# --- readiness gate (enough contributing sources and usable claims) ----------
+
+
+def test_confirmed_but_not_ready_tries_the_next_candidate_and_publishes_it(tmp_path):
+    paths = make_paths(tmp_path)
+    first = [
+        item("Call of Duty game returns to a modern campaign", "https://a.example/1", owner="owner-a"),
+        item("Call of Duty game returns to a modern campaign", "https://a.example/2", owner="owner-b"),
+    ]
+    second = [
+        item(dryrun.SAMPLE_TITLE, "https://b.example/1", owner="owner-c", age_hours=12),
+        item(dryrun.SAMPLE_TITLE, "https://b.example/2", owner="owner-d", age_hours=12),
+    ]
+
+    def facts_fn(gathered, *, id, output_dir, generate, run_state, now, title, entities, **kwargs):
+        if str(title).startswith("Call of Duty"):
+            # Confirmed (it does not raise) but only one contributing source, so
+            # the writer must never see it and the search moves on.
+            return {"sources": [{"link": "https://a.example/1"}], "claims": []}
+        return run_module.facts_stage.facts(
+            gathered, id=id, output_dir=output_dir, generate=generate,
+            run_state=run_state, now=now, title=title, entities=entities,
+        )
+
+    result = run_with_items(tmp_path, first + second, facts_fn=facts_fn)
+    assert result.status == "completed"
+    assert result.exit_code == 0
+    assert list(paths.articles_dir.glob("*.md"))
+
+    first_id = run_module.cluster.cluster_id_for_urls(["https://a.example/1", "https://a.example/2"])
+    failed = json.loads(paths.failed.read_text(encoding="utf-8"))
+    assert failed["stories"] == {}
+    assert failed["unconfirmed"][first_id]["reason"] == "insufficient sources"
+
+    report = latest_candidates_report(paths)
+    assert report["outcome"] == "story chosen"
+    assert [c["title"] for c in report["candidates"]] == [first[0]["title"], second[0]["title"]]
+    assert report["candidates"][0]["confirmed"] is True
+    assert report["candidates"][0]["reason"] == "insufficient sources"
+    assert report["candidates"][0]["outcome"] == "not ready"
+    assert report["candidates"][1]["confirmed"] is True
+    assert report["candidates"][1]["outcome"] == "selected"
+
+    breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
+    assert breaker["consecutive_failures"] == 0
+    assert breaker["open"] is False
+
+
+def test_not_ready_candidate_does_not_change_the_breaker(tmp_path):
+    paths = make_paths(tmp_path)
+    items = [
+        item("Halo returns to Xbox Game Pass", "https://h.example/1", owner="owner-h1"),
+        item("Halo returns to Xbox Game Pass", "https://h.example/2", owner="owner-h2"),
+    ]
+
+    def facts_fn(gathered, *, id, output_dir, generate, run_state, now, title, entities, **kwargs):
+        return {"sources": [{"link": "https://h.example/1"}], "claims": []}
+
+    result = run_with_items(tmp_path, items, facts_fn=facts_fn)
+    assert result.status == "nothing"
+    assert result.exit_code == 0
+    assert not list(paths.articles_dir.glob("*.md"))
+
+    if paths.breaker.exists():
+        breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
+        assert breaker["consecutive_failures"] == 0
+        assert breaker["open"] is False
+
+    failed = json.loads(paths.failed.read_text(encoding="utf-8"))
+    assert len(failed["unconfirmed"]) == 1
+    assert next(iter(failed["unconfirmed"].values()))["reason"] == "insufficient sources"
+
+    report = latest_candidates_report(paths)
+    assert report["outcome"] == "no confirmed story"
+    assert report["candidates"][0]["confirmed"] is True
+    assert report["candidates"][0]["reason"] == "insufficient sources"
+
+
+def test_confirmed_but_too_few_usable_facts_is_not_ready(tmp_path):
+    paths = make_paths(tmp_path)
+    items = [
+        item("Halo returns to Xbox Game Pass", "https://h.example/1", owner="owner-h1"),
+        item("Halo returns to Xbox Game Pass", "https://h.example/2", owner="owner-h2"),
+    ]
+
+    def facts_fn(gathered, *, id, output_dir, generate, run_state, now, title, entities, **kwargs):
+        # Two contributing sources but only one writer-ready claim (an opinion
+        # never counts): not ready, so no article is written.
+        return {
+            "sources": [{"link": "https://h.example/1"}, {"link": "https://h.example/2"}],
+            "claims": [{"kind": "confirmed"}, {"kind": "opinion"}],
+        }
+
+    result = run_with_items(tmp_path, items, facts_fn=facts_fn)
+    assert result.status == "nothing"
+    assert not list(paths.articles_dir.glob("*.md"))
+    failed = json.loads(paths.failed.read_text(encoding="utf-8"))
+    assert next(iter(failed["unconfirmed"].values()))["reason"] == "too few facts"

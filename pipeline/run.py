@@ -97,6 +97,41 @@ _STATUS_EXIT = {
     "skipped": EXIT_SKIP,
 }
 
+#: Default minimum usable claims (kinds confirmed/reported/estimate/statement) a
+#: facts sheet needs before the writer may see it. Overridable through
+#: ``readiness.min_claims`` in config.yaml.
+DEFAULT_READINESS_MIN_CLAIMS = 6
+
+#: Claim kinds the readiness check counts. A rumor or an opinion never makes a
+#: sheet ready to write from, however many of them there are.
+_READY_CLAIM_KINDS = frozenset({"confirmed", "reported", "estimate", "statement"})
+
+
+def _facts_readiness(
+    payload: dict,
+    *,
+    min_sources: int,
+    min_claims: int,
+) -> tuple[bool, str | None]:
+    """Whether a facts sheet is ready for the writer, and why not when it is not.
+
+    Ready means at least ``min_sources`` distinct contributing sources (the sheet
+    lists only sources that produced a claim) and at least ``min_claims`` claims
+    whose kind is confirmed, reported, estimate or statement. A rumor or opinion
+    never counts. Returns ``(ready, reason)`` where ``reason`` is
+    ``"insufficient sources"`` or ``"too few facts"`` when not ready.
+    """
+    sources = payload.get("sources") or []
+    links = [str(source.get("link") or "") for source in sources]
+    contributing = len(cluster._normalized_urls(links))
+    if contributing < int(min_sources):
+        return False, "insufficient sources"
+    claims = payload.get("claims") or []
+    usable = sum(1 for claim in claims if str(claim.get("kind") or "") in _READY_CLAIM_KINDS)
+    if usable < int(min_claims):
+        return False, "too few facts"
+    return True, None
+
 
 @dataclass
 class Paths:
@@ -317,6 +352,13 @@ def run(
     publish_mode = str(env.get("PUBLISH_MODE", "draft"))
     gates_config = gates_stage.load_gates_config(config_path)
     verify_config = verify_stage.load_verify_config(config_path)
+    readiness_section = raw_config.get("readiness") or {}
+    readiness_min_claims = int(
+        readiness_section.get("min_claims", DEFAULT_READINESS_MIN_CLAIMS)
+    )
+    # min_sources is the shared content_limits value, read through the gates
+    # config so the score gate, the readiness check and the publish gate agree.
+    readiness_min_sources = int(gates_config.get("min_sources", score_stage.DEFAULT_MIN_SOURCES))
 
     paths = paths or default_paths(dry_run, dry_run_dir)
     run_state = RunState()
@@ -434,6 +476,7 @@ def run(
                 min_score_corroborated=min_score_corroborated,
                 weights=weights,
                 performance=performance,
+                min_sources=readiness_min_sources,
             )
             if candidate is None:
                 break
@@ -473,12 +516,35 @@ def run(
             return entry
 
         def _write_candidates_report(outcome: str) -> None:
+            # Clusters that never became candidates because they are ineligible
+            # (for example "too few sources") are listed too, so the report shows
+            # why a story was skipped rather than silently dropping it.
+            tried = {entry.get("cluster_id") for entry in candidates_report}
+            patterns = score_stage.load_exclude_title_patterns(raw_config)
+            skipped: list[dict] = []
+            for cluster_dict in clusters:
+                if cluster_dict.get("id") in tried:
+                    continue
+                reason = score_stage.ineligible_reason(
+                    cluster_dict, patterns, readiness_min_sources
+                )
+                if reason is None:
+                    continue
+                skipped.append(
+                    {
+                        "cluster_id": cluster_dict.get("id"),
+                        "title": cluster_dict.get("title"),
+                        "source_count": score_stage.source_count(cluster_dict),
+                        "reason": reason,
+                    }
+                )
             payload = {
                 "generated_at": now.isoformat(),
                 "outcome": outcome,
                 "max_candidates_per_run": max_candidates,
                 "model_call_budget": budget,
                 "candidates": candidates_report,
+                "skipped": skipped,
             }
             file_name = f"candidates-{now.strftime('%Y%m%dT%H%M%SZ')}.json"
             paths.reports_dir.mkdir(parents=True, exist_ok=True)
@@ -531,6 +597,28 @@ def run(
                     _candidate_entry(candidate, confirmed=False, reason="unconfirmed", outcome="dropped")
                 )
                 logger.warning("candidate %s not covered: unconfirmed", cluster_id)
+                gathered = None
+                facts = None
+                continue
+            # Confirmation is not enough to write: the sheet must also be ready
+            # (enough contributing sources and enough usable claims). A not-ready
+            # candidate is remembered like an unconfirmed one, counts toward no
+            # breaker, and the search moves on to the next candidate.
+            ready, not_ready = _facts_readiness(
+                facts,
+                min_sources=readiness_min_sources,
+                min_claims=readiness_min_claims,
+            )
+            if not ready:
+                cluster.record_unconfirmed(failed, cluster_id, now=now)
+                failed["unconfirmed"][str(cluster_id)]["reason"] = not_ready
+                cluster.save_failed(failed, paths.failed)
+                candidates_report.append(
+                    _candidate_entry(
+                        candidate, confirmed=True, reason=not_ready, outcome="not ready"
+                    )
+                )
+                logger.warning("candidate %s not ready: %s", cluster_id, not_ready)
                 gathered = None
                 facts = None
                 continue

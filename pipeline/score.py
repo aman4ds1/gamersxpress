@@ -30,6 +30,7 @@ from typing import Any, Iterable
 import re
 
 import cluster
+from gates import load_content_limits
 from providers import load_config
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +40,10 @@ DEFAULT_MIN_SCORE = 65
 DEFAULT_MIN_SCORE_CORROBORATED = 55
 DEFAULT_MAX_CANDIDATES_PER_RUN = 3
 DEFAULT_MODEL_CALL_BUDGET = 12
+#: Minimum distinct source URLs a cluster needs to be eligible. config.yaml's
+#: ``content_limits.min_sources`` is the single source of truth (shared with the
+#: publish gates); this default keeps the pipeline running with a partial config.
+DEFAULT_MIN_SOURCES = 2
 DEFAULT_WEIGHTS = {
     "tier1": 40,
     "tier2": 15,
@@ -86,6 +91,15 @@ DEFAULT_EXCLUDE_TITLE_PATTERNS = [
     r"\bdiscount code\b",
     r"\bon geforce now\b",
     r"\bplayers' choice\b",
+    r"\bpre-order bonus\b",
+    r"\bpre-order bonuses\b",
+    r"\bblueprint\b",
+    r"\bbundle\b",
+    r"\bbattle pass\b",
+    r"\btwitch drops\b",
+    r"\boperator skin\b",
+    r"\bweapon skin\b",
+    r"\bcall of duty: mobile\b",
 ]
 
 #: News-signal words a seed headline may carry. A match earns
@@ -118,8 +132,6 @@ DEFAULT_NEWS_VERBS: tuple[str, ...] = (
     "released",
     "revealed",
     "officially",
-    "pre-order",
-    "preorders",
     "update",
     "patch",
 )
@@ -284,6 +296,34 @@ def load_min_score_corroborated(config: dict | None = None) -> float:
     return float(DEFAULT_MIN_SCORE_CORROBORATED)
 
 
+def load_min_sources(config: dict | None = None) -> int:
+    """Minimum distinct source URLs for eligibility, from ``content_limits``.
+
+    Shared with the publish gates (``pipeline/gates.py``) through
+    ``content_limits.min_sources`` in config.yaml, so the score-stage gate and
+    the publish gate can never drift apart. Falls back to
+    :data:`DEFAULT_MIN_SOURCES` when the value is missing or malformed.
+    """
+    if config is None:
+        return int(load_content_limits().get("min_sources", DEFAULT_MIN_SOURCES))
+    section = config.get("content_limits") or {}
+    value = section.get("min_sources", DEFAULT_MIN_SOURCES)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(DEFAULT_MIN_SOURCES)
+
+
+def source_urls(cluster_dict: dict) -> list[str]:
+    """The cluster's distinct, normalized member URLs (its source URLs)."""
+    links = [str(item.get("link") or "") for item in cluster_dict.get("items") or []]
+    return cluster._normalized_urls(links)
+
+
+def source_count(cluster_dict: dict) -> int:
+    """How many distinct source URLs a cluster has (a one-source story is not eligible)."""
+    return len(source_urls(cluster_dict))
+
+
 def min_score_for(
     cluster_dict: dict,
     *,
@@ -358,17 +398,27 @@ def relevant_cluster(
     return _matches_any(" ".join([title, *entities]), keywords)
 
 
-def ineligible_reason(cluster_dict: dict, exclude_patterns: list[str] | None = None) -> str | None:
+def ineligible_reason(
+    cluster_dict: dict,
+    exclude_patterns: list[str] | None = None,
+    min_sources: int | None = None,
+) -> str | None:
     """Why a cluster cannot be gathered, or None when it is eligible.
 
     A cluster is eligible only when it is confirmable (:func:`cluster.confirmable`),
-    its headline matches no format-exclusion pattern, and it is topically
-    relevant (:func:`relevant_cluster`). Reasons are reported verbatim:
-    ``"not confirmable"``, ``"excluded pattern: <pattern>"``, or ``"off-topic"``.
+    has at least ``min_sources`` distinct source URLs, its headline matches no
+    format-exclusion pattern, and it is topically relevant
+    (:func:`relevant_cluster`). Reasons are reported verbatim:
+    ``"not confirmable"``, ``"too few sources"``, ``"excluded pattern: <pattern>"``,
+    or ``"off-topic"``.
     """
     patterns = load_exclude_title_patterns() if exclude_patterns is None else list(exclude_patterns)
+    if min_sources is None:
+        min_sources = load_min_sources()
     if not cluster.confirmable(cluster_dict):
         return "not confirmable"
+    if source_count(cluster_dict) < int(min_sources):
+        return "too few sources"
     pattern = cluster.excluded_title_pattern(str(cluster_dict.get("title") or ""), patterns)
     if pattern is not None:
         return f"excluded pattern: {pattern!r}"
@@ -433,15 +483,19 @@ def rank(
     source_topics: dict[str, str] | None = None,
     news_bonus: float | None = None,
     news_verbs: list[str] | None = None,
+    min_sources: int | None = None,
 ) -> list[dict]:
     patterns = load_exclude_title_patterns() if exclude_patterns is None else list(exclude_patterns)
     if relevance_keywords is None:
         relevance_keywords = load_relevance_keywords()
     if source_topics is None:
         source_topics = load_source_topics()
+    if min_sources is None:
+        min_sources = load_min_sources()
     scored = []
     for cluster_dict in clusters:
         confirmable = cluster.confirmable(cluster_dict)
+        sources = source_count(cluster_dict)
         excluded_by = cluster.excluded_title_pattern(
             str(cluster_dict.get("title") or ""), patterns
         )
@@ -460,9 +514,13 @@ def rank(
                     news_verbs=news_verbs,
                 ),
                 "confirmable": confirmable,
+                "source_count": sources,
                 "excluded_by": excluded_by,
                 "relevant": relevant,
-                "eligible": confirmable and excluded_by is None and relevant,
+                "eligible": (
+                    confirmable and sources >= int(min_sources)
+                    and excluded_by is None and relevant
+                ),
             }
         )
     scored.sort(key=lambda cluster_dict: cluster_dict["score"], reverse=True)
@@ -481,17 +539,18 @@ def pick(
     source_topics: dict[str, str] | None = None,
     news_bonus: float | None = None,
     news_verbs: list[str] | None = None,
+    min_sources: int | None = None,
 ) -> dict | None:
     """Return the highest-scoring eligible cluster that reaches its threshold.
 
     Each eligible cluster is checked against :func:`min_score_for`: a
     corroborated cluster (two or more distinct owners) needs only
     ``min_score_corroborated`` (``score.min_score_corroborated``, default 55),
-    while a single-source cluster needs ``min_score`` (default 65). Clusters
-    that are not confirmable (no tier-1 source and fewer than two distinct
-    owners), whose headline matches a format-exclusion pattern, or that are
-    off-topic are never considered, so ineligible stories are never gathered or
-    sent to a model.
+    while a single-owner cluster needs ``min_score`` (default 65). Clusters that
+    are not confirmable (no tier-1 source and fewer than two distinct owners),
+    have fewer than ``content_limits.min_sources`` distinct source URLs, whose
+    headline matches a format-exclusion pattern, or that are off-topic are never
+    considered, so ineligible stories are never gathered or sent to a model.
     """
     if min_score_corroborated is None:
         min_score_corroborated = load_min_score_corroborated()
@@ -504,10 +563,11 @@ def pick(
         source_topics=source_topics,
         news_bonus=news_bonus,
         news_verbs=news_verbs,
+        min_sources=min_sources,
     )
     eligible = [cluster for cluster in ranked if cluster.get("eligible")]
     if not eligible:
-        logger.info("no confirmable, non-excluded, relevant story among %d cluster(s)", len(ranked))
+        logger.info("no eligible (confirmable, sourced, relevant) story among %d cluster(s)", len(ranked))
         return None
     for best in eligible:
         threshold = min_score_for(
@@ -533,6 +593,7 @@ __all__ = [
     "DEFAULT_MAX_CANDIDATES_PER_RUN",
     "DEFAULT_MIN_SCORE",
     "DEFAULT_MIN_SCORE_CORROBORATED",
+    "DEFAULT_MIN_SOURCES",
     "DEFAULT_MODEL_CALL_BUDGET",
     "DEFAULT_NEWS_BONUS",
     "DEFAULT_NEWS_VERBS",
@@ -544,6 +605,7 @@ __all__ = [
     "ineligible_reason",
     "load_exclude_title_patterns",
     "load_min_score_corroborated",
+    "load_min_sources",
     "load_news_settings",
     "load_performance",
     "load_relevance_keywords",
@@ -553,4 +615,6 @@ __all__ = [
     "rank",
     "relevant_cluster",
     "score_cluster",
+    "source_count",
+    "source_urls",
 ]

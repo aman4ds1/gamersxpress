@@ -123,16 +123,68 @@ def sample_body(*, short: bool = False) -> str:
 
 
 def _claims_json(source_url: str = "https://a.example/1") -> dict:
+    """Six grounded claims (all writer-ready kinds) for one mock source.
+
+    The readiness check (pipeline/run.py) needs at least ``readiness.min_claims``
+    claims of kind confirmed/reported/estimate/statement, so the sample story
+    carries six. Every value stays inside ``_SOURCE_PROSE`` (no numbers, no names
+    the prose does not use) so grounding never drops a claim.
+    """
+    specs = [
+        (
+            "Nvidia confirmed the launch window for its next graphics card line",
+            "the launch window was confirmed for the next graphics card line",
+            "nvidia",
+            "confirmed",
+            0.9,
+        ),
+        (
+            "Nvidia outlined its graphics card plans during a briefing with regional partners",
+            "plans were outlined during a briefing with regional partners",
+            "unstated",
+            "reported",
+            0.8,
+        ),
+        (
+            "Nvidia representatives declined to comment on unannounced graphics card products",
+            "representatives declined to comment on unannounced products",
+            "unstated",
+            "statement",
+            0.7,
+        ),
+        (
+            "Analysts estimate Nvidia graphics card supply remains uncertain across several markets",
+            "supply remains uncertain across several markets",
+            "unstated",
+            "estimate",
+            0.6,
+        ),
+        (
+            "The next Nvidia graphics card announcement is expected alongside a scheduled event",
+            "the announcement is expected alongside a scheduled event",
+            "unstated",
+            "reported",
+            0.8,
+        ),
+        (
+            "Retailers have prepared internal Nvidia graphics card listings ahead of time",
+            "retailers have prepared internal listings ahead of time",
+            "unstated",
+            "reported",
+            0.7,
+        ),
+    ]
     return {
         "claims": [
             {
-                "claim": "Nvidia confirmed the launch window for its next graphics card line",
-                "value": "the launch window was confirmed for the next graphics card line",
+                "claim": claim,
+                "value": value,
                 "source_url": source_url,
-                "confidence": 0.9,
-                "origin": "nvidia",
-                "kind": "confirmed",
+                "confidence": confidence,
+                "origin": origin,
+                "kind": kind,
             }
+            for claim, value, origin, kind, confidence in specs
         ]
     }
 

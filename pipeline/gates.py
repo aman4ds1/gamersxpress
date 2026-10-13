@@ -78,6 +78,7 @@ DEFAULT_CONTENT_LIMITS: dict[str, int] = {
     "min_description": 70,
     "max_description": 160,
     "min_words": 200,
+    "min_sources": 2,
 }
 
 DEFAULT_GATES: dict[str, Any] = {
@@ -85,7 +86,7 @@ DEFAULT_GATES: dict[str, Any] = {
     "min_description": DEFAULT_CONTENT_LIMITS["min_description"],
     "max_description": DEFAULT_CONTENT_LIMITS["max_description"],
     "min_words": DEFAULT_CONTENT_LIMITS["min_words"],
-    "min_sources": 2,
+    "min_sources": DEFAULT_CONTENT_LIMITS["min_sources"],
     "overlap": {"ngram": 8, "max_ratio": 0.2},
     "near_duplicate": {"title_similarity": 0.8, "window_days": 7},
     "banned_phrases": [],
@@ -155,10 +156,11 @@ class GateResult:
 def load_content_limits(path: str | Path | None = None) -> dict:
     """Read the shared content length limits from ``content_limits`` in config.yaml.
 
-    These limits (title/description lengths and the minimum body word count) are
-    the single source of truth shared by the SEO stage (``pipeline/seo.py``),
-    these publish gates and ``checks/check-articles.mjs``. Missing keys fall back
-    to :data:`DEFAULT_CONTENT_LIMITS`.
+    These limits (title/description lengths, the minimum body word count and the
+    minimum source count) are the single source of truth shared by the scoring
+    stage (``pipeline/score.py``), the SEO stage (``pipeline/seo.py``), these
+    publish gates and ``checks/check-articles.mjs``. Missing keys fall back to
+    :data:`DEFAULT_CONTENT_LIMITS`.
     """
     path = Path(path) if path else DEFAULT_CONFIG_PATH
     try:
@@ -214,7 +216,7 @@ def load_gates_config(path: str | Path | None = None) -> dict:
         "min_description": limits["min_description"],
         "max_description": limits["max_description"],
         "min_words": limits["min_words"],
-        "min_sources": int(section.get("min_sources", DEFAULT_GATES["min_sources"])),
+        "min_sources": limits["min_sources"],
         "banned_phrases": [str(p).lower() for p in section.get("banned_phrases") or []],
     }
     config.update(load_content_rules(path))

@@ -282,13 +282,27 @@ content_limits:
   # Minimum body word count. NOTE: docs/PLAN.md section 9 still says 300 words;
   # the owner lowered the gate to 200 in this task, so the value here is 200.
   min_words: 200
+  # Minimum number of distinct source URLs a story must have to be eligible
+  # (score stage) and to be publishable (gates). A cluster with fewer is never
+  # gathered or sent to a model, and a facts sheet with fewer contributing
+  # sources can never reach the writer. Shared with the publish gates.
+  min_sources: 2
+
+# Writer readiness (pipeline/run.py). After the facts stage, a candidate is
+# sent to the writer only when its sheet has at least content_limits.min_sources
+# contributing sources and at least min_claims usable claims (kinds
+# confirmed/reported/estimate/statement; rumors and opinions never count). A
+# sheet that is short or thin is recorded like an unconfirmed story and the
+# next candidate is tried, so a model is never asked to write from too little.
+readiness:
+  min_claims: 6
 
 # Publish gates (pipeline/gates.py; PLAN.md section 9). Every value is code,
 # never a model. `overlap` is the n-gram text-overlap check against the source
-# texts gathered in data/gathered/<cluster-id>.json. Title/description lengths
-# and the minimum word count live under `content_limits` above.
+# texts gathered in data/gathered/<cluster-id>.json. Title/description lengths,
+# the minimum word count and the minimum source count live under
+# `content_limits` above.
 gates:
-  min_sources: 2
   overlap:
     ngram: 8
     max_ratio: 0.2
@@ -416,8 +430,6 @@ score:
     - released
     - revealed
     - officially
-    - pre-order
-    - preorders
     - update
     - patch
   exclude_title_patterns:
@@ -446,6 +458,19 @@ score:
     - '\bdiscount code\b'
     - '\bon geforce now\b'
     - '\bplayers'' choice\b'
+    # In-game item promotions: pre-order bonuses and cosmetic/store items are
+    # never worth a news story, however confirmable the cluster. These are
+    # whole-phrase patterns so a story that merely mentions a bundle or a
+    # blueprint in passing is only excluded when the phrase is in the headline.
+    - '\bpre-order bonus\b'
+    - '\bpre-order bonuses\b'
+    - '\bblueprint\b'
+    - '\bbundle\b'
+    - '\bbattle pass\b'
+    - '\btwitch drops\b'
+    - '\boperator skin\b'
+    - '\bweapon skin\b'
+    - '\bcall of duty: mobile\b'
   weights:
     tier1: 40
     tier2: 15

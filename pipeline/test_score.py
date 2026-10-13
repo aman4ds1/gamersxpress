@@ -16,6 +16,28 @@ def cluster(title, *, tiers=(1,), owners=("a",), age_hours=2.0, entities=(), ite
     }
 
 
+def two_source_cluster(title, *, tiers=(1,), owners=("a",), age_hours=2.0, entities=(),
+                       source_names=(), second_owner=None):
+    """A cluster with two distinct source URLs, the ``content_limits.min_sources``
+    minimum. ``owners`` is left exactly as passed and the second URL usually shares
+    the first owner, so scoring and confirmability stay as the test intended and
+    only the distinct source count changes (which is now required for eligibility).
+    """
+    names = list(source_names)
+    first_name = names[0] if names else "Outlet A"
+    second_name = names[1] if len(names) > 1 else first_name
+    first_owner = owners[0] if owners else "a"
+    if second_owner is None:
+        second_owner = owners[1] if len(owners) > 1 else first_owner
+    items = [
+        {"source_name": first_name, "link": "https://a.example/1", "owner": first_owner},
+        {"source_name": second_name, "link": "https://b.example/1", "owner": second_owner},
+    ]
+    return cluster(
+        title, tiers=tiers, owners=owners, age_hours=age_hours, entities=entities, items=items,
+    )
+
+
 def test_guess_category_by_keyword_and_entity():
     assert score.guess_category({"title": "PS5 Pro restock", "entities": []}) == "playstation"
     assert score.guess_category({"title": "Something", "entities": ["Nvidia"]}) == "hardware"
@@ -42,7 +64,7 @@ def test_pick_returns_none_below_min_score():
 
 def test_pick_returns_top_cluster_with_category_and_score():
     clusters = [
-        cluster("Nvidia announces RTX 5090", tiers=(1,), owners=("a", "b")),
+        two_source_cluster("Nvidia announces RTX 5090", tiers=(1,), owners=("a", "b")),
         cluster("Sony quarterly results", tiers=(3,), owners=("c",), age_hours=90),
     ]
     chosen = score.pick(clusters, min_score=50)
@@ -65,7 +87,8 @@ EXCLUDE_PATTERNS = ["podcast", "walkthrough", "deal", "savings", "how to"]
 
 
 def test_playstation_podcast_headline_is_excluded():
-    c = cluster("Official PlayStation Podcast Episode 550: Now This is Podcasting", tiers=(1,), owners=("sony",))
+    c = two_source_cluster("Official PlayStation Podcast Episode 550: Now This is Podcasting",
+                           tiers=(1,), owners=("sony",))
     ranked = score.rank([c], exclude_patterns=EXCLUDE_PATTERNS)
     assert ranked[0]["confirmable"] is True
     assert ranked[0]["excluded_by"] == "podcast"
@@ -91,22 +114,34 @@ def test_single_tier2_source_is_not_confirmable():
     assert score.ineligible_reason(c, EXCLUDE_PATTERNS) == "not confirmable"
 
 
-def test_single_tier1_source_is_eligible():
-    c = cluster("Nvidia announces RTX 5090", tiers=(1,), owners=("a",))
+def test_single_tier1_source_is_not_eligible():
+    # A lone tier-1 announcement is confirmable but no longer coverable: content
+    # limits need at least two distinct source URLs before a story is gathered.
+    c = cluster("Nvidia announces RTX 5090", tiers=(1,), owners=("a",),
+                items=[{"link": "https://a.example/1"}])
     assert cluster_mod.confirmable(c) is True
-    assert score.ineligible_reason(c, EXCLUDE_PATTERNS) is None
-    assert score.rank([c], exclude_patterns=EXCLUDE_PATTERNS)[0]["eligible"] is True
+    assert score.source_count(c) == 1
+    assert score.ineligible_reason(c, EXCLUDE_PATTERNS) == "too few sources"
+    assert score.rank([c], exclude_patterns=EXCLUDE_PATTERNS)[0]["eligible"] is False
+
+
+def test_one_source_cluster_is_never_eligible():
+    c = cluster("Nvidia announces RTX 5090", tiers=(1,), owners=("a", "b"),
+                items=[{"link": "https://a.example/1"}])
+    assert score.source_count(c) == 1
+    assert score.ineligible_reason(c) == "too few sources"
+    assert score.rank([c])[0]["eligible"] is False
 
 
 def test_two_tier2_sources_from_different_owners_are_eligible():
-    c = cluster("Xbox and PlayStation US sales sink", tiers=(2,), owners=("a", "b"))
+    c = two_source_cluster("Xbox and PlayStation US sales sink", tiers=(2,), owners=("a", "b"))
     assert cluster_mod.confirmable(c) is True
     assert score.ineligible_reason(c, EXCLUDE_PATTERNS) is None
     assert score.rank([c], exclude_patterns=EXCLUDE_PATTERNS)[0]["eligible"] is True
 
 
 def test_tier1_cluster_with_excluded_pattern_is_excluded():
-    c = cluster("GIGABYTE deals and savings roundup", tiers=(1,), owners=("a", "b"))
+    c = two_source_cluster("GIGABYTE deals and savings roundup", tiers=(1,), owners=("a", "b"))
     ranked = score.rank([c], exclude_patterns=EXCLUDE_PATTERNS)
     assert ranked[0]["confirmable"] is True
     assert ranked[0]["excluded_by"] == "deal"
@@ -118,7 +153,7 @@ def test_tier1_cluster_with_excluded_pattern_is_excluded():
 
 
 def test_licensing_deal_is_not_excluded():
-    c = cluster("Microsoft's Xbox licensing deal with Sony", tiers=(1,), owners=("a",))
+    c = two_source_cluster("Microsoft's Xbox licensing deal with Sony", tiers=(1,), owners=("a",))
     ranked = score.rank([c])
     assert ranked[0]["confirmable"] is True
     assert ranked[0]["eligible"] is True
@@ -127,7 +162,7 @@ def test_licensing_deal_is_not_excluded():
 def test_plural_licensing_deals_is_not_excluded():
     # The bare "\bdeals\b" pattern used to catch this; only exact promo phrases
     # like "best deals" are excluded now, so a licensing story is not filtered.
-    c = cluster("Sony and Microsoft sign new licensing deals",
+    c = two_source_cluster("Sony and Microsoft sign new licensing deals",
                 tiers=(1,), owners=("a",), source_names=("Eurogamer",))
     ranked = score.rank([c])
     assert ranked[0]["confirmable"] is True
@@ -174,7 +209,7 @@ def test_up_to_percent_off_is_excluded():
 
 
 def test_weekly_active_users_is_not_excluded():
-    c = cluster("Steam weekly active users hit a record", tiers=(1,), owners=("a",))
+    c = two_source_cluster("Steam weekly active users hit a record", tiers=(1,), owners=("a",))
     ranked = score.rank([c])
     assert ranked[0]["confirmable"] is True
     assert ranked[0]["excluded_by"] is None
@@ -182,7 +217,7 @@ def test_weekly_active_users_is_not_excluded():
 
 
 def test_acquisition_deal_is_not_excluded():
-    c = cluster("Sega buys game studio in $200M deal", tiers=(1,), owners=("a",))
+    c = two_source_cluster("Sega buys game studio in $200M deal", tiers=(1,), owners=("a",))
     ranked = score.rank([c])
     assert ranked[0]["confirmable"] is True
     assert ranked[0]["excluded_by"] is None
@@ -193,7 +228,7 @@ def test_acquisition_deal_is_not_excluded():
 
 
 def test_free_weekend_is_no_longer_excluded():
-    c = cluster("Arc Raiders free weekend on Steam", tiers=(1,), owners=("a",))
+    c = two_source_cluster("Arc Raiders free weekend on Steam", tiers=(1,), owners=("a",))
     ranked = score.rank([c])
     assert ranked[0]["excluded_by"] is None
     assert ranked[0]["eligible"] is True
@@ -232,7 +267,7 @@ def test_conference_call_is_excluded():
 
 
 def test_xbox_wire_dmz_headline_is_on_topic():
-    c = cluster(
+    c = two_source_cluster(
         "DMZ — 5 Features to Get Excited for in Call of Duty: Modern Warfare 4's New Mode",
         source_names=("Xbox Wire",),
     )
@@ -243,7 +278,7 @@ def test_xbox_wire_dmz_headline_is_on_topic():
 
 
 def test_nvidia_blog_telecom_ai_is_off_topic():
-    c = cluster(
+    c = two_source_cluster(
         "Why Telecom Operators Are Building Their AI Strategy on Open Models",
         source_names=("NVIDIA Blog",),
     )
@@ -261,7 +296,7 @@ def test_amd_newsroom_award_is_off_topic():
 
 
 def test_gaming_source_without_keyword_is_on_topic():
-    c = cluster("Everything you need to know", source_names=("Eurogamer",))
+    c = two_source_cluster("Everything you need to know", source_names=("Eurogamer",))
     ranked = score.rank([c])
     assert ranked[0]["relevant"] is True
     assert ranked[0]["eligible"] is True
@@ -269,7 +304,7 @@ def test_gaming_source_without_keyword_is_on_topic():
 
 
 def test_same_headline_from_mixed_source_is_off_topic():
-    c = cluster("Everything you need to know", source_names=("Tom's Hardware",))
+    c = two_source_cluster("Everything you need to know", source_names=("Tom's Hardware",))
     ranked = score.rank([c])
     assert ranked[0]["relevant"] is False
     assert ranked[0]["eligible"] is False
@@ -284,13 +319,13 @@ def test_telecom_ai_headline_is_off_topic_without_gaming_source():
 
 
 def test_graphics_card_phrase_is_a_relevance_keyword():
-    c = cluster("Nvidia confirms next graphics card launch window")
+    c = two_source_cluster("Nvidia confirms next graphics card launch window")
     assert score.relevant_cluster(c) is True
     assert score.rank([c])[0]["eligible"] is True
 
 
 def test_pull_up_to_7_eleven_in_forza_is_not_eligible():
-    c = cluster("Pull Up to 7-Eleven in Forza Horizon 6")
+    c = two_source_cluster("Pull Up to 7-Eleven in Forza Horizon 6")
     ranked = score.rank([c])
     assert ranked[0]["eligible"] is False
     assert score.ineligible_reason(c) == "off-topic"
@@ -307,9 +342,9 @@ def test_news_signal_adds_the_full_bonus():
 
 
 def test_news_signal_pushes_single_stale_source_over_threshold():
-    quiet = cluster("Warhammer Survivors quietly updates its roadmap",
+    quiet = two_source_cluster("Warhammer Survivors quietly updates its roadmap",
                     source_names=("Eurogamer",), age_hours=50)
-    launch = cluster("Warhammer Survivors launches November 10, new characters revealed",
+    launch = two_source_cluster("Warhammer Survivors launches November 10, new characters revealed",
                      source_names=("Eurogamer",), age_hours=50)
     assert score.score_cluster(quiet) == 60
     assert score.score_cluster(launch) == 70
@@ -318,7 +353,7 @@ def test_news_signal_pushes_single_stale_source_over_threshold():
 
 
 def test_warhammer_launch_is_eligible_with_news_bonus():
-    c = cluster("Warhammer Survivors launches November 10, new characters revealed",
+    c = two_source_cluster("Warhammer Survivors launches November 10, new characters revealed",
                 source_names=("Eurogamer",))
     ranked = score.rank([c])
     assert ranked[0]["eligible"] is True
@@ -352,7 +387,7 @@ def test_several_signals_add_the_bonus_once():
 
 
 def test_monster_hunter_heading_to_xbox_november_is_eligible():
-    c = cluster(
+    c = two_source_cluster(
         "Monster Hunter Stories 3: Twisted Reflection Heading to XBOX on PC November 18",
         tiers=(1,), owners=("a",), age_hours=50,
     )
@@ -363,7 +398,7 @@ def test_monster_hunter_heading_to_xbox_november_is_eligible():
 
 
 def test_critical_role_joins_launching_january_is_eligible():
-    c = cluster(
+    c = two_source_cluster(
         "Critical Role joins Rockbeasts, launching January 2027",
         tiers=(1,), owners=("a",), age_hours=50, source_names=("Eurogamer",),
     )
@@ -374,7 +409,7 @@ def test_critical_role_joins_launching_january_is_eligible():
 
 
 def test_coming_to_xbox_game_pass_is_still_excluded():
-    c = cluster("Coming to XBOX Game Pass: Battlefield 6, Valor Mortis, Forever Ago, and More",
+    c = two_source_cluster("Coming to XBOX Game Pass: Battlefield 6, Valor Mortis, Forever Ago, and More",
                 tiers=(1,), owners=("a",))
     ranked = score.rank([c])
     assert ranked[0]["excluded_by"] is not None
@@ -386,7 +421,7 @@ def test_coming_to_xbox_game_pass_is_still_excluded():
 
 
 def test_rally_up_on_geforce_now_is_excluded():
-    c = cluster("Rally Up: 'Gears of War: E-Day' Launches on GeForce NOW",
+    c = two_source_cluster("Rally Up: 'Gears of War: E-Day' Launches on GeForce NOW",
                 tiers=(1,), owners=("nvidia",))
     ranked = score.rank([c])
     assert ranked[0]["excluded_by"] is not None
@@ -396,7 +431,7 @@ def test_rally_up_on_geforce_now_is_excluded():
 
 
 def test_players_choice_is_excluded():
-    c = cluster("Players' Choice: Vote for September's best new game",
+    c = two_source_cluster("Players' Choice: Vote for September's best new game",
                 tiers=(1,), owners=("a",))
     ranked = score.rank([c])
     assert ranked[0]["excluded_by"] is not None
@@ -409,7 +444,7 @@ def test_players_choice_is_excluded():
 
 
 def test_two_owner_cluster_at_corroborated_threshold_is_picked():
-    c = cluster("A quiet story reported by two outlets",
+    c = two_source_cluster("A quiet story reported by two outlets",
                 tiers=(2,), owners=("a", "b"), age_hours=48, source_names=("Eurogamer",))
     assert score.score_cluster(c) == 55
     assert score.min_score_for(c) == 55
@@ -418,11 +453,36 @@ def test_two_owner_cluster_at_corroborated_threshold_is_picked():
     assert score.pick([c]) is not None
 
 
-def test_single_source_cluster_below_min_score_is_not_picked():
-    c = cluster("A quiet story from one outlet",
+def test_single_owner_cluster_below_min_score_is_not_picked():
+    c = two_source_cluster("A quiet story from one outlet",
                 tiers=(1,), owners=("a",), age_hours=50, source_names=("Eurogamer",))
     assert score.score_cluster(c) == 60
     assert score.min_score_for(c) == 65
     ranked = score.rank([c])
     assert ranked[0]["eligible"] is True
     assert score.pick([c]) is None
+
+
+# --- item-promo exclusions: the exact headline that got published by mistake --
+
+
+def test_shattered_relay_preorder_blueprint_headline_is_excluded():
+    c = two_source_cluster(
+        "Get the Shattered Relay Weapon Blueprint in Call of Duty: Mobile as a "
+        "Call of Duty: Modern Warfare 4 Pre-order Bonus",
+        source_names=("Xbox Wire",),
+    )
+    assert score.source_count(c) == 2
+    ranked = score.rank([c])
+    assert ranked[0]["eligible"] is False
+    assert ranked[0]["excluded_by"] is not None
+    assert score.ineligible_reason(c).startswith("excluded pattern")
+
+
+def test_marvel_tokon_dlc_roster_is_still_eligible():
+    c = two_source_cluster(
+        "Marvel Tōkon: Fighting Souls reveals Year 1 DLC roster",
+        source_names=("Eurogamer",),
+    )
+    assert score.ineligible_reason(c) is None
+    assert score.rank([c])[0]["eligible"] is True
