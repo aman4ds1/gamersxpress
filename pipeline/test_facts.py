@@ -214,6 +214,91 @@ def test_resolve_claim_origins_checks_text_across_url_variants(caplog):
     assert any("not named in the source text" in record.message for record in caplog.records)
 
 
+def test_product_name_is_not_an_origin(caplog):
+    caplog.set_level(logging.WARNING)
+    text = "Marvel Tōkon: Fighting Souls reveals its Year 1 DLC roster."
+    src = source(link="https://e.example/tokon", name="Eurogamer", text=text)
+    entities = ["Marvel Tōkon: Fighting Souls", "Phoenix Cyclops"]
+    claims = [
+        claim(
+            claim="Roster revealed",
+            value="Year 1 DLC roster",
+            origin="Marvel Tōkon: Fighting Souls",
+            source_url="https://e.example/tokon",
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src], entities=entities)
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+    assert any("product or title" in record.message for record in caplog.records)
+
+
+def test_origin_containing_a_product_title_is_downgraded():
+    text = "The Marvel Tōkon: Fighting Souls game reveals its Year 1 DLC roster."
+    src = source(link="https://e.example/tokon", name="Eurogamer", text=text)
+    entities = ["Marvel Tōkon: Fighting Souls"]
+    claims = [
+        claim(
+            claim="Roster revealed",
+            value="Year 1 DLC roster",
+            origin="the Marvel Tōkon: Fighting Souls game",
+            source_url="https://e.example/tokon",
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src], entities=entities)
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+
+
+def test_company_origin_is_kept_even_when_a_product_exists():
+    text = "Arc System Works reveals the Marvel Tōkon: Fighting Souls Year 1 DLC."
+    src = source(link="https://e.example/tokon", name="Eurogamer", text=text)
+    entities = ["Marvel Tōkon: Fighting Souls"]
+    claims = [
+        claim(
+            claim="Studio speaks",
+            value="Year 1 DLC",
+            origin="Arc System Works",
+            source_url="https://e.example/tokon",
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src], entities=entities)
+    assert resolved[0]["origin"] == "arc system works"
+
+
+def test_a_company_and_its_own_game_are_not_two_independent_origins():
+    sources = [
+        source(
+            link="https://a.example/1",
+            name="Alpha",
+            text="Arc System Works reveals the Year 1 DLC roster.",
+        ),
+        source(
+            link="https://b.example/2",
+            name="Beta",
+            owner="co-b",
+            text="Marvel Tōkon: Fighting Souls reveals its Year 1 DLC roster.",
+        ),
+    ]
+    entities = ["Marvel Tōkon: Fighting Souls"]
+    claims = [
+        claim(
+            claim="Year 1 DLC revealed",
+            value="Year 1 DLC",
+            origin="Arc System Works",
+            source_url="https://a.example/1",
+        ),
+        claim(
+            claim="Year 1 DLC revealed",
+            value="Year 1 DLC",
+            origin="Marvel Tōkon: Fighting Souls",
+            source_url="https://b.example/2",
+        ),
+    ]
+    resolved = facts.resolve_claim_origins(claims, sources, entities=entities)
+    result = facts.confirmation_from_sources(sources, claims=resolved)
+    assert result["origins"] == ["arc system works"]
+    assert result["confirmed"] is False
+
+
 
 # --- schema validation -------------------------------------------------------
 
@@ -1287,6 +1372,48 @@ def test_grounding_still_drops_a_number_in_neither_body_nor_anchor():
     reason = facts.grounding_failure(claim_, body, anchor=dt.date(2026, 10, 7))
     assert reason is not None
     assert "368000" in reason
+
+
+def test_grounding_reads_an_iso_date_as_the_same_calendar_date():
+    body = "Phoenix Cyclops arrives on November 2."
+    claim_ = claim(
+        claim="Release date",
+        value="Phoenix Cyclops arrives on 2026-11-02",
+        source_url="https://a.example/1",
+    )
+    assert facts.grounding_failure(claim_, body) is None
+
+
+def test_grounding_reads_an_ordinal_date_as_the_same_calendar_date():
+    body = "Phoenix Cyclops arrives on November 2."
+    claim_ = claim(
+        claim="Release date",
+        value="Phoenix Cyclops arrives on 2nd November",
+        source_url="https://a.example/1",
+    )
+    assert facts.grounding_failure(claim_, body) is None
+
+
+def test_grounding_drops_a_date_on_a_different_day():
+    body = "Phoenix Cyclops arrives on November 2."
+    claim_ = claim(
+        claim="Release date",
+        value="Phoenix Cyclops arrives on November 3",
+        source_url="https://a.example/1",
+    )
+    reason = facts.grounding_failure(claim_, body)
+    assert reason is not None
+    assert "November 3" in reason
+
+
+def test_grounding_accepts_a_date_equal_to_the_feed_anchor():
+    body = "Phoenix Cyclops arrives soon."
+    claim_ = claim(
+        claim="Release date",
+        value="Phoenix Cyclops arrives on October 11, 2026",
+        source_url="https://a.example/1",
+    )
+    assert facts.grounding_failure(claim_, body, anchor=dt.date(2026, 10, 11)) is None
 
 
 TOKON_TITLE = (

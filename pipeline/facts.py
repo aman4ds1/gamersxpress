@@ -245,7 +245,9 @@ SYSTEM_INSTRUCTION = (
     "convert 'today', 'tonight', 'now', 'currently', 'out now', 'this week', "
     "'this weekend', 'yesterday', 'tomorrow', 'recently', 'soon' and 'next week' "
     "to the calendar date the article supports (using its publication date when "
-    "given). A value must not claim more than the article states: keep the exact "
+    "given). Write each date in the form 'November 2, 2026' (month name, day, "
+    "four-digit year), never as '2026-11-02' and never with a zero-padded day. "
+    "A value must not claim more than the article states: keep the exact "
     "figures, names and dates the text gives, and never add words of your own "
     "such as 'full', 'complete', 'all', 'every', 'only' or 'official' unless the "
     "text uses them.\n"
@@ -635,6 +637,120 @@ def _word_in(text: object, phrase: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack) is not None
 
 
+#: Month name (full or abbreviated) -> calendar month number, for parsing
+#: dates written as words.
+_MONTH_NUMBERS = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+_MONTH_WORD = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)"
+)
+_ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?!\d)")
+_MONTH_FIRST_DATE_RE = re.compile(
+    rf"\b(?P<month>{_MONTH_WORD})\.?\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?"
+    rf"(?:\s*,?\s*(?P<year>\d{{4}}))?(?!\d)",
+    re.IGNORECASE,
+)
+_DAY_FIRST_DATE_RE = re.compile(
+    rf"\b(?P<day>\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<month>{_MONTH_WORD})\.?"
+    rf"(?:\s*,?\s*(?P<year>\d{{4}}))?(?!\d)",
+    re.IGNORECASE,
+)
+
+#: A calendar date normalized to ``(year or None, month, day)``.
+DateTuple = tuple[Optional[int], int, int]
+
+
+def _date_matches(text: object) -> list[tuple[DateTuple, set[str]]]:
+    """Every date in ``text`` as ``((year|None, month, day), digits-used)``."""
+    raw = str(text or "")
+    found: list[tuple[DateTuple, set[str]]] = []
+    for match in _ISO_DATE_RE.finditer(raw):
+        year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            found.append(((year, month, day), {match.group(1), match.group(2), match.group(3)}))
+    for pattern in (_MONTH_FIRST_DATE_RE, _DAY_FIRST_DATE_RE):
+        for match in pattern.finditer(raw):
+            month = _MONTH_NUMBERS.get(match.group("month").lower())
+            if month is None:
+                continue
+            day = int(match.group("day"))
+            if not 1 <= day <= 31:
+                continue
+            year = int(match.group("year")) if match.group("year") else None
+            digits = {match.group("day")}
+            if match.group("year"):
+                digits.add(match.group("year"))
+            found.append(((year, month, day), digits))
+    return found
+
+
+def _dates_in(text: object) -> set[DateTuple]:
+    """Calendar dates in ``text``, in ISO, "November 2" or "2nd November" form."""
+    return {date for date, _digits in _date_matches(text)}
+
+
+def _date_number_tokens(text: object) -> set[str]:
+    """Digit tokens that make up a date in ``text`` (so they are not read as figures)."""
+    tokens: set[str] = set()
+    for _date, digits in _date_matches(text):
+        tokens |= digits
+    return tokens
+
+
+def _format_date(date: DateTuple) -> str:
+    """Render a normalized date the way the pipeline writes dates."""
+    year, month, day = date
+    text = f"{_MONTH_NAMES[month]} {day}"
+    return f"{text}, {year}" if year is not None else text
+
+
+def _date_grounded(
+    date: DateTuple,
+    source_dates: set[DateTuple],
+    anchor: Optional[dt.date],
+) -> bool:
+    """True when a value's date appears in the source, or is the anchor date.
+
+    A date matches on month and day; a year given in the value must match too,
+    but a source or anchor without a year still grounds the month and day
+    ("2026-11-02" is grounded by a body that says only "November 2").
+    """
+    year, month, day = date
+    for source_year, source_month, source_day in source_dates:
+        if source_month == month and source_day == day:
+            if year is None or source_year is None or source_year == year:
+                return True
+    if anchor is not None and anchor.month == month and anchor.day == day:
+        if year is None or anchor.year == year:
+            return True
+    return False
+
+
+def _value_month_words(dates: set[DateTuple]) -> set[str]:
+    """Month words (full and abbreviated) used by a value's dates, folded."""
+    words: set[str] = set()
+    for _year, month, _day in dates:
+        name = _MONTH_NAMES[month].lower()
+        words.add(name)
+        words.add(name[:3])
+    return words
+
+
 def _anchor_tokens(anchor: Optional[dt.date]) -> tuple[set[str], set[str]]:
     """The figures and month names an anchor publication date grounds.
 
@@ -679,16 +795,30 @@ def grounding_failure(
     to any component of it (year, month, day, in any common format, the month's
     name and abbreviation included) count as grounded too, because such tokens
     come from the feed/URL date rather than the article body.
+
+    Dates are compared as calendar dates, not digit strings, so a value written
+    as "2026-11-02" is grounded by a body that says "November 2", and a value's
+    date is grounded when it matches the source's month and day or the anchor
+    date. The digits a date is made of are not treated as loose figures.
     """
     value = str(claim.get("value") or "")
     label = str(claim.get("claim") or "")
     source = str(source_text or "")
     anchor_figures, anchor_terms = _anchor_tokens(anchor)
-    missing_numbers = _numbers_in(value) - _numbers_in(source) - anchor_figures
+    value_dates = _dates_in(value)
+    date_tokens = _date_number_tokens(value)
+    missing_numbers = (
+        _numbers_in(value) - _numbers_in(source) - anchor_figures - date_tokens
+    )
     if missing_numbers:
         return f"value states {sorted(missing_numbers)} the source never gives"
+    source_dates = _dates_in(source)
+    month_words = _value_month_words(value_dates)
+    for date in sorted(value_dates, key=lambda item: -1 if item[0] is None else item[0]):
+        if not _date_grounded(date, source_dates, anchor):
+            return f"value states the date {_format_date(date)} the source never gives"
     for term in _capitalized_terms(value):
-        if term in anchor_terms:
+        if term in anchor_terms or term in month_words:
             continue
         if not _word_in(source, term):
             return f"value names {term!r} the source never gives"
@@ -885,6 +1015,27 @@ def _origin_in_text(origin: object, text: str, aliases: dict[str, str]) -> bool:
     return any(_contains_name(haystack, name) for name in _origin_names(origin, aliases))
 
 
+def _is_product_origin(value: object, entities: list[str] | None) -> bool:
+    """True when ``value`` is, or contains, a canonical entity of the story.
+
+    Canonical entities are what a story is about -- game titles, characters,
+    platforms -- so they name the subject, not a speaker. An origin equal to or
+    containing one ("the Hollow Knight: Silksong game") is not an origin and is
+    downgraded. The check is one-way: it does not reject a name that is merely
+    part of an entity ("Nintendo" against the entity "Nintendo Switch 2"), and a
+    company that makes the product is kept when the byline or affiliation names
+    it (the caller passes that exception in).
+    """
+    key = _origin_key(value)
+    if not key:
+        return False
+    for entity in entities or []:
+        entity_key = _origin_key(entity)
+        if entity_key and (key == entity_key or _contains_name(key, entity_key)):
+            return True
+    return False
+
+
 def _source_url_key(url: object) -> str:
     """Match key for a source URL: scheme/host lowercased, ``www.`` and fragment
     dropped, trailing slash ignored.
@@ -912,15 +1063,20 @@ def resolve_claim_origins(
     *,
     aliases: dict[str, str] | None = None,
     story_id: str = "",
+    entities: list[str] | None = None,
 ) -> list[dict]:
     """Canonicalize each claim's origin and drop any its source never names.
 
     Each ``;``-separated origin token is canonicalized, then checked against the
     text of the claim's own source. A token the text does not mention is removed
     and the downgrade is logged; when no token survives, the origin becomes
-    :data:`UNSTATED_ORIGIN`. The claim's ``affiliation`` (the organization a
-    person speaks for) is canonicalized the same way and dropped when its own
-    source text never names it. No other claim field is touched.
+    :data:`UNSTATED_ORIGIN`. A token that is a canonical entity of the story
+    (``entities``: a game, character or platform) is a subject, not a speaker,
+    and is downgraded the same way -- unless the byline or the claim's
+    affiliation names it, which marks it as the company that makes the product.
+    The claim's ``affiliation`` (the organization a person speaks for) is
+    canonicalized the same way and dropped when its own source text never names
+    it. No other claim field is touched.
     """
     aliases = load_origin_aliases() if aliases is None else aliases
     by_url = _sources_by_url(sources)
@@ -929,10 +1085,27 @@ def resolve_claim_origins(
         source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
         text = str(source.get("text") or "")
         byline_name, byline_org = _extract_byline(text)
+        byline_org_key = _origin_key(byline_org)
+        speaker_org_keys = {
+            key
+            for key in (byline_org_key, _origin_key(claim.get("affiliation")))
+            if key
+        }
         kept: list[str] = []
         for token in str(claim.get("origin") or "").split(";"):
             token = token.strip()
-            if not token or _origin_key(token) == UNSTATED_ORIGIN:
+            token_key = _origin_key(token)
+            if not token_key or token_key == UNSTATED_ORIGIN:
+                continue
+            if _is_product_origin(token, entities) and token_key not in speaker_org_keys:
+                logger.warning(
+                    "story %s: origin %r is a product or title, not a speaker, for "
+                    "%s; downgrading to %s",
+                    story_id or "?",
+                    token,
+                    claim.get("source_url"),
+                    UNSTATED_ORIGIN,
+                )
                 continue
             if _origin_in_text(token, text, aliases):
                 canonical = canonicalize_origin(token, aliases)
@@ -957,6 +1130,13 @@ def resolve_claim_origins(
             # The extractor named the publishing outlet, not the speaker's
             # organization; the byline's own organization is the real one.
             affiliation = byline_org
+        if (
+            affiliation
+            and _is_product_origin(affiliation, entities)
+            and _origin_key(affiliation) != byline_org_key
+        ):
+            # A game title can never be the organization a person speaks for.
+            affiliation = ""
         if affiliation and _origin_in_text(affiliation, text, aliases):
             canonical_affiliation = canonicalize_origin(affiliation, aliases)
             if canonical_affiliation == UNSTATED_ORIGIN:
@@ -1850,17 +2030,22 @@ def facts(
     # publication date; a relative claim with no date to convert from is dropped.
     kept = _absolutize_claims(kept, sources, story_id=name)[0]
 
-    # Origins are canonicalized and verified against each claim's own source
-    # text before anything is counted or stored.
-    kept = resolve_claim_origins(kept, sources, aliases=aliases, story_id=name)
-
     # One canonical entity per concept, for SEO and hub pages; the flat
     # primary-entity set is the matching surface used by the coherence check.
+    # Computed before origins so a game or character named as an origin is
+    # recognized as the story's subject, not a speaker.
     canonical = canonical_entities(
         title=title,
         source_titles=[str(source.get("title") or "") for source in sources],
         entities=entities,
     )
+
+    # Origins are canonicalized and verified against each claim's own source
+    # text before anything is counted or stored; a product/title is not an origin.
+    kept = resolve_claim_origins(
+        kept, sources, aliases=aliases, story_id=name, entities=canonical
+    )
+
     tier1_present = any(int(source.get("tier") or 0) == 1 for source in sources)
 
     # Same facts merge (by shared claim text, or by a shared date/figure plus
