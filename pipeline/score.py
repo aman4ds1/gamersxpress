@@ -100,6 +100,14 @@ DEFAULT_EXCLUDE_TITLE_PATTERNS = [
     r"\boperator skin\b",
     r"\bweapon skin\b",
     r"\bcall of duty: mobile\b",
+    # Affiliate/listicle headlines: "one of these 12 ...", "you'll be needing",
+    # gift/buying guides and "best ... upgrades|accessories|deals" roundups are
+    # never original news, however confirmable the cluster they join.
+    r"\bone of these \d+\b",
+    r"\byou['\u2019]ll be needing\b",
+    r"\bgift guide\b",
+    r"\bbuying guide\b",
+    r"\bbest .{0,40}(?:upgrades|accessories|deals)\b",
 ]
 
 #: News-signal words a seed headline may carry. A match earns

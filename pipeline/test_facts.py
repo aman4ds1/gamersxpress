@@ -1626,3 +1626,154 @@ def test_confirmed_sheet_includes_grounding_block(tmp_path):
     assert result["grounding"] == []
     written = json.loads((tmp_path / "story-1.json").read_text(encoding="utf-8"))
     assert "grounding" in written
+
+# --- attribution-linked origins (conflation guard) ---------------------------
+
+
+GTA6_CONFLATION_TEXT = (
+    "Per Twitch CEO Dan Clancy, the new version of GTA Online is lined up for a "
+    "2027 release. GamesBeat has confirmed that Rockstar plans a PC release of "
+    "GTA 6 in the first quarter of 2027, according to four industry sources."
+)
+
+
+def test_origin_attributed_by_another_sentence_is_kept():
+    src = source(link="https://gb.example/gta6", name="GamesBeat", tier=2, text=GTA6_CONFLATION_TEXT)
+    claims = [
+        claim(
+            claim="GTA 6 is coming to PC in Q1 2027",
+            value="PC release",
+            kind="reported",
+            origin="dan clancy; gamesbeat",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == "gamesbeat", "only the attributed origin survives"
+
+
+def test_origin_named_but_not_attributed_is_downgraded(caplog):
+    caplog.set_level(logging.WARNING)
+    src = source(link="https://gb.example/gta6", name="GamesBeat", tier=2, text=GTA6_CONFLATION_TEXT)
+    claims = [
+        claim(
+            claim="GTA 6 is coming to PC in Q1 2027",
+            value="PC release",
+            kind="reported",
+            origin="dan clancy",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+    assert any("not attributed" in record.message for record in caplog.records)
+
+
+def test_each_origin_token_is_verified_separately(caplog):
+    caplog.set_level(logging.WARNING)
+    src = source(link="https://gb.example/gta6", name="GamesBeat", tier=2, text=GTA6_CONFLATION_TEXT)
+    claims = [
+        claim(
+            claim="GTA 6 is coming to PC in Q1 2027",
+            value="PC release",
+            kind="reported",
+            origin="alpha; beta",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+    assert sum("not named in the source text" in record.message for record in caplog.records) == 2
+
+
+def test_first_person_byline_attributes_itself_without_a_verb():
+    src = source(
+        link="https://blog.example/cyclops",
+        name="Studio Blog",
+        tier=1,
+        text=(
+            "Hello everyone! I'm Takeshi Yamanaka, Producer at Arc System Works. "
+            "The narrative team chose the Phoenix version for fresher visuals."
+        ),
+    )
+    claims = [
+        claim(
+            claim="Reason for the Phoenix version",
+            value="fresher visuals",
+            origin="takeshi yamanaka",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == "takeshi yamanaka"
+
+
+# --- coherence with a person in the seed headline ----------------------------
+
+
+ASHA_TITLE = (
+    "Hundreds of layoffs and many cancelled projects later, Xbox CEO Asha Sharma "
+    "reportedly says 'we will not survive' without new IPs"
+)
+
+
+def test_coherence_keeps_a_claim_naming_the_person_in_the_headline():
+    claims = [
+        claim(
+            claim="Asha Sharma tells rattled Xbox employees about invention on new IP",
+            value="new IP",
+            source_url="https://a.example/1",
+        )
+    ]
+    sources = [source(link="https://a.example/1", title="Xbox CEO Asha Sharma addresses employees")]
+    kept, dropped, _ = facts.coherence_check(claims, sources, title=ASHA_TITLE)
+    assert len(kept) == 1
+    assert dropped == []
+
+
+def test_coherence_drops_a_claim_about_an_unrelated_game():
+    claims = [
+        claim(
+            claim="Mario Kart is getting a new cup",
+            value="Mario Kart",
+            source_url="https://b.example/2",
+        )
+    ]
+    sources = [source(link="https://b.example/2", name="Beta", title="Sonic Racing adds tracks")]
+    kept, dropped, _ = facts.coherence_check(claims, sources, title=ASHA_TITLE)
+    assert kept == []
+    assert len(dropped) == 1
+
+
+# --- unconfirmed sheets keep the full diagnostics ----------------------------
+
+
+def test_unconfirmed_sheet_records_coherence_grounding_and_reason(tmp_path):
+    data = gathered(
+        sources=[
+            source(
+                link="https://a.example/1",
+                name="Alpha",
+                tier=2,
+                title="Xbox CEO Asha Sharma addresses employees",
+                text="Xbox CEO Asha Sharma said the company needs new IP.",
+            )
+        ]
+    )
+    generate = make_generate({"claims": [claim(kind="reported", origin="unstated")]})
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            data,
+            id="story-1",
+            title=ASHA_TITLE,
+            output_dir=tmp_path,
+            now=NOW,
+            generate=generate,
+        )
+    written = json.loads((tmp_path / "unconfirmed" / "story-1.json").read_text(encoding="utf-8"))
+    assert written["confirmation_reason"], "the sheet states why it was not confirmed"
+    assert isinstance(written["grounding"], list)
+    coherence = written["coherence"]
+    assert coherence["checked"] is True
+    assert "asha sharma" in coherence["primary_entities"]
+    assert isinstance(coherence["dropped_claims"], list)

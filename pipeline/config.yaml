@@ -471,6 +471,14 @@ score:
     - '\boperator skin\b'
     - '\bweapon skin\b'
     - '\bcall of duty: mobile\b'
+    # Affiliate/listicle headlines: "one of these 12 ...", "you'll be needing",
+    # gift/buying guides and "best ... upgrades|accessories|deals" roundups are
+    # never original news, however confirmable the cluster they join.
+    - '\bone of these \d+\b'
+    - "\\byou['\u2019]ll be needing\\b"
+    - '\bgift guide\b'
+    - '\bbuying guide\b'
+    - '\bbest .{0,40}(?:upgrades|accessories|deals)\b'
   weights:
     tier1: 40
     tier2: 15

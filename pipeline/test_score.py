@@ -614,3 +614,44 @@ def test_pick_candidates_returns_empty_when_nothing_clears_threshold():
     clusters = [cluster("x", tiers=(3,), owners=("a",), age_hours=100)]
     assert score.pick_candidates(clusters, min_score=50) == []
 
+
+
+# --- affiliate / listicle format exclusions ----------------------------------
+
+
+def test_default_exclusions_cover_affiliate_and_listicle_formats():
+    patterns = score.DEFAULT_EXCLUDE_TITLE_PATTERNS
+    excluded = [
+        "one of these 12 cosy winter gaming upgrades",
+        "You'll be needing one of these 12 cosy winter gaming upgrades",
+        "The best gift guide for gamers",
+        "Our buying guide to the top controllers",
+        "best PC upgrades for 2026",
+        "The best gaming accessories under $50",
+        "best Black Friday deals",
+    ]
+    for title in excluded:
+        assert cluster_mod.excluded_title_pattern(title, patterns) is not None, title
+
+
+def test_default_exclusions_do_not_match_real_news_headlines():
+    patterns = score.DEFAULT_EXCLUDE_TITLE_PATTERNS
+    kept = [
+        "Microsoft's licensing deal with Sony",
+        "Best graphics cards for 1440p",
+        "Phoenix Cyclops joins MARVEL T\u014dkon: Fighting Souls on November 2",
+    ]
+    for title in kept:
+        assert cluster_mod.excluded_title_pattern(title, patterns) is None, title
+
+
+def test_affiliate_listicle_headline_is_filtered_out():
+    title = (
+        "Freezing your bots off in Arc Raiders Frozen Trail? You'll be needing "
+        "one of these 12 cosy winter gaming upgrades"
+    )
+    kept = score.filter_excluded_items(
+        [{"title": title, "link": "https://a.example/1"}],
+        score.DEFAULT_EXCLUDE_TITLE_PATTERNS,
+    )
+    assert kept == []

@@ -552,3 +552,46 @@ def test_entities_drop_stop_words_but_keep_real_names():
     items = [{"title": "Phoenix Cyclops joins on November 2"}]
     assert cluster._entities(items) == ["Phoenix Cyclops"]
 
+
+
+# --- seed-headline entity coverage -------------------------------------------
+# A person or company named in the seed headline must survive extraction whole,
+# even when a title word or a possessive sits next to it.
+
+
+def test_seed_headline_entities_include_person_and_company_names():
+    cases = {
+        "GTA 6 Reportedly Coming to PC in Q1 2027": {"gta 6", "pc", "q1 2027"},
+        (
+            "Xbox announces what sounds like a generative AI-focused game-making "
+            "department, Xbox Labs, while avoiding mentioning AI"
+        ): {"xbox", "xbox labs"},
+        (
+            "Hundreds of layoffs and many cancelled projects later, Xbox CEO Asha "
+            "Sharma reportedly says 'we will not survive' without new IPs"
+        ): {"xbox", "asha sharma"},
+        (
+            "'They thought Callisto was a complete failure': Glen Schofield blames "
+            "publishers Krafton for The Callisto Protocol's crash landing"
+        ): {"callisto protocol", "glen schofield", "krafton"},
+    }
+    for title, expected in cases.items():
+        assert expected <= set(cluster.story_entities(title)), title
+
+
+def test_ceo_title_does_not_glue_a_company_to_a_person():
+    entities = set(cluster.story_entities(
+        "Hundreds of layoffs later, Xbox CEO Asha Sharma reportedly says the "
+        "company needs new IPs"
+    ))
+    assert "xbox ceo asha sharma" not in entities
+    assert "xbox" in entities
+    assert "asha sharma" in entities
+
+
+def test_possessive_on_a_product_name_is_stripped_before_storing():
+    entities = set(cluster.story_entities(
+        "Glen Schofield blames Krafton for The Callisto Protocol's crash landing"
+    ))
+    assert "callisto protocol" in entities
+    assert not any("'s" in entity for entity in entities)

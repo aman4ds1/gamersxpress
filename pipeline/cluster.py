@@ -289,6 +289,35 @@ DEFAULT_ENTITIES_PATH = PROJECT_ROOT / "data" / "entities.json"
 _STORY_GLUE_WORDS = frozenset({"of", "the", "a", "an", "vs", "de"})
 #: Words that separate two names in one headline; they end a phrase.
 _STORY_BREAK_WORDS = frozenset({"for", "in", "on", "with", "and"})
+#: Role and title nouns that separate a person from the company they lead or a
+#: product from its maker: a title-cased run "Xbox CEO Asha Sharma" hides both
+#: "Xbox" and "Asha Sharma", so a capitalized role ends the phrase.
+_ROLE_BREAK_WORDS = frozenset({
+    "ceo", "cto", "coo", "cfo", "cio", "cro", "president", "founder",
+    "co-founder", "cofounder", "director", "producer", "executive", "editor",
+    "chairman", "chairwoman", "chair", "chief", "head", "boss", "lead",
+    "manager", "spokesperson", "spokesman", "spokeswoman", "representative",
+    "analyst", "reporter", "journalist", "author", "writer", "general",
+    "owner", "creator", "designer", "developer", "vp", "svp", "evp",
+})
+#: Speech and attribution verbs (and contractions) a title-cased headline may
+#: capitalize inside a run ("You'll", "Says"): they end the phrase so the names
+#: on either side stay separate. Recovery of possessives is handled alongside.
+_VERB_BREAK_WORDS = frozenset({
+    "you'll", "we'll", "it'll", "they'll", "he'll", "she'll", "i'll",
+    "don't", "won't", "can't", "isn't", "aren't", "doesn't", "didn't",
+    "wasn't", "weren't", "hasn't", "haven't", "couldn't", "wouldn't",
+    "shouldn't", "let's", "that's", "there's", "we've", "i've", "you've",
+    "they've", "we're", "you're", "they're",
+    "says", "said", "say", "tells", "tell", "told", "blames", "claims",
+    "claimed", "confirms", "confirmed", "announces", "announced", "reveals",
+    "revealed", "reports", "reported", "warns", "warned", "hopes", "asks",
+    "asked", "wants", "wanted", "plans", "planned", "explains", "explained",
+    "added", "adds", "notes", "noted",
+})
+#: A trailing possessive on a name token is not part of the name: the run
+#: "Callisto Protocol's" is the entity "Callisto Protocol".
+_NAME_POSSESSIVE_RE = re.compile(r"['\u2019]s$", re.IGNORECASE)
 #: Punctuation kept inside a phrase (a subtitle colon); punctuation that ends a
 #: phrase (a list comma, a spaced dash).
 _STORY_INNER_PUNCT = frozenset({":"})
@@ -423,14 +452,15 @@ def _story_phrase_tokens(title: str) -> list[list[str]]:
         elif lower in _STORY_GLUE_WORDS:
             if current:
                 current.append(lower)
-        elif lower in _GENERIC_WORDS:
+        elif lower in _GENERIC_WORDS or lower in _ROLE_BREAK_WORDS or lower in _VERB_BREAK_WORDS:
             if current:
                 phrases.append(current)
                 current = []
         elif _is_name_token(token):
             if token.isdigit() and not current:
                 continue  # numbers never start an entity
-            current.append(token)
+            stripped = _NAME_POSSESSIVE_RE.sub("", token)
+            current.append(stripped or token)
         else:
             if current:
                 phrases.append(current)

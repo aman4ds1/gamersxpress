@@ -1028,6 +1028,85 @@ def _origin_in_text(origin: object, text: str, aliases: dict[str, str]) -> bool:
     return any(_contains_name(haystack, name) for name in _origin_names(origin, aliases))
 
 
+#: Speech and reporting verbs, plus the noun phrases ("according to", "data
+#: from") that attribute a claim to its producer. An origin is only credited
+#: when one of these links it to the claim's own sentence (or a neighbour);
+#: mere mention elsewhere in the article is not an attribution.
+_ATTRIBUTION_VERBS = (
+    "reports?", "reported", "says?", "said", "tells?", "told", "confirms?",
+    "confirmed", "announces?", "announced", "reveals?", "revealed",
+    "estimates?", "estimated", "claims?", "claimed", "suggests?", "suggested",
+    "states?", "stated", "notes?", "noted", "explains?", "explained",
+    "adds?", "added", "writes?", "wrote", "tweets?", "tweeted", "posts?",
+    "posted", "warns?", "warned", "hopes?", "hoped", "calls?", "called",
+    "shows?", "shown", "puts?", "put",
+)
+_ATTRIBUTION_VERB_RE = "|".join(_ATTRIBUTION_VERBS)
+_ATTRIBUTION_LEAD_RE = r"according to|data from|figures from|numbers from|estimates from"
+
+
+def _sentences(text: str) -> list[str]:
+    """Split ``text`` into sentences on end punctuation kept simple."""
+    return [part for part in re.split(r"(?<=[.!?])\s+", str(text or "")) if part.strip()]
+
+
+def _claim_key_terms(claim: dict) -> set[str]:
+    """Stemmed content words of a claim's text and value, for sentence matching."""
+    return _topic_words(claim.get("claim")) | _topic_words(claim.get("value"))
+
+
+def _claim_attribution_text(text: str, claim: dict) -> str:
+    """The sentences of ``text`` that carry the claim's key terms, plus neighbours.
+
+    Attribution must be local to the claim: a speaker named in an unrelated
+    part of a long article does not vouch for this claim. When the claim shares
+    no content word with the text at all (the claim is a paraphrase), every
+    sentence is searched, so a genuine paraphrase is never dropped for lack of a
+    local match.
+    """
+    sentences = _sentences(text)
+    if not sentences:
+        return str(text or "")
+    terms = _claim_key_terms(claim)
+    if not terms:
+        return str(text or "")
+    hits = [index for index, sentence in enumerate(sentences) if _topic_words(sentence) & terms]
+    if not hits:
+        return str(text or "")
+    keep = sorted({j for index in hits for j in (index - 1, index, index + 1) if 0 <= j < len(sentences)})
+    return " ".join(sentences[j] for j in keep)
+
+
+def _origin_attributed(origin: object, text: str, claim: dict, aliases: dict[str, str]) -> bool:
+    """True when an attribution pattern links ``origin`` to the claim's sentence.
+
+    Accepted forms are "according to X", "X said/reports/confirmed/..." (an
+    optional has/have between), and "X data/figures/estimates". A bare mention
+    of the name never counts.
+    """
+    names = _origin_names(origin, aliases)
+    if not names:
+        return False
+    target = cluster.normalize_title(_claim_attribution_text(text, claim))
+    if not target:
+        return False
+    for name in names:
+        escaped = re.escape(name)
+        if re.search(
+            rf"\b{escaped}\b(?:\s+(?:has|have|had|is|was|were|will))?\s+(?:{_ATTRIBUTION_VERB_RE})\b",
+            target,
+        ):
+            return True
+        if re.search(rf"\b(?:{_ATTRIBUTION_LEAD_RE})\s+{escaped}\b", target):
+            return True
+        if re.search(rf"\b{escaped}\s+(?:data|figures|numbers|estimates)\b", target):
+            return True
+        # A bylined first-person post attributes itself: "I'm Takeshi Yamanaka".
+        if re.search(rf"\b(?:i m|i am|my name is)\s+{escaped}\b", target):
+            return True
+    return False
+
+
 def _is_product_origin(value: object, entities: list[str] | None) -> bool:
     """True when ``value`` is, or contains, a canonical entity of the story.
 
@@ -1082,7 +1161,10 @@ def resolve_claim_origins(
 
     Each ``;``-separated origin token is canonicalized, then checked against the
     text of the claim's own source. A token the text does not mention is removed
-    and the downgrade is logged; when no token survives, the origin becomes
+    and the downgrade is logged; a token the text mentions but does not attribute
+    to the claim (its sentence carries no "according to X" / "X said" link) is
+    removed too, so a speaker named only elsewhere in a long article never
+    vouches for this claim. When no token survives, the origin becomes
     :data:`UNSTATED_ORIGIN`. A token that is a canonical entity of the story
     (``entities``: a game, character or platform) is a subject, not a speaker,
     and is downgraded the same way -- unless the byline or the claim's
@@ -1120,11 +1202,7 @@ def resolve_claim_origins(
                     UNSTATED_ORIGIN,
                 )
                 continue
-            if _origin_in_text(token, text, aliases):
-                canonical = canonicalize_origin(token, aliases)
-                if canonical not in kept:
-                    kept.append(canonical)
-            else:
+            if not _origin_in_text(token, text, aliases):
                 logger.warning(
                     "story %s: origin %r is not named in the source text for %s; "
                     "downgrading to %s",
@@ -1133,6 +1211,23 @@ def resolve_claim_origins(
                     claim.get("source_url"),
                     UNSTATED_ORIGIN,
                 )
+                continue
+            if not _origin_attributed(token, text, claim, aliases):
+                # The name appears in the article but not as the producer of
+                # this claim (e.g. it speaks about a different fact). Crediting
+                # it would conflate two statements, so it is downgraded.
+                logger.warning(
+                    "story %s: origin %r is named in the source text for %s but "
+                    "the claim is not attributed to it; downgrading to %s",
+                    story_id or "?",
+                    token,
+                    claim.get("source_url"),
+                    UNSTATED_ORIGIN,
+                )
+                continue
+            canonical = canonicalize_origin(token, aliases)
+            if canonical not in kept:
+                kept.append(canonical)
         origin = "; ".join(kept) if kept else UNSTATED_ORIGIN
         # A company post must never leave its speaker unstated: when the article
         # names a byline, that person produced the claim.
@@ -1514,14 +1609,25 @@ def confirmation_from_sources(
         tier1 = sum(1 for source in sources if source["tier"] == 1)
         tier3 = sum(1 for source in sources if source["tier"] == 3)
     single_origin_attributed = len(origins) == 1
-    if tier1 >= 1:
+    if merged is not None and str(merged.get("kind") or "") == "opinion":
+        # A candidate whose central fact is a judgement is never confirmable:
+        # an opinion can be repeated by every outlet and still be no fact.
+        confirmed, rule, reason = False, "unconfirmed", "the central claim is an opinion"
+    elif tier1 >= 1:
         confirmed, rule = True, "tier1"
+        reason = "a tier-1 source states the headline claim"
     elif len(origins) >= 2:
         confirmed, rule = True, "two-independent-origins"
+        reason = "two independent named origins support the headline claim"
     elif allow_single_origin_attributed and single_origin_attributed:
         confirmed, rule = True, "single-origin-attributed"
+        reason = (
+            "a single attributed origin supports the headline claim and "
+            "single-origin confirmation is enabled"
+        )
     else:
         confirmed, rule = False, "unconfirmed"
+        reason = "no tier-1 source and fewer than two independent named origins"
     return {
         "tier1_sources": tier1,
         "tier3_sources": tier3,
@@ -1529,6 +1635,7 @@ def confirmation_from_sources(
         "single_origin_attributed": single_origin_attributed,
         "rule": rule,
         "confirmed": confirmed,
+        "reason": reason,
     }
 
 
@@ -1944,6 +2051,35 @@ def coherence_check(
     return kept, dropped, primary
 
 
+def _coherence_dropped_details(dropped: list[dict], primary: list[str]) -> list[dict]:
+    """The coherence-dropped claims, each with the reason it was dropped.
+
+    A claim is dropped off-topic when neither its own text/value nor its source
+    article's title names any primary entity; the reason records the entities
+    that were checked, so a saved sheet shows exactly why the claim was cut.
+    """
+    entities = ", ".join(primary) if primary else "the story's primary entities"
+    reason = f"claim and its source headline name none of: {entities}"
+    return [
+        {
+            "claim": claim.get("claim"),
+            "source_url": claim.get("source_url"),
+            "reason": reason,
+        }
+        for claim in dropped
+    ]
+
+
+def _confirmation_reason(confirmation: dict) -> str:
+    """Plain-text reason for a confirmation verdict, for the saved sheet."""
+    reason = str(confirmation.get("reason") or "").strip()
+    if reason:
+        return reason
+    if confirmation.get("confirmed"):
+        return "confirmed"
+    return "no tier-1 source and fewer than two independent named origins"
+
+
 def _write_unconfirmed_sheet(
     output_dir: Path,
     name: str,
@@ -1954,28 +2090,43 @@ def _write_unconfirmed_sheet(
     claims: list[dict],
     sheet_sources: list[dict],
     dropped: list[dict],
+    *,
+    primary: list[str] | None = None,
+    canonical: list[str] | None = None,
+    grounding_details: list[dict] | None = None,
 ) -> Optional[Path]:
     """Persist a rejected story's sheet under ``<output_dir>/unconfirmed/``.
 
     Unconfirmed stories are dropped from the run, but saving the sheet lets the
     owner inspect exactly what the extractor saw and why it was not confirmed.
-    Failures here are logged, never raised -- the story still raises
-    :class:`UnconfirmedStory`.
+    The sheet carries the same diagnostics as a confirmed one -- the full
+    coherence block (checked, primary/canonical entities and the reason each
+    dropped claim was cut), the grounding block (each ungrounded claim and its
+    reason), and a plain-text ``confirmation_reason`` -- so a rejection can be
+    diagnosed without rerunning the pipeline. Failures here are logged, never
+    raised -- the story still raises :class:`UnconfirmedStory`.
     """
+    primary = list(primary or [])
+    canonical = list(canonical or [])
     payload = {
         "id": name,
         "generated_at": now.isoformat(),
         "confirmation": confirmation,
+        "confirmation_reason": _confirmation_reason(confirmation),
         "central_claim": central,
         "kinds": sorted({str(claim.get("kind")) for claim in claims if claim.get("kind")}),
         "origins": list(confirmation.get("origins") or []),
         "sources": sheet_sources,
         "claims": claims,
+        "grounding": [
+            {"claim": entry["claim"].get("claim"), "reason": entry["reason"]}
+            for entry in (grounding_details or [])
+        ],
         "coherence": {
-            "dropped_claims": [
-                {"claim": claim.get("claim"), "source_url": claim.get("source_url")}
-                for claim in dropped
-            ],
+            "checked": bool(primary),
+            "primary_entities": primary,
+            "canonical_entities": canonical,
+            "dropped_claims": _coherence_dropped_details(dropped, primary),
         },
     }
     directory = Path(output_dir) / "unconfirmed"
@@ -2181,7 +2332,8 @@ def facts(
         )
         logger.warning("%s", message)
         _write_unconfirmed_sheet(
-            output_dir, name, now, confirmation, central, kept, claims, sheet_sources, dropped
+            output_dir, name, now, confirmation, central, kept, claims, sheet_sources, dropped,
+            primary=primary, canonical=canonical, grounding_details=ungrounded_details,
         )
         raise UnconfirmedStory(message)
 
@@ -2189,6 +2341,7 @@ def facts(
         "id": name,
         "generated_at": now.isoformat(),
         "confirmation": confirmation,
+        "confirmation_reason": _confirmation_reason(confirmation),
         "sources": sheet_sources,
         "claims": claims,
         "grounding": [
@@ -2199,10 +2352,7 @@ def facts(
             "checked": bool(primary),
             "primary_entities": primary,
             "canonical_entities": canonical,
-            "dropped_claims": [
-                {"claim": claim.get("claim"), "source_url": claim.get("source_url")}
-                for claim in dropped
-            ],
+            "dropped_claims": _coherence_dropped_details(dropped, primary),
         },
         "extractor": {
             "provider": generation.provider,
