@@ -197,6 +197,16 @@ cluster:
 facts:
   max_claims_per_source: 15
   allow_single_origin_attributed: false
+  # Explicit adverbs to treat as lead words (names like Holly, Kelly, Molly must not be dropped).
+  adverb_lead_words:
+    - reportedly
+    - allegedly
+    - apparently
+    - officially
+    - finally
+    - recently
+    - currently
+    - likely
   # Relative-time words the facts stage must convert to an absolute calendar
   # date before the claim is trusted. A claim that keeps one ("begins today")
   # cannot be verified and would make the page stale, so it is rewritten from
@@ -291,6 +301,28 @@ facts:
     - where
     - why
     - how
+    - q1
+    - q2
+    - q3
+    - q4
+    - quarter
+    - early
+    - mid
+    - late
+    - next
+    - last
+    - next year
+    - early 2027
+    - q1 2027
+    - targets
+    - reportedly
+    - allegedly
+    - apparently
+    - officially
+    - finally
+    - recently
+    - currently
+    - likely
   # Generic entities (pipeline/cluster.py). A word or phrase that only places a
   # story in a category -- a platform class, a technology, an article role --
   # never identifies the story itself, so on its own it can never make a claim
@@ -307,12 +339,73 @@ facts:
     - update
     - updates
     - ip
+    - ps5
+    - switch
+    - series x
+    - series s
+    - playstation 5
+    - nintendo switch
   # A tier-1 source only sets the story's central claim when its own claim
   # restates at least this fraction of the seed headline's significant tokens
   # (its canonical entity words, month names and numbers). A tier-1 source that
   # mentions the topic only in passing leaves the story unconfirmed: it is the
   # headline's fact the story must establish, not any tier-1 sentence.
   min_central_overlap: 0.5
+  # Closed vocabulary for the anonymous-descriptor rule (pipeline/facts.py). A cue
+  # phrase is treated as anonymous -- and dropped to "unstated" -- only when every
+  # one of its tokens is listed here, so "sources", "unnamed sources" and "people
+  # familiar with the matter" name no source, while "Insider Gaming" or "Source
+  # Engine" stay names. Extend the list to teach a new descriptor.
+  anonymous_vocabulary:
+    - sources
+    - source
+    - insiders
+    - insider
+    - officials
+    - official
+    - people
+    - person
+    - persons
+    - familiar
+    - matter
+    - close
+    - project
+    - plans
+    - studio
+    - industry
+    - unnamed
+    - anonymous
+    - unidentified
+    - several
+    - multiple
+    - some
+    - a
+    - an
+    - the
+    - with
+    - to
+    - of
+    - who
+    - requested
+    - anonymity
+    - knowledgeable
+    - aware
+    - involved
+    - inside
+    - within
+    - company
+    - developer
+    - staff
+    - employees
+    - employee
+    - former
+    - current
+    - one
+    - two
+    - three
+    - four
+    - five
+
 
 # Verifier stage (pipeline/verify.py; PLAN.md principle 4 / stage 6).
 # `list_markers` is stripped from the start of each body line before values are
@@ -502,6 +595,21 @@ score:
     - officially
     - update
     - patch
+  # Candidate diversity: cap per lead entity group
+  max_candidates_per_entity: 2
+  # Umbrella entities: do not group different stories by these alone
+  umbrella_entities:
+    - xbox
+    - playstation
+    - nintendo
+    - pc
+    - nvidia
+    - amd
+    - intel
+    - microsoft
+    - sony
+    - steam
+    - google
   exclude_title_patterns:
     - '\bpodcast\b'
     - '\bshare of the week\b'

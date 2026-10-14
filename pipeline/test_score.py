@@ -615,6 +615,47 @@ def test_pick_candidates_returns_empty_when_nothing_clears_threshold():
     assert score.pick_candidates(clusters, min_score=50) == []
 
 
+def test_pick_candidates_caps_candidates_sharing_a_lead_entity():
+    # Three GTA 6 clusters in one run fill only two slots; the per-entity cap is
+    # keyed on the lead entity, so three similar headlines cannot crowd out the
+    # rest of the run.
+    clusters = [
+        two_source_cluster("GTA 6 PC release reportedly targets early 2027", tiers=(1,), owners=("a", "b")),
+        two_source_cluster("GTA 6 coming to PC in Q1 2027", tiers=(1,), owners=("a", "b")),
+        two_source_cluster("Take-Two says GTA 6 is on track", tiers=(1,), owners=("a", "b")),
+        two_source_cluster("Nvidia announces RTX 6090", tiers=(1,), owners=("a", "b")),
+    ]
+    picked = score.pick_candidates(
+        clusters, max_candidates=5, max_candidates_per_entity=2, min_score=0,
+        min_score_corroborated=0,
+    )
+    titles = [c["title"] for c in picked]
+    assert sum("GTA 6" in title for title in titles) == 2
+    assert "Nvidia announces RTX 6090" in titles
+
+
+def test_pick_candidates_treats_different_lead_entities_as_separate():
+    # A story keyed on a person and one keyed on a specific division are not the
+    # same lead entity, even though both are about Xbox, so neither counts
+    # against the other. "xbox" is an umbrella entity and never a lead key.
+    clusters = [
+        two_source_cluster(
+            "Xbox announces what sounds like a generative AI-focused game-making "
+            "department, Xbox Labs, while avoiding mentioning AI",
+            tiers=(1,), owners=("a", "b"),
+        ),
+        two_source_cluster(
+            "Xbox CEO Asha Sharma reportedly says we will not survive without new IPs",
+            tiers=(1,), owners=("a", "b"),
+        ),
+    ]
+    picked = score.pick_candidates(
+        clusters, max_candidates=5, max_candidates_per_entity=1, min_score=0,
+        min_score_corroborated=0,
+    )
+    assert len(picked) == 2
+
+
 
 # --- affiliate / listicle format exclusions ----------------------------------
 

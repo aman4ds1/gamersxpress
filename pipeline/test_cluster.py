@@ -612,7 +612,7 @@ def test_entities_drop_stop_words_but_keep_real_names():
 
 def test_seed_headline_entities_include_person_and_company_names():
     cases = {
-        "GTA 6 Reportedly Coming to PC in Q1 2027": {"gta 6", "pc", "q1 2027"},
+        "GTA 6 Reportedly Coming to PC in Q1 2027": {"gta 6", "pc"},
         (
             "Xbox announces what sounds like a generative AI-focused game-making "
             "department, Xbox Labs, while avoiding mentioning AI"
@@ -646,3 +646,16 @@ def test_possessive_on_a_product_name_is_stripped_before_storing():
     ))
     assert "callisto protocol" in entities
     assert not any("'s" in entity for entity in entities)
+
+
+def test_adverb_and_time_phrases_are_not_entities():
+    # Only the configured adverb leads and verb/time tails are peeled; a real
+    # name is never redacted and a title is never mistaken for a time phrase.
+    title = "GTA 6 PC Release Reportedly Targets Early 2027"
+    assert cluster.story_phrases(title) == ["GTA 6", "PC"]
+    assert cluster.primary_entities(title) == ["gta 6"]
+    assert cluster.entity_classes(title) == {"gta 6": "primary", "pc": "generic"}
+    for tail in ("Early 2027", "targets early 2027", "reportedly"):
+        assert cluster.story_entities(tail) == [], tail
+    assert cluster.story_entities("Holly Willoughby") == ["holly willoughby"]
+    assert cluster.story_entities("The Last of Us Part II") == ["last of us part ii"]

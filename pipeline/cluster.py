@@ -313,7 +313,8 @@ _VERB_BREAK_WORDS = frozenset({
     "claimed", "confirms", "confirmed", "announces", "announced", "reveals",
     "revealed", "reports", "reported", "warns", "warned", "hopes", "asks",
     "asked", "wants", "wanted", "plans", "planned", "explains", "explained",
-    "added", "adds", "notes", "noted",
+    "added", "adds", "notes", "noted", "unveils", "unveiled", "details", "detailed",
+    "shares", "shared", "alleges", "alleged", "admits", "admitted", "states", "stated",
 })
 #: A trailing possessive on a name token is not part of the name: the run
 #: "Callisto Protocol's" is the entity "Callisto Protocol".
@@ -448,9 +449,15 @@ def is_stop_entity(name: object, *, stop: Iterable[str] | None = None) -> bool:
 _DEFAULT_GENERIC_ENTITIES = frozenset({
     "pc", "ai", "console", "consoles", "game", "games", "gaming", "update",
     "updates", "ip",
+    "ps5", "switch", "series x", "series s", "playstation 5", "nintendo switch",
 })
 
 _GENERIC_ENTITY_CACHE: dict[str, frozenset[str]] = {}
+
+_DEFAULT_ADVERB_LEAD_WORDS = frozenset({
+    "reportedly", "allegedly", "apparently", "officially", "finally",
+    "recently", "currently", "likely",
+})
 
 
 def entity_generic_list(path: str | Path | None = None) -> frozenset[str]:
@@ -479,11 +486,49 @@ def entity_generic_list(path: str | Path | None = None) -> frozenset[str]:
     return result
 
 
+_ADVERB_LEAD_CACHE: dict[str, frozenset[str]] = {}
+
+
+def entity_adverb_lead_words(path: str | Path | None = None) -> frozenset[str]:
+    """Explicit adverb lead words from ``facts.adverb_lead_words``.
+
+    A configured adverb never becomes an entity and never leads a name phrase.
+    Missing or malformed config yields the code defaults. Cached per resolved
+    path because the extraction loop calls this per candidate.
+    """
+    resolved = str(Path(path).resolve()) if path else str(DEFAULT_CONFIG_PATH.resolve())
+    cached = _ADVERB_LEAD_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+    try:
+        raw = yaml.safe_load(Path(resolved).read_text(encoding="utf-8")) or {}
+        cfg = raw.get("facts") or raw.get("score") or {}
+        entries = cfg.get("adverb_lead_words") or []
+    except (OSError, yaml.YAMLError):
+        entries = []
+    adverbs = set(_DEFAULT_ADVERB_LEAD_WORDS)
+    for entry in entries:
+        text = re.sub(r"\s+", " ", strip_diacritics(str(entry)).lower()).strip()
+        if text:
+            adverbs.add(text)
+    result = frozenset(adverbs)
+    _ADVERB_LEAD_CACHE[resolved] = result
+    return result
+
+
 def _is_generic_word(word: str, generic: frozenset[str]) -> bool:
     """True for a listed word or the singular of a plural acronym ("IPs")."""
     if word in generic:
         return True
     return len(word) > 2 and word.endswith("s") and word[:-1] in generic
+
+
+def _is_generic_hyphen(token_lower: str) -> bool:
+    """True for a hyphenated token whose head is a generic word ("AI-focused")."""
+    if "-" not in token_lower:
+        return False
+    head = token_lower.split("-", 1)[0]
+    return head in _GENERIC_WORDS or is_generic_entity(head)
 
 
 def is_generic_entity(name: object, *, generic: Iterable[str] | None = None) -> bool:
@@ -521,7 +566,12 @@ def _story_phrase_tokens(title: str) -> list[list[str]]:
         elif lower in _STORY_GLUE_WORDS:
             if current:
                 current.append(lower)
-        elif lower in _GENERIC_WORDS or lower in _ROLE_BREAK_WORDS or lower in _VERB_BREAK_WORDS:
+        elif (
+            lower in _GENERIC_WORDS
+            or lower in _ROLE_BREAK_WORDS
+            or lower in _VERB_BREAK_WORDS
+            or _is_generic_hyphen(lower)
+        ):
             if current:
                 phrases.append(current)
                 current = []
@@ -635,19 +685,49 @@ def story_phrases(title: str) -> list[str]:
     known = load_known_names()
     sentence_initial = _sentence_initial_words(title)
     cap_counts = _capitalized_counts(title)
+    generic_set = entity_generic_list()
+    stop_set = entity_stop_list()
+    adverb_set = entity_adverb_lead_words()
     phrases: list[str] = []
     for tokens in _story_phrase_tokens(title):
         cleaned = _clean_story_phrase(tokens)
         if not cleaned or not any(char.isalpha() for char in "".join(cleaned)):
             continue
-        text = _format_story_phrase(cleaned)
-        if not text or text in phrases:
-            continue
-        if is_stop_entity(text):
-            continue
-        if _is_sentence_leading_junk(cleaned, sentence_initial, cap_counts, known):
-            continue
-        phrases.append(text)
+        # Peel trailing generic/platform/stop tokens off the end so "GTA 6 PC"
+        # splits into the primary "GTA 6" and the generic "PC" instead of one
+        # glued entity. The peeled tokens become their own phrases below, so a
+        # platform word is still extracted (and classified generic), never glued
+        # onto the name it trailed.
+        base_clean = list(cleaned)
+        peeled: list[str] = []
+        while base_clean:
+            last = strip_diacritics(base_clean[-1]).lower()
+            if (
+                last in generic_set
+                or last in _GENERIC_WORDS
+                or last in _VERB_BREAK_WORDS
+                or last in adverb_set
+                or last in stop_set
+            ):
+                peeled.append(base_clean[-1])
+                base_clean = base_clean[:-1]
+            else:
+                break
+        peeled.reverse()
+        for candidate in ([base_clean] if base_clean else []) + [[tok] for tok in peeled]:
+            if not candidate or not any(char.isalpha() for char in "".join(candidate)):
+                continue
+            text = _format_story_phrase(candidate)
+            if not text or text in phrases:
+                continue
+            if is_stop_entity(text):
+                continue
+            folded0 = strip_diacritics(candidate[0]).lower()
+            if folded0 in adverb_set or folded0 in _VERB_BREAK_WORDS:
+                continue
+            if _is_sentence_leading_junk(candidate, sentence_initial, cap_counts, known):
+                continue
+            phrases.append(text)
     return phrases
 
 
@@ -736,6 +816,68 @@ def primary_entities(
         for entity in story_entities(title, known=known)
         if not is_generic_entity(entity, generic=generic_set)
     ]
+
+
+#: Platform and vendor names that preface many unrelated stories. A cluster's
+#: "lead entity" is its first primary entity that is not one of these, so an
+#: Xbox Labs story and an Asha Sharma story are not treated as one subject just
+#: because both carry "Xbox". Editable via ``score.umbrella_entities``.
+_DEFAULT_UMBRELLA_ENTITIES = frozenset({
+    "xbox", "playstation", "nintendo", "pc", "nvidia", "amd", "intel",
+    "microsoft", "sony", "steam", "google",
+})
+
+_UMBRELLA_CACHE: dict[str, frozenset[str]] = {}
+
+
+def umbrella_entities(path: str | Path | None = None) -> frozenset[str]:
+    """Umbrella platform/vendor entities from ``score.umbrella_entities``.
+
+    A story's lead entity skips these, so two different stories that only share
+    a platform word are never grouped. Missing or malformed config yields the
+    code defaults. Cached per resolved path.
+    """
+    resolved = str(Path(path).resolve()) if path else str(DEFAULT_CONFIG_PATH.resolve())
+    cached = _UMBRELLA_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+    umbrella = set(_DEFAULT_UMBRELLA_ENTITIES)
+    try:
+        raw = yaml.safe_load(Path(resolved).read_text(encoding="utf-8")) or {}
+        entries = (raw.get("score") or {}).get("umbrella_entities") or []
+    except (OSError, yaml.YAMLError):
+        entries = []
+    for entry in entries:
+        text = re.sub(r"\s+", " ", strip_diacritics(str(entry)).lower()).strip()
+        if text:
+            umbrella.add(text)
+    result = frozenset(umbrella)
+    _UMBRELLA_CACHE[resolved] = result
+    return result
+
+
+def lead_entity(
+    title: str,
+    *,
+    known: Iterable[str] | None = None,
+    umbrella: Iterable[str] | None = None,
+) -> str:
+    """The one entity a headline is about: its first non-umbrella primary entity.
+
+    Falls back to the first primary entity when every primary is an umbrella
+    word ("Xbox"), and to ``""`` when the headline has no primary entity at all.
+    Candidate diversity keys on this, so three GTA 6 stories count as one group
+    while an Xbox Labs story and an Asha Sharma story stay separate.
+    """
+    primary = primary_entities(title, known=known)
+    if not primary:
+        return ""
+    umbrella_set = umbrella_entities() if umbrella is None else frozenset(umbrella)
+    for entity in primary:
+        if entity not in umbrella_set:
+            return entity
+    return primary[0]
+
 
 
 def story_type(title: str) -> str:
@@ -1491,6 +1633,8 @@ __all__ = [
     "is_generic_entity",
     "entity_classes",
     "primary_entities",
+    "umbrella_entities",
+    "lead_entity",
     "load_pool",
     "load_seen",
     "mark_seen",

@@ -1681,9 +1681,19 @@ def test_each_origin_token_is_verified_separately(caplog):
             source_url=src["link"],
         )
     ]
-    resolved = facts.resolve_claim_origins(claims, [src])
+    downgrades = []
+    resolved = facts.resolve_claim_origins(claims, [src], downgrades=downgrades)
     assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
-    assert sum("not named in the source text" in record.message for record in caplog.records) == 2
+    # Each ";"-separated token is verified on its own: both fail on their own
+    # merits and each keeps its own verdict, rather than the pair being judged
+    # once.
+    verdicts = {entry["origin"]: entry["reason"] for entry in downgrades}
+    assert verdicts == {
+        "alpha": "not named in the source text",
+        "beta": "not named in the source text",
+    }
+    # One summary line per source, not one warning per token.
+    assert sum("downgraded for" in record.message for record in caplog.records) == 1
 
 
 def test_first_person_byline_attributes_itself_without_a_verb():
@@ -1706,6 +1716,168 @@ def test_first_person_byline_attributes_itself_without_a_verb():
     ]
     resolved = facts.resolve_claim_origins(claims, [src])
     assert resolved[0]["origin"] == "takeshi yamanaka"
+
+
+# --- cue carry-forward within a paragraph ------------------------------------
+
+
+def test_a_cue_carries_forward_until_a_later_cue_names_a_different_source():
+    src = source(
+        link="https://b.example/crunch",
+        name="Beat",
+        tier=2,
+        text=(
+            "According to Bloomberg, Rockstar crunched for months. "
+            "The studio lengthened shifts. Staff were exhausted."
+        ),
+    )
+    claims = [
+        claim(
+            claim="Staff were exhausted",
+            value="exhausted staff",
+            kind="reported",
+            origin="bloomberg",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == "bloomberg", "the cue carries forward two sentences"
+    assert facts._attribution_winner(src["text"], claims[0]) == "Bloomberg"
+
+
+def test_a_later_cue_naming_a_different_source_supersedes_an_earlier_one():
+    src = source(
+        link="https://b.example/delays",
+        name="Beat",
+        tier=2,
+        text=(
+            "According to Bloomberg, Rockstar crunched for months. "
+            "Rockstar said the delays would continue for a while."
+        ),
+    )
+    claims = [
+        claim(
+            claim="The delays would continue for a while",
+            value="delays continue",
+            kind="reported",
+            origin="bloomberg",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN, "the later cue supersedes Bloomberg"
+
+
+# --- a company's own bylined post vs an outlet using first person ------------
+
+
+def test_an_outlet_using_we_does_not_self_attribute_byline():
+    src = source(
+        link="https://o.example/comment",
+        name="Eurogamer",
+        owner="gamer",
+        tier=2,
+        text="We asked Rockstar for comment about the delay. Rockstar has not yet replied.",
+    )
+    claims = [
+        claim(
+            claim="Rockstar has not replied",
+            value="no reply",
+            kind="reported",
+            origin="unstated",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+
+
+def test_an_outlet_using_i_does_not_self_attribute_byline():
+    src = source(
+        link="https://o.example/played",
+        name="Eurogamer",
+        owner="gamer",
+        tier=2,
+        text="I played the new build and it felt smooth. The frame rate stayed stable.",
+    )
+    claims = [
+        claim(
+            claim="The frame rate stayed stable",
+            value="stable frame rate",
+            kind="opinion",
+            origin="unstated",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+
+
+def test_a_tier1_own_site_with_a_byline_self_attributes():
+    src = source(
+        link="https://blog.example/cyclops",
+        name="Studio Blog",
+        owner="arc system works",
+        tier=1,
+        text=(
+            "Hello! I am Takeshi Yamanaka, Producer at Arc System Works. "
+            "The team chose the Phoenix version for fresher visuals."
+        ),
+    )
+    claims = [
+        claim(
+            claim="The team chose the Phoenix version",
+            value="fresher visuals",
+            kind="statement",
+            origin="unstated",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == "arc system works"
+
+
+# --- speech verbs vs announcement verbs --------------------------------------
+
+
+def test_a_person_speaking_stays_a_speaker_even_when_a_headline_entity():
+    src = source(
+        link="https://d.example/houser",
+        name="Outlet",
+        tier=2,
+        text="Dan Houser says he failed with the game.",
+    )
+    claims = [
+        claim(
+            claim="Dan Houser failed with the game",
+            value="failure",
+            kind="statement",
+            origin="dan houser",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src], entities=["Dan Houser"])
+    assert resolved[0]["origin"] == "dan houser"
+
+
+def test_an_announcement_verb_keeps_an_organization_as_its_origin():
+    src = source(
+        link="https://d.example/delay",
+        name="Outlet",
+        tier=2,
+        text="Rockstar announced a delay to the next update.",
+    )
+    claims = [
+        claim(
+            claim="The next update is delayed",
+            value="delay",
+            kind="confirmed",
+            origin="rockstar",
+            source_url=src["link"],
+        )
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == "rockstar"
 
 
 # --- coherence with a person in the seed headline ----------------------------
@@ -1850,3 +2022,166 @@ def test_unconfirmed_sheet_records_coherence_grounding_and_reason(tmp_path):
     assert coherence["checked"] is True
     assert "asha sharma" in coherence["primary_entities"]
     assert isinstance(coherence["dropped_claims"], list)
+
+
+# --- anonymous origins never count as a source -------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, origin",
+    [
+        (
+            "According to sources who requested anonymity, the studio delayed the game.",
+            "sources",
+        ),
+        ("Unnamed sources say the studio delayed the game.", "unnamed sources"),
+        ("Insiders say the studio delayed the game.", "insiders"),
+        ("Officials say the studio delayed the game.", "officials"),
+        (
+            "People familiar with the matter say the studio delayed the game.",
+            "people familiar with the matter",
+        ),
+        (
+            "A source close to the project says the studio delayed the game.",
+            "source close to the project",
+        ),
+        (
+            "Sources familiar with the studio's plans say the game slipped.",
+            "sources",
+        ),
+    ],
+)
+def test_anonymous_cue_origin_is_never_kept(text, origin):
+    # Case (1): an anonymous cue ("according to sources", "insiders",
+    # "people familiar with the matter") names no real source, so the extracted
+    # origin is never kept when it is the only attribution.
+    src = source(text=text)
+    resolved = facts.resolve_claim_origins([claim(origin=origin)], [src])
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN, (
+        f"anonymous origin {origin!r} must not be kept"
+    )
+
+
+def test_nearest_cue_wins_over_an_earlier_anonymous_cue():
+    # Case (2): the later named cue supersedes the earlier anonymous one, and the
+    # first claim attaches to neither the anonymous cue nor the named one.
+    src = source(
+        text=(
+            "According to sources who requested anonymity, the game slipped. "
+            "Bloomberg reports the delay is internal."
+        )
+    )
+    claims = [
+        claim(claim="the game slipped", value="the game slipped", origin="sources"),
+        claim(claim="the delay is internal", value="the delay is internal", origin="bloomberg"),
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src])
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+    assert resolved[0]["origin"] != "bloomberg"
+    assert resolved[1]["origin"] == "bloomberg"
+
+
+def test_named_outlet_citing_anonymous_sources_is_the_origin():
+    # Case (3): a named outlet that merely cites anonymous sources is itself the
+    # origin, regardless of the anonymous phrase in the sentence.
+    src = source(
+        name="GamesBeat",
+        text=(
+            "GamesBeat reports, citing four industry sources, that the PC version "
+            "arrives in the first quarter."
+        ),
+    )
+    resolved = facts.resolve_claim_origins([claim(origin="gamesbeat", kind="reported")], [src])
+    assert resolved[0]["origin"] == "gamesbeat"
+
+
+@pytest.mark.parametrize("origin", ["anonymous sources", "insiders"])
+def test_extractor_anonymous_origin_present_in_text_is_downgraded(origin):
+    # Case (4): the extractor returning an anonymous source (even one whose words
+    # appear in the text) is rejected as anonymous and downgraded to unstated.
+    src = source(text="The report cites anonymous sources and insiders about the delay.")
+    resolved = facts.resolve_claim_origins([claim(origin=origin)], [src])
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+
+
+def test_two_anonymous_origins_never_confirm():
+    # Case (5): two anonymous origins are not two independent origins, so they
+    # never contribute to confirmation.
+    sources = [
+        source(
+            link="https://a.example/1",
+            name="Alpha",
+            text="Sources say the delay is internal.",
+        ),
+        source(
+            link="https://b.example/2",
+            name="Beta",
+            owner="co-b",
+            text="Insiders say the delay is internal.",
+        ),
+    ]
+    claims = [
+        claim(
+            claim="The delay is internal",
+            value="the delay is internal",
+            kind="reported",
+            origin="sources",
+            source_url="https://a.example/1",
+        ),
+        claim(
+            claim="The delay is internal",
+            value="the delay is internal",
+            kind="reported",
+            origin="insiders",
+            source_url="https://b.example/2",
+        ),
+    ]
+    result = facts.confirmation_from_sources(sources, claims=claims)
+    assert result["origins"] == []
+    assert result["rule"] == "unconfirmed"
+    assert result["confirmed"] is False
+
+
+def test_named_person_with_a_speech_cue_is_still_accepted():
+    # Case (6): the anonymous rule must not over-reject a named, cue-attributed
+    # speaker.
+    src = source(text="Dan Houser says the project failed.")
+    resolved = facts.resolve_claim_origins([claim(origin="dan houser")], [src])
+    assert resolved[0]["origin"] == "dan houser"
+
+
+def test_insider_gaming_reports_is_a_named_outlet_origin():
+    # A named outlet that contains a descriptor-like word ("Insider") is still a
+    # name, so it is kept as the origin instead of being downgraded to unstated.
+    src = source(text="Insider Gaming reports the studio delayed the game.")
+    resolved = facts.resolve_claim_origins(
+        [
+            claim(
+                claim="the studio delayed the game",
+                value="the studio delayed the game",
+                kind="reported",
+                origin="Insider Gaming",
+            )
+        ],
+        [src],
+    )
+    assert resolved[0]["origin"] == "insider gaming"
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["Insider Gaming", "Source Engine", "People Can Fly", "Official Xbox Magazine"],
+)
+def test_outlet_and_company_names_are_not_anonymous(origin):
+    # A phrase is anonymous only when EVERY token is a descriptor. One name-like
+    # token ("Gaming", "Engine", "Fly", "Xbox", "Magazine") makes it a name.
+    assert facts._is_anonymous_origin(origin, facts.load_origin_aliases()) is False
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["four industry sources", "sources familiar with the studio's plans"],
+)
+def test_descriptor_only_phrases_are_anonymous(origin):
+    # Every token is in the vocabulary, so the phrase names no real source.
+    assert facts._is_anonymous_origin(origin, facts.load_origin_aliases()) is True

@@ -96,11 +96,17 @@ import re
 import unicodedata
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Iterable
 
 import cluster
 from ingest import normalize_url
-from providers import Generation, RunState, generate as default_generate, load_config
+from providers import (
+    Generation,
+    RunState,
+    generate as default_generate,
+    load_config,
+    DEFAULT_CONFIG_PATH,
+)
 from json_schema import schema_errors
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -171,6 +177,55 @@ _ORIGIN_TITLE_WORDS = frozenset({"the", "a", "an", "analyst", "analysts"})
 CONFIRMING_KINDS = ("confirmed", "reported", "estimate")
 
 logger = logging.getLogger("gamersxpress.pipeline.facts")
+
+#: Default vocabulary for the closed anonymous-descriptor rule (facts.py). A cue
+#: whose origin is built only from these words names no real source -- "sources",
+#: "unnamed sources", "people familiar with the matter", "four industry sources".
+#: A phrase containing any token outside the vocabulary is a name ("Insider
+#: Gaming", "Source Engine", "People Can Fly"), and a name listed in
+#: ``data/origins.json`` always counts as named. Extendable through
+#: ``facts.anonymous_vocabulary`` in config.yaml.
+_DEFAULT_ANONYMOUS_VOCABULARY = frozenset({
+    "sources", "source", "insiders", "insider", "officials", "official",
+    "people", "person", "persons", "familiar", "matter", "close", "project",
+    "plans", "studio", "industry", "unnamed", "anonymous", "unidentified",
+    "several", "multiple", "some", "a", "an", "the", "with", "to", "of", "who",
+    "requested", "anonymity", "knowledgeable", "aware", "involved", "inside",
+    "within", "company", "developer", "staff", "employees", "employee",
+    "former", "current", "one", "two", "three", "four", "five",
+})
+
+_ANONYMOUS_VOCABULARY_CACHE: tuple[tuple[int, int] | None, frozenset[str]] | None = None
+
+
+def anonymous_vocabulary() -> frozenset[str]:
+    """The anonymous-descriptor vocabulary: the code defaults plus config.
+
+    A cue phrase is anonymous only when every one of its tokens is in this set,
+    so extending ``facts.anonymous_vocabulary`` in config.yaml can teach the
+    pipeline a new anonymous descriptor ("a well-placed source" -> "well",
+    "placed"). Cached against the config file's size and mtime.
+    """
+    global _ANONYMOUS_VOCABULARY_CACHE
+    resolved = DEFAULT_CONFIG_PATH
+    try:
+        stat = Path(resolved).stat()
+        signature = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        signature = None
+    if _ANONYMOUS_VOCABULARY_CACHE is not None and _ANONYMOUS_VOCABULARY_CACHE[0] == signature:
+        return _ANONYMOUS_VOCABULARY_CACHE[1]
+    entries = (load_config().get("facts") or {}).get("anonymous_vocabulary") or []
+    words = set(_DEFAULT_ANONYMOUS_VOCABULARY)
+    for entry in entries:
+        for word in re.split(r"\s+", _strip_possessive(str(entry).lower())):
+            token = re.sub(r"[^a-z0-9]+", "", word)
+            if token:
+                words.add(token)
+    result = frozenset(words)
+    _ANONYMOUS_VOCABULARY_CACHE = (signature, result)
+    return result
+
 
 CLAIM_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -882,24 +937,71 @@ def ground_claims(
 
 # --- bylines: a company post's speaker is the person it names -----------------
 
-#: A company's own post often opens with its author: "I'm <Name>, <role> at
-#: <Company>". Only this explicit self-introduction is trusted, so ordinary
-#: prose that mentions a name is never mistaken for a byline.
+#: A company's own post opens with its author. Three explicit forms are
+#: trusted: a self-introduction ("I'm <Name>, <role> at <Company>"), a byline
+#: ("by <Name>, <Role>, <Company>") and a byline line ("<Name>, <Role>,
+#: <Company>"). Ordinary prose that merely mentions a name is never a byline.
+_BYLINE_NAME = r"[^\W_][\w'’-]*(?:\s+[^\W_][\w'’-]*){0,3}?"
+_BYLINE_ORG = r"[^\W_][\w'’&\-]*(?:\s+[^\W_][\w'’&\-]*){0,4}"
 _BYLINE_RE = re.compile(
     r"\bI(?:['’]m| am)\s+"
-    r"([^\W_][\w'’-]*(?:\s+[^\W_][\w'’-]*){0,3}?)\s*,\s*"
-    r"[^.\n]{0,80}?\b(?:at|of|for)\s+"
-    r"([^\W_][\w'’&\-]*(?:\s+[^\W_][\w'’&\-]*){0,4})",
+    rf"({_BYLINE_NAME})\s*,\s*[^.\n]{{0,80}}?\b(?:at|of|for)\s+({_BYLINE_ORG})",
+    re.IGNORECASE,
+)
+#: "by <Name>, <Role>, <Company>" — a byline line where the role is optional.
+_BYLINE_BY_RE = re.compile(
+    rf"\bby\s+({_BYLINE_NAME})\s*,\s*([^,.\n]{{0,60}}?),\s*({_BYLINE_ORG})",
+    re.IGNORECASE,
+)
+#: "<Name>, <Role>, <Company>" opening a company post.
+_BYLINE_ROLE_RE = re.compile(
+    rf"^\s*({_BYLINE_NAME})\s*,\s*([^,.\n]{{0,60}}?),\s*({_BYLINE_ORG})",
     re.IGNORECASE,
 )
 
 
 def _extract_byline(text: object) -> tuple[str, str]:
-    """The ``(name, organization)`` a company post's byline states, or ``("", "")``."""
-    match = _BYLINE_RE.search(str(text or ""))
-    if not match:
-        return "", ""
-    return match.group(1).strip(), match.group(2).strip()
+    """The ``(name, organization)`` a post's byline states, or ``("", "")``."""
+    raw = str(text or "")
+    for match in _BYLINE_RE.finditer(raw):
+        return match.group(1).strip(), match.group(2).strip()
+    byline = _BYLINE_BY_RE.search(raw)
+    if byline:
+        return byline.group(1).strip(), byline.group(3).strip()
+    role_line = _BYLINE_ROLE_RE.search(raw)
+    if role_line:
+        return role_line.group(1).strip(), role_line.group(3).strip()
+    return "", ""
+
+
+def _is_own_site(source: dict) -> bool:
+    """True when the gathered source is a tier-1 organization's own site."""
+    try:
+        return int(source.get("tier") or 0) == 1
+    except (TypeError, ValueError):
+        return False
+
+
+def _self_attribution(
+    text: str, source: dict, byline_name: str, byline_org: str, aliases: dict[str, str]
+) -> str:
+    """The origin a company's own first-person post attributes to itself, or "".
+
+    Only a tier-1 own-site post that carries a byline self-attributes. The
+    organization the byline states wins ("Producer, Arc System Works"); else the
+    named person; else the source's owner. An outlet article using "we" or "I"
+    never reaches here, so its unattributed claims stay unstated.
+    """
+    if not _is_own_site(source) or not (byline_name or byline_org):
+        return ""
+    if byline_org:
+        return canonicalize_origin(byline_org, aliases)
+    if byline_name and _origin_in_text(byline_name, text, aliases):
+        return canonicalize_origin(byline_name, aliases)
+    owner = source.get("owner")
+    if owner:
+        return canonicalize_origin(owner, aliases)
+    return ""
 
 
 def _is_publication(name: object, source: dict) -> bool:
@@ -1028,21 +1130,58 @@ def _origin_in_text(origin: object, text: str, aliases: dict[str, str]) -> bool:
     return any(_contains_name(haystack, name) for name in _origin_names(origin, aliases))
 
 
-#: Speech and reporting verbs, plus the noun phrases ("according to", "data
-#: from") that attribute a claim to its producer. An origin is only credited
-#: when one of these links it to the claim's own sentence (or a neighbour);
-#: mere mention elsewhere in the article is not an attribution.
-_ATTRIBUTION_VERBS = (
-    "reports?", "reported", "says?", "said", "tells?", "told", "confirms?",
-    "confirmed", "announces?", "announced", "reveals?", "revealed",
-    "estimates?", "estimated", "claims?", "claimed", "suggests?", "suggested",
-    "states?", "stated", "notes?", "noted", "explains?", "explained",
-    "adds?", "added", "writes?", "wrote", "tweets?", "tweeted", "posts?",
-    "posted", "warns?", "warned", "hopes?", "hoped", "calls?", "called",
-    "shows?", "shown", "puts?", "put",
+def _anonymous_tokens(folded: str) -> list[str]:
+    """The word tokens of a normalized origin, possessive "s" already stripped."""
+    return [token for token in re.split(r"[^a-z0-9]+", folded) if token]
+
+
+def _is_known_origin_name(folded: str, aliases: dict[str, str]) -> bool:
+    """True when ``folded`` matches a known origin name or alias in origins.json."""
+    if not folded:
+        return False
+    if folded in aliases:
+        return True
+    return any(_origin_key(canonical) == folded for canonical in aliases.values())
+
+
+#: Speech verbs: their subject is a person who said something, so that person
+#: stays a speaker even when they are also a headline entity.
+_ATTRIBUTION_SPEECH_VERBS = (
+    "said", "says", "say", "told", "tells", "tell", "admitted", "admits",
+    "blames", "blamed", "claims", "claimed", "wrote", "writes", "posted",
+    "posts", "tweeted", "tweets", "stated", "states", "explains", "explained",
+    "added", "adds", "noted", "notes", "warned", "warns",
 )
-_ATTRIBUTION_VERB_RE = "|".join(_ATTRIBUTION_VERBS)
-_ATTRIBUTION_LEAD_RE = r"according to|data from|figures from|numbers from|estimates from"
+#: Announcement and reporting verbs: their subject is an organization (a company
+#: or studio) that put something out. They never make a game, character or
+#: product a speaker, so a game that "reveals" a roster stays a subject.
+_ATTRIBUTION_ANNOUNCEMENT_VERBS = (
+    "announced", "announces", "revealed", "reveals", "confirmed", "confirms",
+    "unveiled", "unveils", "detailed", "details", "shared", "shares",
+    "reported", "reports", "estimated", "estimates", "suggested", "suggests",
+    "alleged", "alleges",
+)
+_ATTRIBUTION_VERBS = tuple(
+    dict.fromkeys(_ATTRIBUTION_SPEECH_VERBS + _ATTRIBUTION_ANNOUNCEMENT_VERBS)
+)
+_SPEECH_VERB_RE = "|".join(sorted(set(_ATTRIBUTION_SPEECH_VERBS), key=len, reverse=True))
+_ATTRIBUTION_VERB_RE = "|".join(sorted(set(_ATTRIBUTION_VERBS), key=len, reverse=True))
+_ATTRIBUTION_LEAD_RE = (
+    r"in a statement from|in an interview with|in a statement|in an interview|"
+    r"according to|data from|figures from|numbers from|estimates from|per|via|citing"
+)
+#: A capitalized origin chunk (up to four words) after a lead cue or before a
+#: verb. Capitalization is the cheap way to find a name without an NLP parser.
+_NAME_CHUNK = r"[A-Za-z][\w'’&\-\']*(?:\s+(?!has\b|have\b|had\b|is\b|was\b|were\b|will\b)[A-Za-z][\w'’&\-\']*){0,3}"
+_LEAD_CUE_RE = re.compile(
+    rf"\b(?:{_ATTRIBUTION_LEAD_RE})\s+(?:[a-z]+\s+){{0,4}}(?P<origin>{_NAME_CHUNK})",
+    re.I,
+)
+_SUBJECT_CUE_RE = re.compile(
+    rf"\b(?P<origin>{_NAME_CHUNK})(?:\s*,[^,.\n]{{0,40}},)?"
+    rf"\s+(?:(?:has|have|had|is|was|were|will)\s+)?(?P<verb>{_ATTRIBUTION_VERB_RE})\b",
+    re.I,
+)
 
 
 def _sentences(text: str) -> list[str]:
@@ -1050,59 +1189,187 @@ def _sentences(text: str) -> list[str]:
     return [part for part in re.split(r"(?<=[.!?])\s+", str(text or "")) if part.strip()]
 
 
+def _sentences_with_positions(text: str) -> list[tuple[int, int, str]]:
+    """Sentences tagged ``(paragraph_index, index_in_paragraph)``.
+
+    Paragraphs are separated by a blank line; the attribution window is clamped
+    to one paragraph so a cue in an unrelated section never vouches for a claim.
+    """
+    out: list[tuple[int, int, str]] = []
+    for pi, para in enumerate(re.split(r"\n\s*\n", str(text or ""))):
+        for si, sent in enumerate(_sentences(para)):
+            out.append((pi, si, sent))
+    return out
+
+
 def _claim_key_terms(claim: dict) -> set[str]:
     """Stemmed content words of a claim's text and value, for sentence matching."""
     return _topic_words(claim.get("claim")) | _topic_words(claim.get("value"))
 
 
-def _claim_attribution_text(text: str, claim: dict) -> str:
-    """The sentences of ``text`` that carry the claim's key terms, plus neighbours.
+def _claim_attribution_window(
+    text: str, claim: dict
+) -> tuple[list[tuple[int, int, str]], list[tuple[int, int]]]:
+    """The claim's attribution window and its strongest claim-hit positions.
 
-    Attribution must be local to the claim: a speaker named in an unrelated
-    part of a long article does not vouch for this claim. When the claim shares
-    no content word with the text at all (the claim is a paraphrase), every
-    sentence is searched, so a genuine paraphrase is never dropped for lack of a
-    local match.
+    A sentence is in the window when it shares a paragraph with a sentence that
+    carries the claim's key terms and sits within three sentences of it. The
+    anchor hits are the sentence(s) with the most key terms in common, so a
+    passing mention ("GTA Online") never outweighs the sentence that actually
+    states the claim ("GTA 6 ... PC ... 2027"). When the claim shares no content
+    word with the text (a paraphrase) the whole text is searched, so a genuine
+    paraphrase is never dropped for lack of a local match.
     """
-    sentences = _sentences(text)
-    if not sentences:
-        return str(text or "")
+    sents = _sentences_with_positions(text)
     terms = _claim_key_terms(claim)
-    if not terms:
-        return str(text or "")
-    hits = [index for index, sentence in enumerate(sentences) if _topic_words(sentence) & terms]
+    scored = [
+        (pi, si, len(_topic_words(sent) & terms))
+        for pi, si, sent in sents
+        if terms and (_topic_words(sent) & terms)
+    ]
+    if not terms or not scored:
+        return sents, []
+    all_hits = [(pi, si) for pi, si, _ in scored]
+    best = max(score for _, _, score in scored)
+    anchors = [(pi, si) for pi, si, score in scored if score == best]
+    window = [
+        (pi, si, sent)
+        for pi, si, sent in sents
+        if any(pi == hpi and abs(si - hsi) <= 3 for hpi, hsi in all_hits)
+    ]
+    return window, anchors
+
+
+def _cue_occurrences(text: str, claim: dict) -> tuple[list[dict], list[tuple[int, int]]]:
+    """Every attribution cue in the claim's window, with its verb kind.
+
+    ``kind`` is ``"speech"`` (a person speaks), ``"announcement"`` (an
+    organization puts something out) or ``"lead"`` (a reporting phrase such as
+    "according to").
+    """
+    window, hits = _claim_attribution_window(text, claim)
+    occurrences: list[dict] = []
+    for pi, si, sent in window:
+        for match in _LEAD_CUE_RE.finditer(sent):
+            occurrences.append(
+                {"origin": match.group("origin").strip(), "kind": "lead", "pi": pi, "si": si}
+            )
+        for match in _SUBJECT_CUE_RE.finditer(sent):
+            verb = match.group("verb").lower()
+            kind = "speech" if re.fullmatch(_SPEECH_VERB_RE, verb) else "announcement"
+            occurrences.append(
+                {"origin": match.group("origin").strip(), "kind": kind, "pi": pi, "si": si}
+            )
+    return occurrences, hits
+
+
+def _cue_distance(occurrence: dict, hits: list[tuple[int, int]]) -> tuple[int, int, int]:
+    """Sort key for a cue: the nearest preceding cue to the claim wins.
+
+    A cue in the claim's own sentence (distance 0) sorts first, then the closest
+    sentence before it, then the closest sentence after it. Without a claim-hit
+    sentence every cue ties, so the earliest in the text wins.
+    """
     if not hits:
-        return str(text or "")
-    keep = sorted({j for index in hits for j in (index - 1, index, index + 1) if 0 <= j < len(sentences)})
-    return " ".join(sentences[j] for j in keep)
+        return (0, 0, 0)
+    best: tuple[int, int, int] | None = None
+    for hpi, hsi in hits:
+        if occurrence["pi"] != hpi:
+            continue
+        delta = occurrence["si"] - hsi
+        key = (0, -delta, abs(delta)) if delta <= 0 else (1, delta, abs(delta))
+        if best is None or key < best:
+            best = key
+    return best if best is not None else (2, 0, 0)
+
+
+def _is_anonymous_origin(origin: object, aliases: dict[str, str]) -> bool:
+    """True when a cue's origin names no real source ("sources", "unnamed sources").
+
+    Closed-vocabulary rule: a phrase is anonymous only when every one of its
+    tokens (lowercased, possessive "s" stripped) is in
+    :func:`anonymous_vocabulary`. Any token outside the vocabulary makes it a
+    name ("Insider Gaming", "Source Engine", "People Can Fly"), and a name in
+    ``data/origins.json`` is always named.
+    """
+    folded = _origin_key(origin)
+    if not folded:
+        return True
+    if _is_known_origin_name(folded, aliases):
+        return False
+    tokens = _anonymous_tokens(folded)
+    if not tokens:
+        return True
+    vocabulary = anonymous_vocabulary()
+    return all(token in vocabulary for token in tokens)
+
+
+def _attribution_winner(text: str, claim: dict, aliases: dict[str, str] | None = None) -> str:
+    """The origin the nearest cue in the claim's window attributes it to, or "".
+
+    "According to Bloomberg, A happened. Rockstar said B happened." attributes B
+    to Rockstar: the later cue names a different source, so Bloomberg no longer
+    carries forward, and with several cues the nearest preceding one wins.
+    Anonymous cues ("according to sources") never outrank a named source, so a
+    named outlet in the same sentence wins over a trailing "sources".
+    """
+    if aliases is None:
+        aliases = load_origin_aliases()
+    occurrences, hits = _cue_occurrences(text, claim)
+    named = [occ for occ in occurrences if not _is_anonymous_origin(occ["origin"], aliases)]
+    if not named:
+        return ""
+    ordered = sorted(
+        enumerate(named),
+        key=lambda pair: (_cue_distance(pair[1], hits), pair[0]),
+    )
+    return ordered[0][1]["origin"]
+
+
+def _speech_subjects(text: str, claim: dict) -> list[str]:
+    """Origins that are the subject of a speech verb in the claim's window."""
+    occurrences, _ = _cue_occurrences(text, claim)
+    return [occurrence["origin"] for occurrence in occurrences if occurrence["kind"] == "speech"]
+
+
+def _origins_overlap(left: set[str], right: set[str]) -> bool:
+    """True when two origin-name sets name the same source (containment allowed)."""
+    for a in left:
+        for b in right:
+            if a == b or _contains_name(a, b) or _contains_name(b, a):
+                return True
+    return False
+
+
+def _token_matches_any(token: object, candidates: Iterable[object], aliases: dict[str, str]) -> bool:
+    """True when ``token`` names any origin in ``candidates``."""
+    names = _origin_names(token, aliases)
+    if not names:
+        return False
+    return any(_origins_overlap(names, _origin_names(candidate, aliases)) for candidate in candidates)
 
 
 def _origin_attributed(origin: object, text: str, claim: dict, aliases: dict[str, str]) -> bool:
-    """True when an attribution pattern links ``origin`` to the claim's sentence.
+    """True when the claim's own window attributes it to ``origin``.
 
-    Accepted forms are "according to X", "X said/reports/confirmed/..." (an
-    optional has/have between), and "X data/figures/estimates". A bare mention
-    of the name never counts.
+    Accepted forms are the nearest cue ("according to X", "X said/reports/..."),
+    a first-person self-introduction ("I'm X") and "X data/figures/...". A bare
+    mention of the name never counts, and when a later cue names a different
+    source the earlier cue no longer carries forward.
     """
     names = _origin_names(origin, aliases)
     if not names:
         return False
-    target = cluster.normalize_title(_claim_attribution_text(text, claim))
-    if not target:
-        return False
+    winner = _attribution_winner(text, claim, aliases)
+    if winner and _origins_overlap(names, _origin_names(winner, aliases)):
+        return True
+    target = cluster.normalize_title(text)
     for name in names:
         escaped = re.escape(name)
-        if re.search(
-            rf"\b{escaped}\b(?:\s+(?:has|have|had|is|was|were|will))?\s+(?:{_ATTRIBUTION_VERB_RE})\b",
-            target,
-        ):
-            return True
-        if re.search(rf"\b(?:{_ATTRIBUTION_LEAD_RE})\s+{escaped}\b", target):
-            return True
-        if re.search(rf"\b{escaped}\s+(?:data|figures|numbers|estimates)\b", target):
-            return True
         # A bylined first-person post attributes itself: "I'm Takeshi Yamanaka".
         if re.search(rf"\b(?:i m|i am|my name is)\s+{escaped}\b", target):
+            return True
+        if re.search(rf"\b{escaped}\s+(?:data|figures|numbers|estimates)\b", target):
             return True
     return False
 
@@ -1156,6 +1423,7 @@ def resolve_claim_origins(
     aliases: dict[str, str] | None = None,
     story_id: str = "",
     entities: list[str] | None = None,
+    downgrades: list[dict] | None = None,
 ) -> list[dict]:
     """Canonicalize each claim's origin and drop any its source never names.
 
@@ -1176,9 +1444,15 @@ def resolve_claim_origins(
     aliases = load_origin_aliases() if aliases is None else aliases
     by_url = _sources_by_url(sources)
     resolved: list[dict] = []
+    # Per-source tallies of why origins were dropped, so the run logs one summary
+    # line per source instead of one warning per token. The individual verdicts
+    # are still collected (``downgrades``) for the sheet, so nothing is lost.
+    per_source: dict[str, dict] = {}
     for claim in claims:
         source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
         text = str(source.get("text") or "")
+        claim_url = claim.get("source_url")
+        source_key = _source_url_key(claim_url)
         byline_name, byline_org = _extract_byline(text)
         byline_org_key = _origin_key(byline_org)
         speaker_org_keys = {
@@ -1186,53 +1460,60 @@ def resolve_claim_origins(
             for key in (byline_org_key, _origin_key(claim.get("affiliation")))
             if key
         }
+        speech_subjects = _speech_subjects(text, claim)
         kept: list[str] = []
+
+        def _record(token: str, reason: str) -> None:
+            tally = per_source.setdefault(source_key, {"url": claim_url, "reasons": Counter()})
+            tally["reasons"][reason] += 1
+            if downgrades is not None:
+                downgrades.append({"source_url": claim_url, "origin": token, "reason": reason})
+
         for token in str(claim.get("origin") or "").split(";"):
             token = token.strip()
             token_key = _origin_key(token)
             if not token_key or token_key == UNSTATED_ORIGIN:
                 continue
-            if _is_product_origin(token, entities) and token_key not in speaker_org_keys:
-                logger.warning(
-                    "story %s: origin %r is a product or title, not a speaker, for "
-                    "%s; downgrading to %s",
-                    story_id or "?",
-                    token,
-                    claim.get("source_url"),
-                    UNSTATED_ORIGIN,
-                )
-                continue
-            if not _origin_in_text(token, text, aliases):
-                logger.warning(
-                    "story %s: origin %r is not named in the source text for %s; "
-                    "downgrading to %s",
-                    story_id or "?",
-                    token,
-                    claim.get("source_url"),
-                    UNSTATED_ORIGIN,
-                )
-                continue
-            if not _origin_attributed(token, text, claim, aliases):
+            # A person who is the subject of a speech verb ("Dan Houser says…")
+            # stays a speaker even when their name is also a headline entity;
+            # an announcement verb never rescues a game, character or platform.
+            speech_person = _token_matches_any(token, speech_subjects, aliases)
+            reason = ""
+            if _is_anonymous_origin(token, aliases):
+                reason = "anonymous source"
+            elif (
+                _is_product_origin(token, entities)
+                and token_key not in speaker_org_keys
+                and not speech_person
+            ):
+                reason = "product or title"
+            elif not _origin_in_text(token, text, aliases):
+                reason = "not named in the source text"
+            elif not _origin_attributed(token, text, claim, aliases):
                 # The name appears in the article but not as the producer of
                 # this claim (e.g. it speaks about a different fact). Crediting
                 # it would conflate two statements, so it is downgraded.
-                logger.warning(
-                    "story %s: origin %r is named in the source text for %s but "
-                    "the claim is not attributed to it; downgrading to %s",
-                    story_id or "?",
-                    token,
-                    claim.get("source_url"),
-                    UNSTATED_ORIGIN,
-                )
+                reason = "not attributed"
+            if reason:
+                # An outlet naming itself (usually the extractor mistaking the
+                # publisher for the speaker) is a self-reference, not a genuine
+                # attribution gap, so it is dropped quietly.
+                if _is_publication(token, source):
+                    reason = "outlet self-reference"
+                _record(token, reason)
                 continue
             canonical = canonicalize_origin(token, aliases)
             if canonical not in kept:
                 kept.append(canonical)
         origin = "; ".join(kept) if kept else UNSTATED_ORIGIN
-        # A company post must never leave its speaker unstated: when the article
-        # names a byline, that person produced the claim.
-        if origin == UNSTATED_ORIGIN and byline_name and _origin_in_text(byline_name, text, aliases):
-            origin = canonicalize_origin(byline_name, aliases) or UNSTATED_ORIGIN
+        # A company's own bylined post speaks for itself: a tier-1 own-site post
+        # with a byline self-attributes ("I'm <Name>, <role> at <Company>"), so
+        # its unattributed claims are not left unstated. An outlet that merely
+        # uses "we"/"I" never self-attributes through this path.
+        if origin == UNSTATED_ORIGIN:
+            self_origin = _self_attribution(text, source, byline_name, byline_org, aliases)
+            if self_origin and self_origin != UNSTATED_ORIGIN:
+                origin = self_origin
         affiliation = _normalize_affiliation(claim.get("affiliation"))
         if affiliation and _is_publication(affiliation, source):
             # The extractor named the publishing outlet, not the speaker's
@@ -1257,6 +1538,23 @@ def resolve_claim_origins(
                 "origin": origin,
                 "affiliation": canonical_affiliation,
             }
+        )
+    # One summary line per source. A source whose only drops are its own
+    # self-references is logged at INFO; a genuine attribution gap (unattributed
+    # or unnamed) stays a WARNING so it is not missed.
+    for tally in per_source.values():
+        reasons = tally["reasons"]
+        quiet = all(reason == "outlet self-reference" for reason in reasons)
+        parts = ", ".join(
+            f"{count} {reason}" for reason, count in sorted(reasons.items())
+        )
+        logger.log(
+            logging.INFO if quiet else logging.WARNING,
+            "story %s: %d origin(s) downgraded for %s (%s)",
+            story_id or "?",
+            sum(reasons.values()),
+            tally["url"],
+            parts,
         )
     return resolved
 
@@ -1552,12 +1850,12 @@ def _confirmation_origins(
         affiliation = str(claim.get("affiliation") or "").strip().lower()
         if affiliation and affiliation != UNSTATED_ORIGIN:
             canonical = canonicalize_origin(affiliation, aliases)
-            if canonical and canonical != UNSTATED_ORIGIN:
+            if canonical and canonical != UNSTATED_ORIGIN and not _is_anonymous_origin(canonical, aliases):
                 bucket.add(canonical)
                 continue
         for token in str(claim.get("origin") or "").split(";"):
             canonical = canonicalize_origin(token, aliases)
-            if canonical and canonical != UNSTATED_ORIGIN:
+            if canonical and canonical != UNSTATED_ORIGIN and not _is_anonymous_origin(canonical, aliases):
                 bucket.add(canonical)
     names = {max(bucket, key=len) for bucket in per_source.values() if bucket}
     return _collapse_contained_origins(names)
@@ -2098,6 +2396,7 @@ def _write_unconfirmed_sheet(
     primary: list[str] | None = None,
     canonical: list[str] | None = None,
     grounding_details: list[dict] | None = None,
+    origin_downgrades: list[dict] | None = None,
 ) -> Optional[Path]:
     """Persist a rejected story's sheet under ``<output_dir>/unconfirmed/``.
 
@@ -2126,6 +2425,7 @@ def _write_unconfirmed_sheet(
             {"claim": entry["claim"].get("claim"), "reason": entry["reason"]}
             for entry in (grounding_details or [])
         ],
+        "origins_downgraded": list(origin_downgrades or []),
         "coherence": {
             "checked": bool(primary),
             "primary_entities": primary,
@@ -2257,8 +2557,14 @@ def facts(
 
     # Origins are canonicalized and verified against each claim's own source
     # text before anything is counted or stored; a product/title is not an origin.
+    origin_downgrades: list[dict] = []
     kept = resolve_claim_origins(
-        kept, sources, aliases=aliases, story_id=name, entities=canonical
+        kept,
+        sources,
+        aliases=aliases,
+        story_id=name,
+        entities=canonical,
+        downgrades=origin_downgrades,
     )
 
     tier1_present = any(int(source.get("tier") or 0) == 1 for source in sources)
@@ -2338,6 +2644,7 @@ def facts(
         _write_unconfirmed_sheet(
             output_dir, name, now, confirmation, central, kept, claims, sheet_sources, dropped,
             primary=primary, canonical=canonical, grounding_details=ungrounded_details,
+            origin_downgrades=origin_downgrades,
         )
         raise UnconfirmedStory(message)
 
@@ -2352,6 +2659,7 @@ def facts(
             {"claim": entry["claim"].get("claim"), "reason": entry["reason"]}
             for entry in ungrounded_details
         ],
+        "origins_downgraded": origin_downgrades,
         "coherence": {
             "checked": bool(primary),
             "primary_entities": primary,

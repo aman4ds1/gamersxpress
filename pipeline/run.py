@@ -545,6 +545,12 @@ def run(
         max_candidates = int(
             score_section.get("max_candidates_per_run", score_stage.DEFAULT_MAX_CANDIDATES_PER_RUN)
         )
+        max_candidates_per_entity = int(
+            score_section.get(
+                "max_candidates_per_entity",
+                score_stage.DEFAULT_MAX_CANDIDATES_PER_ENTITY,
+            )
+        )
         budget = int(
             score_section.get("model_call_budget", score_stage.DEFAULT_MODEL_CALL_BUDGET)
         )
@@ -559,6 +565,7 @@ def run(
             candidates = score_stage.pick_candidates(
                 clusters,
                 max_candidates=max_candidates,
+                max_candidates_per_entity=max_candidates_per_entity,
                 min_score=min_score,
                 min_score_corroborated=min_score_corroborated,
                 weights=weights,

@@ -39,6 +39,10 @@ DEFAULT_PERFORMANCE_PATH = PROJECT_ROOT / "data" / "topic-performance.json"
 DEFAULT_MIN_SCORE = 65
 DEFAULT_MIN_SCORE_CORROBORATED = 55
 DEFAULT_MAX_CANDIDATES_PER_RUN = 5
+#: Candidate diversity: at most this many candidates may share one lead entity
+#: per run, so three GTA 6 clusters cannot fill the whole run. The lead entity is
+#: the cluster's first non-umbrella primary entity (``score.umbrella_entities``).
+DEFAULT_MAX_CANDIDATES_PER_ENTITY = 2
 DEFAULT_MODEL_CALL_BUDGET = 12
 #: Minimum distinct source URLs a cluster needs to be eligible. config.yaml's
 #: ``content_limits.min_sources`` is the single source of truth (shared with the
@@ -658,6 +662,7 @@ def pick_candidates(
     clusters: Iterable[dict],
     *,
     max_candidates: int = DEFAULT_MAX_CANDIDATES_PER_RUN,
+    max_candidates_per_entity: int | None = DEFAULT_MAX_CANDIDATES_PER_ENTITY,
     min_score: float = DEFAULT_MIN_SCORE,
     min_score_corroborated: float | None = None,
     weights: dict | None = None,
@@ -675,6 +680,11 @@ def pick_candidates(
     clusters are visited in descending score order and each must reach its own
     :func:`min_score_for` threshold — but :func:`rank` runs a single time for the
     whole run instead of once per candidate.
+
+    Diversity: at most ``max_candidates_per_entity`` candidates may share one
+    lead entity (:func:`cluster.lead_entity`, the first non-umbrella primary
+    entity), so three GTA 6 clusters fill only two slots. Clusters with no lead
+    entity are never capped against each other. Order is otherwise unchanged.
     """
     if min_score_corroborated is None:
         min_score_corroborated = load_min_score_corroborated()
@@ -696,10 +706,25 @@ def pick_candidates(
             len(ranked),
         )
         return []
+    per_entity_cap = (
+        None
+        if max_candidates_per_entity is None
+        else max(1, int(max_candidates_per_entity))
+    )
     picked: list[dict] = []
+    entity_counts: dict[str, int] = {}
     for best in eligible:
         if len(picked) >= int(max_candidates):
             break
+        key = _lead_entity_key(best)
+        if per_entity_cap is not None and key and entity_counts.get(key, 0) >= per_entity_cap:
+            logger.info(
+                "skipping story %s: lead entity %r already has %d candidate(s)",
+                best["id"],
+                key,
+                entity_counts[key],
+            )
+            continue
         threshold = min_score_for(
             best, min_score=min_score, min_score_corroborated=min_score_corroborated
         )
@@ -709,6 +734,8 @@ def pick_candidates(
                 best["id"], best["score"], threshold, best["category"],
             )
             picked.append(best)
+            if key:
+                entity_counts[key] = entity_counts.get(key, 0) + 1
     if not picked:
         top = eligible[0]
         logger.info(
@@ -717,11 +744,32 @@ def pick_candidates(
     return picked
 
 
+def _lead_entity_key(cluster_dict: dict) -> str:
+    """The diversity key for one cluster: its lead (non-umbrella) entity.
+
+    Prefers the seed title, so a GTA 6 story keys on "gta 6" while an Xbox Labs
+    story keys on "xbox labs" and an Asha Sharma story on "asha sharma". Falls
+    back to the cluster's own primary entities when there is no title.
+    """
+    title = str(cluster_dict.get("title") or "")
+    if title:
+        lead = cluster.lead_entity(title)
+        if lead:
+            return lead
+    umbrella = cluster.umbrella_entities()
+    for entity in cluster_dict.get("entities") or []:
+        key = cluster.normalize_title(str(entity))
+        if key and key not in umbrella:
+            return key
+    return ""
+
+
 __all__ = [
     "CATEGORY_KEYWORDS",
     "DEFAULT_CATEGORY",
     "DEFAULT_EXCLUDE_TITLE_PATTERNS",
     "DEFAULT_MAX_CANDIDATES_PER_RUN",
+    "DEFAULT_MAX_CANDIDATES_PER_ENTITY",
     "DEFAULT_MIN_SCORE",
     "DEFAULT_MIN_SCORE_CORROBORATED",
     "DEFAULT_MIN_SOURCES",
