@@ -3,8 +3,10 @@
 Takes a cluster (the output of the dedupe/cluster stage) and fetches the full
 text of each item's URL. robots.txt is respected before every fetch (via
 ``urllib.robotparser``); denied or unresolvable robots files default to allow.
-Fetches use trafilatura, which downloads the page and extracts the article
-text. Failures are recorded per source and never crash the stage.
+Pages are downloaded by :func:`fetch_html_and_url` (the default fetcher), which
+follows redirects and reports the URL the response finally came from, and the
+article text is extracted from that HTML with trafilatura. Failures are recorded
+per source and never crash the stage.
 
 Output is written to ``data/gathered/<cluster-id>.json``:
 
@@ -14,10 +16,14 @@ Output is written to ``data/gathered/<cluster-id>.json``:
       "fingerprint": {"format": 1, "value": "<hash of id + settings>"},
       "sources": [
         {
-          "link": "...", "title": "...", "source_name": "...", "tier": 1,
-          "owner": "...", "region": "us", "published": "...", "status": "ok",
-          "text": "<full text>", "error": null
+          "link": "...", "final_url": "...", "title": "...", "source_name": "...",
+          "tier": 1, "owner": "...", "region": "us", "published": "...",
+          "status": "ok", "text": "<full text>", "error": null
         }
+
+``final_url`` is the URL the page finally resolved to after redirects (equal to
+``link`` when there was none); the post-gather re-attribution credits the source
+that owns ``final_url``, not the feed the item arrived from.
       ]
     }
 
@@ -60,7 +66,11 @@ FETCH_TIMEOUT_SECONDS = 20
 REQUEST_DELAY_SECONDS = 1.0
 # Bump when fetch/extract handling that can change the stored text is tuned, so
 # previously-gathered files read as stale and are re-fetched.
-GATHER_SETTINGS_VERSION = 3
+GATHER_SETTINGS_VERSION = 4
+#: Largest response body accepted for one source page. Mirrors trafilatura's
+#: default ``MAX_FILE_SIZE`` (20 MB): the previous default fetcher streamed a
+#: download up to this cap, and the stdlib fetcher enforces the same limit.
+MAX_FILE_SIZE = 20_000_000
 
 logger = logging.getLogger("gamersxpress.pipeline.gather")
 
@@ -88,21 +98,56 @@ def fetch_html(url: str) -> Optional[str]:
     return trafilatura.fetch_url(url, config=_trafilatura_settings())
 
 
+def _looks_like_html(content_type: str, body: bytes) -> bool:
+    """True when a response is HTML by its content type or opening bytes.
+
+    An HTML content type is trusted; otherwise a body that opens like an HTML
+    document is accepted. This mirrors the ingest stage's feed sniff and the
+    "dubious HTML" test trafilatura applied to the previous default fetcher's
+    output, so a JSON, image or PDF body is rejected instead of reaching
+    extraction as if it were a page.
+    """
+    if "html" in (content_type or "").lower():
+        return True
+    head = body[:256].lstrip().lower()
+    return head.startswith(b"<!doctype html") or b"<html" in head
+
+
 def fetch_html_and_url(url: str) -> tuple[Optional[str], str]:
     """Download one page with urllib, returning ``(html, final_url)``.
 
-    Unlike :func:`fetch_html` this follows redirects and reports the URL the
-    response actually came from, which the re-attribution pass needs to credit
-    the page's real owner. Raises on transport errors so the caller records them.
+    This is the default fetcher. It follows redirects and reports the URL the
+    response finally came from, which the post-gather re-attribution needs to
+    credit the page's real owner. It keeps the previous trafilatura default's
+    User-Agent, timeout, size limit and HTML content-type check, but uses the
+    stdlib so a blocked page (HTTP 403/429) raises on the first response and is
+    never retried, and it never disguises itself as a browser.
+
+    A non-HTML or oversized response is rejected with a logged warning (and a
+    raised error the caller records); it is never silently retried through the
+    old :func:`fetch_html` path, so a per-page difference stays visible.
     """
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
     with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
         final_url = response.geturl() or url
+        content_type = response.headers.get_content_type()
         try:
             charset = response.headers.get_content_charset()
         except Exception:  # noqa: BLE001 - fall back to utf-8
             charset = None
-        raw = response.read()
+        # Read one byte past the cap so an oversized body is detected, not cut.
+        raw = response.read(MAX_FILE_SIZE + 1)
+    if len(raw) > MAX_FILE_SIZE:
+        logger.warning(
+            "fetch %s: response larger than %d bytes; rejecting (trafilatura default cap)",
+            url, MAX_FILE_SIZE,
+        )
+        raise ValueError(f"response larger than {MAX_FILE_SIZE} bytes")
+    if not _looks_like_html(content_type, raw):
+        logger.warning(
+            "fetch %s: body is not HTML (content-type=%s); rejecting", url, content_type,
+        )
+        raise ValueError(f"body is not HTML (content-type={content_type})")
     return raw.decode(charset or "utf-8", "replace"), final_url
 
 
@@ -156,7 +201,7 @@ def gather(
     now: dt.datetime | None = None,
     robots: bool = True,
     robots_call: Callable[[str], bool] = robots_allowed,
-    fetcher: Callable[[str], Optional[str]] = fetch_html,
+    fetcher: Callable[[str], object] = fetch_html_and_url,
     extractor: Callable[[str], Optional[str]] = extract_text,
     delay: float = REQUEST_DELAY_SECONDS,
     sleep: Callable[[float], None] = time.sleep,

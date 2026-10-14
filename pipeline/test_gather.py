@@ -1,11 +1,13 @@
 import datetime as dt
 import json
 import threading
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 import gather
+import ingest
 
 NOW = dt.datetime(2026, 10, 9, 12, 0, 0, tzinfo=dt.timezone.utc)
 
@@ -293,6 +295,139 @@ def test_gather_records_final_url_from_tuple_fetcher(tmp_path):
 def test_gather_records_final_url_equal_to_link_for_plain_fetcher(tmp_path):
     result = run_gather(tmp_path, fetcher=lambda url: "<html>x</html>", extractor=lambda html: "text")
     assert result["sources"][0]["final_url"] == "https://a.example/1"
+
+
+def test_redirect_to_another_domain_is_recorded_and_demoted_to_tier3(tmp_path):
+    # A short link on a configured tier-1 feed redirects to a blog we do not
+    # configure: the page must be credited to the domain it finally lived on.
+    def fetcher(url):
+        return "<html>page</html>", "https://someblog.example/post"
+
+    result = run_gather(
+        tmp_path,
+        items=[item(1, "https://t.co/x", "Xbox Wire", 1, "microsoft")],
+        fetcher=fetcher,
+        extractor=lambda html: "text",
+    )
+    source = result["sources"][0]
+    assert source["final_url"] == "https://someblog.example/post"
+
+    sources = [{"name": "Xbox Wire", "site": "https://news.xbox.com", "tier": 1, "owner": "microsoft"}]
+    ingest.reattribute_gathered(result, sources)
+    # Post-gather re-attribution uses final_url, so the unconfigured domain wins:
+    # the source drops to tier 3 and can no longer confirm a story (PLAN.md
+    # principle: tier 3 never counts toward confirmation).
+    assert source["source_name"] == "someblog.example"
+    assert source["tier"] == 3
+    assert source["owner"] == "someblog.example"
+    assert source["external"] is True
+
+
+def test_same_domain_redirect_keeps_the_source_tier(tmp_path):
+    # eurogamer.net -> www.eurogamer.net is the same registrable domain, so the
+    # configured source keeps its tier.
+    def fetcher(url):
+        return "<html>page</html>", "https://www.eurogamer.net/foo"
+
+    result = run_gather(
+        tmp_path,
+        items=[item(1, "https://eurogamer.net/foo", "Eurogamer", 2, "ign-entertainment")],
+        fetcher=fetcher,
+        extractor=lambda html: "text",
+    )
+    sources = [{"name": "Eurogamer", "site": "https://www.eurogamer.net", "tier": 2, "owner": "ign-entertainment"}]
+    ingest.reattribute_gathered(result, sources)
+    source = result["sources"][0]
+    assert source["final_url"] == "https://www.eurogamer.net/foo"
+    assert source["tier"] == 2
+    assert source["source_name"] == "Eurogamer"
+
+
+class _RedirectHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/short":
+            self.send_response(302)
+            self.send_header("Location", "/final")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = b"<html><body><h1>final page</h1></body></html>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def test_fetcher_follows_redirect_and_reports_final_url():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _RedirectHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        html, final_url = gather.fetch_html_and_url(f"{base}/short")
+        assert html is not None and "final page" in html
+        assert final_url == f"{base}/final"
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+class _ForbiddenHandler(BaseHTTPRequestHandler):
+    requests = 0
+
+    def do_GET(self):
+        type(self).requests += 1
+        self.send_response(403)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+def test_403_is_not_retried():
+    _ForbiddenHandler.requests = 0
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ForbiddenHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/blocked"
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            gather.fetch_html_and_url(url)
+        assert excinfo.value.code == 403
+        assert _ForbiddenHandler.requests == 1, "a 403 must not be retried"
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_non_html_response_is_rejected():
+    class _JsonHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"not": "html"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _JsonHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/data.json"
+        with pytest.raises(ValueError, match="not HTML"):
+            gather.fetch_html_and_url(url)
+    finally:
+        server.shutdown()
+        thread.join()
 
 
 def test_update_fetch_health_tracks_success_and_failure_per_domain(tmp_path):

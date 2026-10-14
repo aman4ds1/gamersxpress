@@ -965,3 +965,63 @@ def test_run_reattributes_wire_item_to_the_link_owner(tmp_path):
     assert stored["source_name"] == "IGN"
     assert stored["tier"] == 2
     assert stored["discovered_via"] == "Xbox Wire"
+
+
+def test_post_gather_redirect_to_unconfigured_domain_cannot_confirm(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config = {
+        "sources": [
+            {"name": "Xbox Wire", "site": "https://news.xbox.com",
+             "feed_url": "https://news.xbox.com/feed", "tier": 1, "owner": "microsoft",
+             "region": "us", "categories": ["xbox"], "topic": "gaming"},
+            {"name": "PlayStation Blog", "site": "https://blog.playstation.com",
+             "feed_url": "https://blog.playstation.com/feed", "tier": 1, "owner": "sony",
+             "region": "us", "categories": ["playstation"], "topic": "gaming"},
+        ],
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    paths = make_paths(tmp_path)
+    headline = "Xbox Wire and PlayStation Blog share a new story"
+    items = [
+        {"title": headline, "link": "https://news.xbox.com/a", "source_name": "Xbox Wire",
+         "tier": 1, "owner": "microsoft", "region": "us", "published": NOW.isoformat(),
+         "age_hours": 1.0, "source_domain": "xbox.com", "discovered_via": "Xbox Wire",
+         "fetchable": True},
+        {"title": headline, "link": "https://blog.playstation.com/b",
+         "source_name": "PlayStation Blog", "tier": 1, "owner": "sony", "region": "us",
+         "published": NOW.isoformat(), "age_hours": 1.0, "source_domain": "playstation.com",
+         "discovered_via": "PlayStation Blog", "fetchable": True},
+    ]
+
+    def gather_fn(chosen, *, output_dir=None, id=None):
+        # Both pages finally resolve to domains we do not configure, so the
+        # post-gather re-attribution (by final_url) demotes each to tier 3.
+        # Tier 3 never counts, so the candidate cannot confirm and is rejected
+        # before any model call.
+        return {
+            "id": id, "gathered_at": NOW.isoformat(),
+            "sources": [
+                {"link": "https://news.xbox.com/a",
+                 "final_url": "https://mirrorblog.example/a", "source_name": "Xbox Wire",
+                 "tier": 1, "owner": "microsoft", "region": "us", "status": "ok",
+                 "text": "x" * 500, "error": None, "fetchable": True},
+                {"link": "https://blog.playstation.com/b",
+                 "final_url": "https://otherblog.example/b", "source_name": "PlayStation Blog",
+                 "tier": 1, "owner": "sony", "region": "us", "status": "ok",
+                 "text": "x" * 500, "error": None, "fetchable": True},
+            ],
+        }
+
+    result = run_module.run(
+        paths=paths, now=NOW, env={}, config_path=str(config_path),
+        ingest_fn=ingest_fn_for(items),
+        gather_fn=gather_fn,
+        generate=dryrun.make_generate("pass"),
+        link_checker=lambda url: 200, site_checks=STUB_CHECKS,
+    )
+    assert result.status == "nothing"
+    assert result.exit_code == 0
+    assert result.run_state.calls == 0, "a demoted story must spend no model calls"
+    report = latest_candidates_report(paths)
+    assert report["candidates"][0]["reason"] == "insufficient sources"
+    assert report["candidates"][0]["outcome"] == "not ready"
