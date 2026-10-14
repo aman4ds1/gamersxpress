@@ -436,6 +436,75 @@ def is_stop_entity(name: object, *, stop: Iterable[str] | None = None) -> bool:
     )
 
 
+# --- generic entities --------------------------------------------------------
+#
+# Some capitalized words look like names but only place a story in a category: a
+# platform class ("PC"), a technology ("AI"), an article role ("Update"). They
+# are still extracted (a headline may use them), but they are *generic*: on
+# their own they never make a claim on-topic, so they never define a story.
+# The editorial words can be extended from ``facts.entity_generic_list`` in
+# config.yaml; the defaults stay in code so extraction works without config.
+
+_DEFAULT_GENERIC_ENTITIES = frozenset({
+    "pc", "ai", "console", "consoles", "game", "games", "gaming", "update",
+    "updates", "ip",
+})
+
+_GENERIC_ENTITY_CACHE: dict[str, frozenset[str]] = {}
+
+
+def entity_generic_list(path: str | Path | None = None) -> frozenset[str]:
+    """Lowercased words that name a category, not a story entity.
+
+    Combines the built-in defaults with ``facts.entity_generic_list`` from
+    config.yaml, so the owner can extend the list without touching code. A
+    missing or malformed file yields the defaults. Cached per resolved path.
+    """
+    resolved = str(Path(path).resolve()) if path else str(DEFAULT_CONFIG_PATH.resolve())
+    cached = _GENERIC_ENTITY_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+    generic = set(_DEFAULT_GENERIC_ENTITIES)
+    try:
+        raw = yaml.safe_load(Path(resolved).read_text(encoding="utf-8")) or {}
+        entries = (raw.get("facts") or {}).get("entity_generic_list") or []
+    except (OSError, yaml.YAMLError):
+        entries = []
+    for entry in entries:
+        text = re.sub(r"\s+", " ", strip_diacritics(str(entry)).lower()).strip()
+        if text:
+            generic.add(text)
+    result = frozenset(generic)
+    _GENERIC_ENTITY_CACHE[resolved] = result
+    return result
+
+
+def _is_generic_word(word: str, generic: frozenset[str]) -> bool:
+    """True for a listed word or the singular of a plural acronym ("IPs")."""
+    if word in generic:
+        return True
+    return len(word) > 2 and word.endswith("s") and word[:-1] in generic
+
+
+def is_generic_entity(name: object, *, generic: Iterable[str] | None = None) -> bool:
+    """True when ``name`` names a category and not a story subject.
+
+    A single generic word ("PC", "AI"), a plural acronym that folds to one
+    ("IPs"), or a phrase whose every word is generic ("game update") is generic.
+    A name that merely contains a generic word ("PC Gamer") is kept.
+    """
+    generic_set = entity_generic_list() if generic is None else frozenset(generic)
+    folded = re.sub(r"\s+", " ", strip_diacritics(str(name or "")).lower()).strip()
+    if not folded:
+        return False
+    if folded in generic_set:
+        return True
+    words = re.findall(r"[^\W_]+", folded)
+    if not words:
+        return False
+    return all(_is_generic_word(word, generic_set) for word in words)
+
+
 def _story_phrase_tokens(title: str) -> list[list[str]]:
     """Proper-name phrases as token lists, split at separating connectors."""
     phrases: list[list[str]] = []
@@ -498,22 +567,87 @@ def _format_story_phrase(tokens: list[str]) -> str:
     return " ".join(words)
 
 
+_SENTENCE_END_RE = re.compile(r"[.!?]+|[\"\u201c\u201d]")
+_CAP_WORD_RE = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*")
+
+
+def _sentence_initial_words(title: str) -> set[str]:
+    """Lowercased first word of every sentence/quote in ``title``."""
+    words: set[str] = set()
+    for segment in _SENTENCE_END_RE.split(str(title or "")):
+        for match in _CAP_WORD_RE.finditer(segment):
+            word = strip_diacritics(match.group()).lower()
+            if word:
+                words.add(word)
+            break
+    return words
+
+
+def _capitalized_counts(title: str) -> dict[str, int]:
+    """How often each word appears capitalized (for the "elsewhere" rule)."""
+    counts: dict[str, int] = {}
+    for match in _CAP_WORD_RE.finditer(str(title or "")):
+        raw = match.group()
+        if raw[:1].isupper():
+            word = strip_diacritics(raw).lower()
+            counts[word] = counts.get(word, 0) + 1
+    return counts
+
+
+def _is_acronym(word: str) -> bool:
+    """True for an all-caps token such as "DMZ", "PC" or "PS5"."""
+    letters = [char for char in word if char.isalpha()]
+    return len(letters) > 1 and all(char.isupper() for char in letters)
+
+
+def _is_sentence_leading_junk(
+    tokens: list[str],
+    sentence_initial: set[str],
+    cap_counts: dict[str, int],
+    known: frozenset[str],
+) -> bool:
+    """True for a lone sentence-initial word that is no story entity.
+
+    A single capitalized word at the start of a sentence or quote is dropped
+    unless it is a known entity, an acronym ("DMZ", "PC") or appears capitalized
+    elsewhere in the title. This is what stops a leading "They", "Hundreds" or a
+    sentence-initial gerund from being read as a name.
+    """
+    if len(tokens) != 1:
+        return False
+    token = tokens[0]
+    folded = strip_diacritics(token).lower()
+    if folded not in sentence_initial:
+        return False
+    if folded in known or _is_acronym(token) or cap_counts.get(folded, 0) > 1:
+        return False
+    return True
+
+
 def story_phrases(title: str) -> list[str]:
     """Full proper-name phrases in ``title``, in order of first appearance.
 
     Words joined by a binding connector ("of", "the") stay one phrase; the
     separating words and punctuation end it. An internal colon is preserved, so
     "Call of Duty: Modern Warfare 4" is one phrase. Bare numbers, generic news
-    words and lone leading words never start a phrase.
+    words, stop entities and lone sentence-leading words never start a phrase.
     """
+    known = load_known_names()
+    sentence_initial = _sentence_initial_words(title)
+    cap_counts = _capitalized_counts(title)
     phrases: list[str] = []
     for tokens in _story_phrase_tokens(title):
         cleaned = _clean_story_phrase(tokens)
         if not cleaned or not any(char.isalpha() for char in "".join(cleaned)):
             continue
         text = _format_story_phrase(cleaned)
-        if text and text not in phrases:
-            phrases.append(text)
+        if not text or text in phrases:
+            continue
+        if is_stop_entity(text):
+            continue
+        if _is_sentence_leading_junk(cleaned, sentence_initial, cap_counts, known):
+            continue
+        phrases.append(text)
     return phrases
 
 
@@ -571,6 +705,37 @@ def story_entities(
             if entity and entity not in entities:
                 entities.append(entity)
     return entities
+
+
+def entity_classes(
+    title: str, *, known: Iterable[str] | None = None, generic: Iterable[str] | None = None
+) -> dict[str, str]:
+    """Every entity in ``title`` mapped to ``"primary"`` or ``"generic"``.
+
+    Primary entities are the people, companies, studios, games, products,
+    characters and events a story is about; generic entities are the category
+    words ("PC", "AI", "IPs") that only place a story in a topic. A generic
+    entity never makes a claim on-topic on its own.
+    """
+    generic_set = entity_generic_list() if generic is None else frozenset(generic)
+    classes: dict[str, str] = {}
+    for entity in story_entities(title, known=known):
+        classes[entity] = (
+            "generic" if is_generic_entity(entity, generic=generic_set) else "primary"
+        )
+    return classes
+
+
+def primary_entities(
+    title: str, *, known: Iterable[str] | None = None, generic: Iterable[str] | None = None
+) -> list[str]:
+    """The story-defining entities in ``title``: the non-generic entities."""
+    generic_set = entity_generic_list() if generic is None else frozenset(generic)
+    return [
+        entity
+        for entity in story_entities(title, known=known)
+        if not is_generic_entity(entity, generic=generic_set)
+    ]
 
 
 def story_type(title: str) -> str:
@@ -1322,6 +1487,10 @@ __all__ = [
     "load_known_names",
     "entity_stop_list",
     "is_stop_entity",
+    "entity_generic_list",
+    "is_generic_entity",
+    "entity_classes",
+    "primary_entities",
     "load_pool",
     "load_seen",
     "mark_seen",

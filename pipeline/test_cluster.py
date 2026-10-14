@@ -548,6 +548,57 @@ def test_entity_stop_list_rejects_calendar_and_generic_phrases():
     assert not cluster.is_stop_entity("Phoenix Cyclops")
 
 
+# --- sentence-leading junk and generic entities -------------------------------
+
+LAYPOS_TITLE = (
+    "Hundreds of layoffs and many cancelled projects later, Xbox CEO Asha "
+    "Sharma reportedly says 'we will not survive' without new IPs"
+)
+CALLISTO_TITLE = (
+    "'They thought Callisto was a complete failure': Glen Schofield blames "
+    "publishers Krafton for The Callisto Protocol's crash landing"
+)
+
+
+def _lowered(items):
+    return {str(item).lower() for item in items}
+
+
+def test_sentence_leading_pronoun_is_not_an_entity():
+    assert "they" not in _lowered(cluster.story_phrases(CALLISTO_TITLE))
+    assert "they" not in cluster.story_entities(CALLISTO_TITLE)
+
+
+def test_quantity_word_is_not_an_entity():
+    assert "hundreds" not in _lowered(cluster.story_phrases(LAYPOS_TITLE))
+    assert "hundreds" not in cluster.story_entities(LAYPOS_TITLE)
+
+
+def test_layoffs_headline_primary_entities_exclude_junk():
+    primary = set(cluster.primary_entities(LAYPOS_TITLE))
+    assert {"asha sharma", "xbox"} <= primary
+    assert "hundreds" not in primary
+    assert "ips" not in primary
+
+
+def test_generic_entities_are_classified_and_plural_acronyms_fold():
+    assert cluster.is_generic_entity("PC")
+    assert cluster.is_generic_entity("AI")
+    assert cluster.is_generic_entity("IPs")
+    assert not cluster.is_generic_entity("Xbox")
+    classes = cluster.entity_classes("GTA 6 Reportedly Coming to PC in Q1 2027")
+    assert classes["pc"] == "generic"
+    assert classes["gta 6"] == "primary"
+    assert "pc" not in cluster.primary_entities("GTA 6 Reportedly Coming to PC in Q1 2027")
+
+
+def test_sentence_initial_word_counts_when_capitalized_elsewhere():
+    # "Krafton" is no known name and appears once, so a leading "Krafton" is not
+    # trusted as the subject; the same word later in the title is.
+    assert "krafton" not in _lowered(cluster.story_phrases("Krafton delays the game"))
+    assert "krafton" in _lowered(cluster.story_phrases("The studio Krafton delays the game"))
+
+
 def test_entities_drop_stop_words_but_keep_real_names():
     items = [{"title": "Phoenix Cyclops joins on November 2"}]
     assert cluster._entities(items) == ["Phoenix Cyclops"]

@@ -237,6 +237,76 @@ facts:
     - edition
     - editions
     - year 1 dlc
+    # Sentence-leading pronouns look like names because a headline is
+    # title-cased ("'They thought Callisto was a complete failure'") but never
+    # identify a story. A single sentence-initial capitalized word is also
+    # dropped unless it is a known entity, an acronym or appears capitalized
+    # elsewhere in the title (see story_phrases in cluster.py).
+    - they
+    - them
+    - their
+    - theirs
+    - themselves
+    - we
+    - us
+    - our
+    - ours
+    - ourselves
+    - you
+    - your
+    - yours
+    - he
+    - him
+    - his
+    - she
+    - her
+    - hers
+    - it
+    - its
+    - this
+    - that
+    - these
+    - those
+    - i
+    - me
+    - my
+    - mine
+    # Quantity words that begin a headline ("Hundreds of layoffs ...").
+    - hundreds
+    - thousands
+    - millions
+    - billions
+    - dozens
+    - many
+    - several
+    - few
+    - some
+    - lots
+    # Common sentence-initial words, including question openers.
+    - everything
+    - here
+    - there
+    - what
+    - when
+    - where
+    - why
+    - how
+  # Generic entities (pipeline/cluster.py). A word or phrase that only places a
+  # story in a category -- a platform class, a technology, an article role --
+  # never identifies the story itself, so on its own it can never make a claim
+  # on-topic. Matching is case- and accent-insensitive and a plural trailing
+  # "s" is stripped before the lookup ("IPs" -> "ip", "PCs" -> "pc").
+  entity_generic_list:
+    - pc
+    - ai
+    - console
+    - consoles
+    - game
+    - games
+    - gaming
+    - update
+    - updates
+    - ip
   # A tier-1 source only sets the story's central claim when its own claim
   # restates at least this fraction of the seed headline's significant tokens
   # (its canonical entity words, month names and numbers). A tier-1 source that

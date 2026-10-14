@@ -1894,15 +1894,19 @@ def primary_entities(
     expanded into themselves plus the sub-entities their connectors split them
     into (:func:`cluster.sub_entities`), so a claim that names only part of a
     long phrase ("Call of Duty" inside "Call of Duty: Modern Warfare 4") is still
-    recognized as on-topic. Falls back to the cluster's reported entities when no
-    headline parses.
+    recognized as on-topic. Generic entities ("PC", "AI", "IPs") are dropped: a
+    category word never makes a claim on-topic on its own. Falls back to the
+    cluster's reported entities when no headline parses.
     """
     chosen = _chosen_display_entities(title, source_titles)
     if not chosen:
         chosen = [str(entity).strip() for entity in (entities or []) if str(entity).strip()]
     stop = cluster.entity_stop_list()
     chosen = [entity for entity in chosen if not cluster.is_stop_entity(entity, stop=stop)]
-    return _expand_entities(chosen)
+    return [
+        entity for entity in _expand_entities(chosen)
+        if not cluster.is_generic_entity(entity)
+    ]
 
 
 def canonical_entities(

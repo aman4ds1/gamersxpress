@@ -1745,6 +1745,79 @@ def test_coherence_drops_a_claim_about_an_unrelated_game():
     assert len(dropped) == 1
 
 
+def test_coherence_drops_a_quantity_claim_for_the_layoffs_story():
+    # "Hundreds" is no entity, so a claim that names only it is off-topic even
+    # though the headline also opens with it.
+    claims = [
+        claim(
+            claim="Hundreds of players joined the free weekend",
+            value="hundreds of players",
+            source_url="https://a.example/1",
+        )
+    ]
+    sources = [source(link="https://a.example/1", name="Alpha", title="Alpha weekly digest")]
+    kept, dropped, primary = facts.coherence_check(claims, sources, title=ASHA_TITLE)
+    assert kept == []
+    assert len(dropped) == 1
+    assert {"asha sharma", "xbox"} <= set(primary)
+    assert "hundreds" not in primary
+    assert "ips" not in primary
+
+
+def test_coherence_keeps_the_asha_sharma_claim_from_the_layoffs_story():
+    # The generic/quantity cleanup must not drop the person the headline names.
+    claims = [
+        claim(
+            claim="Asha Sharma tells Xbox staff the company needs new IP",
+            value="new IP",
+            source_url="https://a.example/1",
+        )
+    ]
+    sources = [source(link="https://a.example/1", name="Alpha", title="Alpha weekly digest")]
+    kept, dropped, primary = facts.coherence_check(claims, sources, title=ASHA_TITLE)
+    assert len(kept) == 1
+    assert dropped == []
+    assert "asha sharma" in primary
+
+
+GTA_TITLE = "GTA 6 Reportedly Coming to PC in Q1 2027"
+
+
+def test_coherence_generic_only_claim_needs_an_on_topic_source():
+    claims = [
+        claim(claim="PC gaming is growing fast", value="PC", source_url="https://a.example/1"),
+    ]
+    off_topic = [source(link="https://a.example/1", name="Alpha", title="Alpha weekly digest")]
+    kept, dropped, primary = facts.coherence_check(claims, off_topic, title=GTA_TITLE)
+    assert "pc" not in primary
+    assert kept == []
+    assert len(dropped) == 1
+
+    on_topic = [
+        source(
+            link="https://a.example/1",
+            name="Alpha",
+            title="GTA 6 PC version arrives in Q1 2027",
+        )
+    ]
+    kept, dropped, _ = facts.coherence_check(claims, on_topic, title=GTA_TITLE)
+    assert len(kept) == 1
+    assert dropped == []
+
+
+def test_central_claim_of_kind_opinion_is_not_confirmable():
+    result = facts.confirmation_from_sources(
+        [source(tier=1)],
+        claims=[
+            claim(claim="Xbox needs new IP", kind="opinion", source_url="https://a.example/1")
+        ],
+        merged={"kind": "opinion"},
+    )
+    assert result["confirmed"] is False
+    assert result["rule"] == "unconfirmed"
+    assert result["reason"] == "the central claim is an opinion"
+
+
 # --- unconfirmed sheets keep the full diagnostics ----------------------------
 
 
