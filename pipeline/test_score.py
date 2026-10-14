@@ -1,3 +1,5 @@
+import time
+
 import cluster as cluster_mod
 import score
 
@@ -548,3 +550,67 @@ def test_filter_excluded_items_reports_each_pattern_once():
 
 def test_default_max_candidates_per_run_is_five():
     assert score.DEFAULT_MAX_CANDIDATES_PER_RUN == 5
+
+
+# --- pick_candidates: one ranking pass per run --------------------------------
+
+
+def _confirmable_cluster(index, *, owners=("a", "b")):
+    c = two_source_cluster(
+        f"Nvidia announces RTX {7000 + index}", tiers=(1,), owners=owners
+    )
+    c["id"] = f"c{index}"
+    return c
+
+
+def test_rank_scores_three_hundred_clusters_quickly():
+    clusters = [_confirmable_cluster(i) for i in range(300)]
+    started = time.perf_counter()
+    ranked = score.rank(clusters, exclude_patterns=EXCLUDE_PATTERNS)
+    elapsed = time.perf_counter() - started
+    assert len(ranked) == 300
+    # With config.yaml parsed once per rank (not once per cluster) this is a
+    # fraction of a second; the old per-cluster config read took ~20s.
+    assert elapsed < 5.0
+
+
+def test_pick_candidates_ranks_once_per_run(monkeypatch):
+    calls = {"n": 0}
+    real_rank = score.rank
+
+    def counting_rank(*args, **kwargs):
+        calls["n"] += 1
+        return real_rank(*args, **kwargs)
+
+    monkeypatch.setattr(score, "rank", counting_rank)
+    clusters = [_confirmable_cluster(i) for i in range(4)]
+    picked = score.pick_candidates(clusters, max_candidates=3, min_score=50)
+    assert len(picked) == 3
+    assert calls["n"] == 1
+
+
+def test_pick_candidates_matches_repeated_pick():
+    clusters = [
+        _confirmable_cluster(0),
+        _confirmable_cluster(1),
+        _confirmable_cluster(2),
+        _confirmable_cluster(3),
+    ]
+    expected: list[str] = []
+    remaining = list(clusters)
+    while len(expected) < 3:
+        chosen = score.pick(remaining, min_score=50)
+        if chosen is None:
+            break
+        expected.append(chosen["id"])
+        remaining = [c for c in remaining if c.get("id") != chosen["id"]]
+    got = [
+        c["id"] for c in score.pick_candidates(clusters, max_candidates=3, min_score=50)
+    ]
+    assert got == expected
+
+
+def test_pick_candidates_returns_empty_when_nothing_clears_threshold():
+    clusters = [cluster("x", tiers=(3,), owners=("a",), age_hours=100)]
+    assert score.pick_candidates(clusters, min_score=50) == []
+

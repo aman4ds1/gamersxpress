@@ -549,31 +549,22 @@ def run(
             score_section.get("model_call_budget", score_stage.DEFAULT_MODEL_CALL_BUDGET)
         )
         weights = score_section.get("weights")
-        # Build the candidate list with score.pick(): it returns the highest
-        # eligible story that reaches its own threshold via score.min_score_for,
-        # so a cluster with two or more distinct owners clears
-        # min_score_corroborated while a single-source story must reach
-        # min_score. Picked stories are removed and the search repeats until it
-        # has max_candidates_per_run of them (or none are left).
-        candidates: list[dict] = []
-        remaining = list(clusters)
+        # Build the candidate list with score.pick_candidates(): it ranks the
+        # clusters once, then walks the ranked list, keeping the highest eligible
+        # story that reaches its own threshold via score.min_score_for (a cluster
+        # with two or more distinct owners clears min_score_corroborated while a
+        # single-source story must reach min_score). It stops after
+        # max_candidates_per_run stories (or when none are left).
         with timings.stage("score"):
-            while len(candidates) < max_candidates:
-                candidate = score_stage.pick(
-                    remaining,
-                    min_score=min_score,
-                    min_score_corroborated=min_score_corroborated,
-                    weights=weights,
-                    performance=performance,
-                    min_sources=readiness_min_sources,
-                )
-                if candidate is None:
-                    break
-                candidates.append(candidate)
-                remaining = [
-                    cluster_dict for cluster_dict in remaining
-                    if cluster_dict.get("id") != candidate.get("id")
-                ]
+            candidates = score_stage.pick_candidates(
+                clusters,
+                max_candidates=max_candidates,
+                min_score=min_score,
+                min_score_corroborated=min_score_corroborated,
+                weights=weights,
+                performance=performance,
+                min_sources=readiness_min_sources,
+            )
         if not candidates:
             return finish("nothing", "no story scored high enough")
 

@@ -1,8 +1,18 @@
 import logging
+import os
+import time
 
 import pytest
 
 import providers
+
+
+@pytest.fixture(autouse=True)
+def _clear_config_cache():
+    """Keep the parsed-config cache from leaking between tests."""
+    providers.clear_config_cache()
+    yield
+    providers.clear_config_cache()
 
 
 class FakeProvider(providers.Provider):
@@ -1063,6 +1073,61 @@ def test_load_config_rejects_missing_family(tmp_path):
     )
     with pytest.raises(ValueError, match="family"):
         providers.load_config(path)
+
+
+def _roles_yaml(provider, model, family="fam"):
+    return (
+        f"roles:\n  fast:\n    - provider: {provider}\n      model: {model}\n"
+        f"      family: {family}\n"
+    )
+
+
+def test_load_config_cache_refreshes_after_file_changes(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(_roles_yaml("gemini", "model-one"), encoding="utf-8")
+    assert providers.load_config(path)["roles"]["fast"][0]["model"] == "model-one"
+    # A second read of the unchanged file is served from cache.
+    assert providers.load_config(path)["roles"]["fast"][0]["model"] == "model-one"
+    path.write_text(_roles_yaml("gemini", "model-two-changed"), encoding="utf-8")
+    assert providers.load_config(path)["roles"]["fast"][0]["model"] == "model-two-changed"
+
+
+def test_load_config_cache_refreshes_on_same_size_edit(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(_roles_yaml("gemini", "aaa"), encoding="utf-8")
+    assert providers.load_config(path)["roles"]["fast"][0]["model"] == "aaa"
+    # Same byte length, so only mtime_ns changes; force a distinct timestamp.
+    path.write_text(_roles_yaml("gemini", "bbb"), encoding="utf-8")
+    os.utime(path, ns=(time.time_ns(), time.time_ns() + 1_000_000_000))
+    assert providers.load_config(path)["roles"]["fast"][0]["model"] == "bbb"
+
+
+def test_load_config_returns_an_independent_copy(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(_roles_yaml("gemini", "m"), encoding="utf-8")
+    first = providers.load_config(path)
+    first["roles"]["fast"][0]["model"] = "poisoned"
+    first["injected"] = True
+    second = providers.load_config(path)
+    assert second["roles"]["fast"][0]["model"] == "m"
+    assert "injected" not in second
+
+
+def test_load_config_cache_never_collides_across_paths(tmp_path):
+    first = tmp_path / "first.yaml"
+    second = tmp_path / "second.yaml"
+    first.write_text(_roles_yaml("gemini", "model-a"), encoding="utf-8")
+    second.write_text(_roles_yaml("mistral", "model-b"), encoding="utf-8")
+    assert providers.load_config(first)["roles"]["fast"][0]["provider"] == "gemini"
+    assert providers.load_config(second)["roles"]["fast"][0]["provider"] == "mistral"
+
+
+def test_clear_config_cache_drops_a_cached_entry(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(_roles_yaml("gemini", "m"), encoding="utf-8")
+    providers.load_config(path)
+    providers.clear_config_cache()
+    assert providers._CONFIG_CACHE == {}
 
 
 def test_load_env_reads_file_without_overriding_existing(tmp_path):

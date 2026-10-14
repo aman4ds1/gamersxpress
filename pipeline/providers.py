@@ -30,6 +30,7 @@ OpenRouter) only need to subclass :class:`OpenAICompatibleProvider` and set
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -588,8 +589,43 @@ def default_providers() -> dict[str, Provider]:
     }
 
 
+#: Parsed-config cache keyed by resolved path -> (mtime_ns, size, parsed data).
+#: Re-parsing a large config.yaml dominates the score stage (score_cluster reads
+#: news settings once per cluster), so the parsed result is reused until the file
+#: changes on disk.
+_CONFIG_CACHE: dict[str, tuple[int, int, dict]] = {}
+
+
+def clear_config_cache() -> None:
+    """Drop every cached parsed config.
+
+    Call this from tests (and after rewriting a config) so a stale entry can
+    never leak between callers.
+    """
+    _CONFIG_CACHE.clear()
+
+
 def load_config(path: str | Path | None = None) -> dict:
+    """Load and validate ``config.yaml``.
+
+    The parsed mapping is cached per resolved path and invalidated whenever the
+    file's ``mtime_ns`` or size changes, so an edited config is picked up and two
+    different paths never share an entry. Every call returns a fresh deep copy so
+    a caller that mutates the result cannot poison the cache. Use
+    :func:`clear_config_cache` to drop all entries.
+    """
     path = Path(path) if path else DEFAULT_CONFIG_PATH
+    resolved = str(path.resolve())
+    signature: tuple[int, int] | None
+    try:
+        stat = path.stat()
+        signature = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        signature = None
+    if signature is not None:
+        cached = _CONFIG_CACHE.get(resolved)
+        if cached is not None and cached[0] == signature[0] and cached[1] == signature[1]:
+            return copy.deepcopy(cached[2])
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     roles = data.get("roles")
@@ -602,7 +638,9 @@ def load_config(path: str | Path | None = None) -> dict:
             for key in ("provider", "model", "family"):
                 if not isinstance(entry, dict) or not entry.get(key):
                     raise ValueError(f"{path}: role {role!r} entry missing {key!r}: {entry}")
-    return data
+    if signature is not None:
+        _CONFIG_CACHE[resolved] = (signature[0], signature[1], data)
+    return copy.deepcopy(data)
 
 
 def load_env(path: str | Path | None = None, base: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -968,6 +1006,7 @@ __all__ = [
     "VALID_ROLES",
     "generate",
     "load_config",
+    "clear_config_cache",
     "load_env",
     "default_providers",
     "http_post_json",

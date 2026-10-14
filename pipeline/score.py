@@ -544,6 +544,14 @@ def rank(
         source_topics = load_source_topics()
     if min_sources is None:
         min_sources = load_min_sources()
+    # Resolve the news bonus/phrases once for the whole ranking instead of once
+    # per cluster, so score_cluster never re-reads config.yaml inside the loop.
+    if news_bonus is None or news_verbs is None:
+        default_bonus, default_verbs = load_news_settings()
+        if news_bonus is None:
+            news_bonus = default_bonus
+        if news_verbs is None:
+            news_verbs = default_verbs
     scored = []
     for cluster_dict in clusters:
         confirmable = cluster.confirmable(cluster_dict)
@@ -638,6 +646,69 @@ def pick(
     return None
 
 
+def pick_candidates(
+    clusters: Iterable[dict],
+    *,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES_PER_RUN,
+    min_score: float = DEFAULT_MIN_SCORE,
+    min_score_corroborated: float | None = None,
+    weights: dict | None = None,
+    performance: dict | None = None,
+    exclude_patterns: list[str] | None = None,
+    relevance_keywords: list[str] | None = None,
+    source_topics: dict[str, str] | None = None,
+    news_bonus: float | None = None,
+    news_verbs: list[str] | None = None,
+    min_sources: int | None = None,
+) -> list[dict]:
+    """Rank once, then walk the ranked list for up to ``max_candidates`` stories.
+
+    Equivalent to calling :func:`pick` repeatedly on the shrinking set — eligible
+    clusters are visited in descending score order and each must reach its own
+    :func:`min_score_for` threshold — but :func:`rank` runs a single time for the
+    whole run instead of once per candidate.
+    """
+    if min_score_corroborated is None:
+        min_score_corroborated = load_min_score_corroborated()
+    ranked = rank(
+        clusters,
+        weights=weights,
+        performance=performance,
+        exclude_patterns=exclude_patterns,
+        relevance_keywords=relevance_keywords,
+        source_topics=source_topics,
+        news_bonus=news_bonus,
+        news_verbs=news_verbs,
+        min_sources=min_sources,
+    )
+    eligible = [cluster_dict for cluster_dict in ranked if cluster_dict.get("eligible")]
+    if not eligible:
+        logger.info(
+            "no eligible (confirmable, sourced, relevant) story among %d cluster(s)",
+            len(ranked),
+        )
+        return []
+    picked: list[dict] = []
+    for best in eligible:
+        if len(picked) >= int(max_candidates):
+            break
+        threshold = min_score_for(
+            best, min_score=min_score, min_score_corroborated=min_score_corroborated
+        )
+        if best["score"] >= threshold:
+            logger.info(
+                "selected story %s (score=%.0f, threshold=%.0f, category=%s)",
+                best["id"], best["score"], threshold, best["category"],
+            )
+            picked.append(best)
+    if not picked:
+        top = eligible[0]
+        logger.info(
+            "top story scored %.0f, below its threshold; nothing to cover", top["score"]
+        )
+    return picked
+
+
 __all__ = [
     "CATEGORY_KEYWORDS",
     "DEFAULT_CATEGORY",
@@ -665,6 +736,7 @@ __all__ = [
     "load_source_topics",
     "min_score_for",
     "pick",
+    "pick_candidates",
     "rank",
     "relevant_cluster",
     "score_cluster",

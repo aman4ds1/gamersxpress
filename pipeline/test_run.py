@@ -15,6 +15,14 @@ NOW = dt.datetime(2026, 10, 9, 12, tzinfo=dt.timezone.utc)
 STUB_CHECKS = lambda text, slug: (True, "stub")  # noqa: E731
 
 
+@pytest.fixture(autouse=True)
+def _clear_config_cache():
+    """Tests that write temporary config files must not reuse a cached parse."""
+    providers.clear_config_cache()
+    yield
+    providers.clear_config_cache()
+
+
 def item(title, link, *, owner, tier=1, age_hours=1):
     """An ingest item in the same shape :func:`dryrun.sample_pool` emits."""
     return {
