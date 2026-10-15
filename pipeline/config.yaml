@@ -367,7 +367,9 @@ facts:
   # phrase is treated as anonymous -- and dropped to "unstated" -- only when every
   # one of its tokens is listed here, so "sources", "unnamed sources" and "people
   # familiar with the matter" name no source, while "Insider Gaming" or "Source
-  # Engine" stay names. Extend the list to teach a new descriptor.
+  # Engine" stay names. Extend the list to teach a new descriptor. A definite
+  # phrase such as "the company" or "the studio" is a coreference to the nearest
+  # preceding organization, handled in facts.py; it is not listed here.
   anonymous_vocabulary:
     - sources
     - source
@@ -405,8 +407,6 @@ facts:
     - involved
     - inside
     - within
-    - company
-    - developer
     - staff
     - employees
     - employee

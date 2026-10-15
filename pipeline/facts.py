@@ -185,6 +185,55 @@ DEFAULT_ORGS_PATH = PROJECT_ROOT / "data" / "orgs.json"
 #: role ("the analyst Alinea Analytics") does not split one origin into two.
 _ORIGIN_TITLE_WORDS = frozenset({"the", "a", "an", "analyst", "analysts"})
 
+#: A definite or possessive phrase that refers back to an organization already
+#: named in the paragraph ("the company", "the studio", "its developer"). Such a
+#: phrase is not an anonymous source: the nearest preceding organization is the
+#: source it stands for. ("studio" stays a descriptor token so the phrase
+#: "sources familiar with the studio's plans" remains anonymous.)
+_COREFERENCE_NOUNS = frozenset({
+    "company", "companies", "studio", "studios", "developer", "developers",
+    "publisher", "publishers", "firm", "firms", "team", "teams",
+    "platform holder", "platform holders", "game studio", "game developer",
+    "game studios", "game developers",
+})
+#: Determiners and possessives that may preface a coreference phrase.
+_COREFERENCE_LEADERS = frozenset({
+    "the", "a", "an", "this", "that", "these", "those", "its", "their",
+    "his", "her", "our", "your",
+})
+
+#: Document nouns that name a piece of writing, never a source. A cue such as
+#: "according to an Epic blog post" names Epic, not the "blog post".
+_DOCUMENT_NOUNS = frozenset({
+    "post", "posts", "blog", "blogs", "blog post", "blog posts", "statement",
+    "statements", "announcement", "announcements", "faq", "spokesperson",
+    "spokespeople", "press release", "news release", "release", "releases",
+    "thread", "tweet", "email", "report", "article", "piece",
+})
+#: Product and software words that never name a source on their own.
+_NON_SOURCE_TERMS = frozenset({
+    "launcher", "wine", "client", "store", "engine", "software", "console",
+    "hardware", "platform", "preview", "beta", "app", "tool", "programming",
+})
+#: Multi-word product names that never name a source on their own.
+_NON_SOURCE_PHRASES = frozenset({
+    "steam deck", "steam os", "unreal engine", "easy anti cheat",
+    "epic games launcher", "source engine",
+})
+#: Function words that never make a captured phrase a source name.
+_FILLER_WORDS = frozenset({
+    "has", "have", "had", "did", "does", "do", "is", "are", "was", "were",
+    "be", "been", "being", "will", "would", "should", "could", "may", "might",
+    "can", "shall", "yet", "still", "just", "even", "only", "also",
+    "according", "per", "via", "citing", "said", "says", "say", "stated",
+    "states", "noted", "notes", "added", "adds", "reported", "reports",
+    "something", "someone", "somebody", "whether", "because", "while", "when",
+    "where", "which", "who", "whom", "whose", "this", "that", "these", "those",
+    "there", "here", "then", "than", "with", "without", "from", "into", "onto",
+    "about", "over", "under", "after", "before", "during", "between", "among",
+    "more", "most", "less", "least", "very", "much", "many", "few", "several",
+})
+
 #: Claim kinds whose origins may count toward confirmation. A rumor, an opinion
 #: or a statement never confirms a story, however many outlets repeat it.
 CONFIRMING_KINDS = ("confirmed", "reported", "estimate")
@@ -220,9 +269,13 @@ _DEFAULT_ANONYMOUS_VOCABULARY = frozenset({
     "plans", "studio", "industry", "unnamed", "anonymous", "unidentified",
     "several", "multiple", "some", "a", "an", "the", "with", "to", "of", "who",
     "requested", "anonymity", "knowledgeable", "aware", "involved", "inside",
-    "within", "company", "developer", "staff", "employees", "employee",
+    "within", "staff", "employees", "employee",
     "former", "current", "one", "two", "three", "four", "five",
 })
+# NOTE: bare "company" and "developer" are deliberately not descriptors: a
+# definite phrase ("the company", "the developer") is a coreference handled by
+# :func:`_is_coreference_phrase`. "studio" stays a descriptor token so "sources
+# familiar with the studio's plans" is still anonymous.
 
 _ANONYMOUS_VOCABULARY_CACHE: tuple[tuple[int, int] | None, frozenset[str]] | None = None
 
@@ -1249,6 +1302,173 @@ def _contains_name(haystack: str, needle: str) -> bool:
     return re.search(rf"\b{re.escape(needle)}\b", haystack) is not None
 
 
+# --- source-name validity and coreference ------------------------------------
+
+
+def _origin_alias_pairs(aliases: dict[str, str]) -> list[tuple[str, str]]:
+    """``(match key, canonical name)`` pairs from an alias map.
+
+    Both the alias keys and the canonical values contribute, so a phrase either
+    spelled like an alias or like the canonical name resolves.
+    """
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for alias, canonical in aliases.items():
+        key = _origin_key(alias)
+        pair = (key, canonical)
+        if key and pair not in seen:
+            seen.add(pair)
+            pairs.append(pair)
+    for canonical in set(aliases.values()):
+        key = _origin_key(canonical)
+        pair = (key, canonical)
+        if key and pair not in seen:
+            seen.add(pair)
+            pairs.append(pair)
+    return pairs
+
+
+def _is_coreference_phrase(value: object) -> bool:
+    """True for a definite/possessive back-reference ("the company", "its studio")."""
+    words = _origin_key(value).split()
+    while words and words[0] in _COREFERENCE_LEADERS:
+        words.pop(0)
+    return " ".join(words) in _COREFERENCE_NOUNS
+
+
+def _is_document_or_product(key: str) -> bool:
+    """True when a match key names a document or product, never a source."""
+    if not key:
+        return True
+    if key in _DOCUMENT_NOUNS or key in _NON_SOURCE_TERMS or key in _NON_SOURCE_PHRASES:
+        return True
+    words = key.split()
+    return bool(words) and words[-1] in _NON_SOURCE_TERMS
+
+
+def _is_filler_capture(key: str) -> bool:
+    """True when every token of a capture is a stop word or an anonymous token."""
+    tokens = _anonymous_tokens(key)
+    if not tokens:
+        return True
+    vocabulary = _STOP_WORDS | anonymous_vocabulary() | _FILLER_WORDS
+    return all(token in vocabulary for token in tokens)
+
+
+def _is_valid_source_name(
+    raw: object,
+    resolved: object,
+    aliases: dict[str, str],
+    entities: list[str] | None = None,
+) -> bool:
+    """True when a cue capture may name a source at all.
+
+    A source is a proper-noun phrase that is neither a document ("blog post",
+    "statement"), a product or piece of software ("Launcher", "Wine", "Steam
+    Deck") nor an all-filler capture ("four industry sources", "the"). A name in
+    an alias map always counts.
+    """
+    key = _origin_key(resolved) or _origin_key(raw)
+    if not key:
+        return False
+    if _is_known_origin_name(key, aliases):
+        return True
+    if _is_coreference_phrase(key):
+        return True
+    if _is_document_or_product(key):
+        return False
+    if _is_filler_capture(key):
+        return False
+    if _is_product_origin(resolved if resolved is not None else raw, entities):
+        return False
+    return True
+
+
+def _strip_leading_roles(raw: object) -> str:
+    """Drop a leading lowercase role phrase ("senior editor Alice") from a capture."""
+    words = re.findall(r"[A-Za-z][\w'’\-]*", str(raw or ""))
+    while len(words) > 1 and words[0][:1].islower():
+        words.pop(0)
+    return " ".join(words)
+
+
+def _resolve_cue_source(
+    raw: object,
+    text: str = "",
+    position: int = 0,
+    aliases: dict[str, str] | None = None,
+    entities: list[str] | None = None,
+) -> str:
+    """Resolve one cue capture to a canonical source name, or "".
+
+    An alias anywhere in the capture wins ("Epic blog post" -> "Epic Games"). A
+    coreference phrase ("the company") resolves to the nearest organization named
+    before it in the same paragraph, or "" when none precedes it.
+    """
+    aliases = load_origin_aliases() if aliases is None else aliases
+    key = _origin_key(raw)
+    if not key:
+        return ""
+    if _is_coreference_phrase(key):
+        return _nearest_preceding_organization(text, position, aliases)
+    best = ""
+    best_len = -1
+    for name, canonical in _origin_alias_pairs(aliases):
+        if len(name) > best_len and _contains_name(key, name):
+            best, best_len = canonical, len(name)
+    if best:
+        return best
+    remainder = _strip_leading_roles(raw)
+    rkey = _origin_key(remainder)
+    if rkey and rkey != key:
+        best = ""
+        best_len = -1
+        for name, canonical in _origin_alias_pairs(aliases):
+            if len(name) > best_len and _contains_name(rkey, name):
+                best, best_len = canonical, len(name)
+        if best:
+            return best
+    return _origin_display(remainder or raw)
+
+
+def _is_organization_name(value: object, organizations: frozenset[str]) -> bool:
+    """True when ``value`` is a known organization or has a corporate suffix."""
+    return _matches_organization(value, organizations) or _has_corporate_suffix(value)
+
+
+def _nearest_preceding_organization(
+    text: str, position: int, aliases: dict[str, str] | None = None
+) -> str:
+    """The closest organization named before ``position`` in the same paragraph.
+
+    A coreference phrase ("the company") stands for the last organization the
+    paragraph named. The search is clamped to the paragraph so a name from an
+    unrelated section is never mistaken for the antecedent.
+    """
+    aliases = load_origin_aliases() if aliases is None else aliases
+    prefix = str(text or "")[: max(0, int(position))]
+    split = prefix.rfind("\n\n")
+    if split != -1:
+        prefix = prefix[split + 2 :]
+    organizations = load_organizations()
+    cand = ""
+    cand_end = -1
+    for match in re.finditer(_CAP_NAME_CHUNK, prefix):
+        raw = match.group(0)
+        key = _origin_key(raw)
+        if not key:
+            continue
+        if not (_matches_organization(raw, organizations) or _has_corporate_suffix(raw)):
+            if not any(_contains_name(key, name) for name, _ in _origin_alias_pairs(aliases)):
+                continue
+        if match.end() > cand_end:
+            cand, cand_end = raw, match.end()
+    if not cand:
+        return ""
+    resolved = _resolve_cue_source(cand, text, 0, aliases)
+    return resolved or _origin_display(cand)
+
+
 def load_origin_aliases(path: str | Path | None = None) -> dict[str, str]:
     """Alias -> canonical origin map from ``data/origins.json``.
 
@@ -1443,15 +1663,20 @@ _ATTRIBUTION_VERBS = tuple(
 _SPEECH_VERB_RE = "|".join(sorted(set(_ATTRIBUTION_SPEECH_VERBS), key=len, reverse=True))
 _ATTRIBUTION_VERB_RE = "|".join(sorted(set(_ATTRIBUTION_VERBS), key=len, reverse=True))
 _ATTRIBUTION_LEAD_RE = (
-    r"in a statement from|in an interview with|in a statement|in an interview|"
-    r"according to|data from|figures from|numbers from|estimates from|per|via|citing"
+    r"in a statement from|in a statement|"
+    r"according to|data from|figures from|numbers from|estimates from|per|citing"
 )
 #: A capitalized origin chunk (up to four words) after a lead cue or before a
 #: verb. Capitalization is the cheap way to find a name without an NLP parser.
 _NAME_CHUNK = r"[A-Za-z][\w'’&\-\']*(?:\s+(?!has\b|have\b|had\b|is\b|was\b|were\b|will\b)[A-Za-z][\w'’&\-\']*){0,3}"
+#: The lead cue is matched case-insensitively (``(?i:...)``) but the origin and
+#: its filler are not: the filler may only be lowercase (adverbs, articles), so
+#: "according to an Epic blog post" captures "Epic blog post" rather than the
+#: capitalized words eating into the name. "via" and "in an interview with" are
+#: deliberately not leads: they place a product or an outlet next to the claim,
+#: never a source of it.
 _LEAD_CUE_RE = re.compile(
-    rf"\b(?:{_ATTRIBUTION_LEAD_RE})\s+(?:[a-z]+\s+){{0,4}}(?P<origin>{_NAME_CHUNK})",
-    re.I,
+    rf"\b(?i:{_ATTRIBUTION_LEAD_RE})\s+(?:[a-z]+\s+){{0,4}}(?P<origin>{_NAME_CHUNK})"
 )
 _SUBJECT_CUE_RE = re.compile(
     rf"\b(?P<origin>{_NAME_CHUNK})(?:\s*,[^,.\n]{{0,40}},)?"
@@ -1494,6 +1719,22 @@ def _sentences_with_positions(text: str) -> list[tuple[int, int, str]]:
     return out
 
 
+def _sentence_starts(text: str) -> dict[tuple[int, int], int]:
+    """Absolute character offset of each sentence, keyed ``(paragraph, index)``."""
+    starts: dict[tuple[int, int], int] = {}
+    cursor = 0
+    for pi, para in enumerate(re.split(r"\n\s*\n", str(text or ""))):
+        offset = cursor
+        for si, sent in enumerate(_sentences(para)):
+            idx = text.find(sent, offset)
+            if idx < 0:
+                idx = offset
+            starts[(pi, si)] = idx
+            offset = idx + len(sent)
+        cursor = offset
+    return starts
+
+
 def _claim_key_terms(claim: dict) -> set[str]:
     """Stemmed content words of a claim's text and value, for sentence matching."""
     return _topic_words(claim.get("claim")) | _topic_words(claim.get("value"))
@@ -1532,26 +1773,152 @@ def _claim_attribution_window(
     return window, anchors
 
 
-def _cue_occurrences(text: str, claim: dict) -> tuple[list[dict], list[tuple[int, int]]]:
+def _make_occurrence(
+    raw: object,
+    kind: str,
+    text: str,
+    position: int,
+    pi: int,
+    si: int,
+    aliases: dict[str, str],
+    entities: list[str] | None = None,
+) -> Optional[dict]:
+    """Build one cue occurrence, resolving coreference and alias captures.
+
+    A coreference phrase ("the company") resolves to the nearest preceding
+    organization, or yields no occurrence when none precedes it. For a normal
+    capture the occurrence keeps the raw text as its ``origin`` (so callers see
+    the wording the text used) and records the resolved canonical name as
+    ``resolved``.
+    """
+    key = _origin_key(raw)
+    if not key:
+        return None
+    if _is_coreference_phrase(key):
+        resolved = _nearest_preceding_organization(text, abs(int(position)), aliases)
+        if not resolved:
+            return None
+        return {"origin": resolved, "resolved": resolved, "kind": kind, "pi": pi, "si": si}
+    raw_text = str(raw).strip()
+    resolved = _resolve_cue_source(raw_text, text, abs(int(position)), aliases, entities)
+    return {
+        "origin": raw_text,
+        "resolved": resolved or raw_text,
+        "kind": kind,
+        "pi": pi,
+        "si": si,
+    }
+
+
+def _leading_source(
+    sent: str,
+    base: int,
+    text: str,
+    aliases: dict[str, str],
+    entities: list[str] | None,
+) -> Optional[tuple[str, int, int]]:
+    """The first plausible source named at the start of a sentence, or None.
+
+    A clause subject ("Epic Games, which earlier said ...") is only trusted when
+    it is at least a two-word name or a known organization, so a stray capitalized
+    word ("Fortnite", "Staff", "Per") never becomes a source.
+    """
+    organizations = load_organizations()
+    for match in re.finditer(_CAP_NAME_CHUNK, sent):
+        raw = match.group(0)
+        resolved = _resolve_cue_source(raw, text, base + match.start(), aliases, entities)
+        if not resolved:
+            continue
+        key = _origin_key(resolved)
+        if not key or not _is_valid_source_name(raw, resolved, aliases, entities):
+            continue
+        if (
+            len(key.split()) >= 2
+            or _is_known_origin_name(key, aliases)
+            or _is_organization_name(raw, organizations)
+        ):
+            return resolved, match.start(), match.end()
+    return None
+
+
+def _clause_subject_occurrences(
+    sent: str,
+    base: int,
+    text: str,
+    covered: list[tuple[int, int]],
+    pi: int,
+    si: int,
+    aliases: dict[str, str],
+    entities: list[str] | None,
+) -> list[dict]:
+    """Cue occurrences for a clause subject the subject regex missed.
+
+    A headline such as "Epic Games vibe codes a new launcher, claims it starts
+    46 percent faster" names its source once at the front and then attributes a
+    later clause to it. For each attribution verb the subject regex did not
+    already bind, when the sentence's leading source sits before the verb with a
+    comma in between, the leading source owns that verb.
+    """
+    lead = _leading_source(sent, base, text, aliases, entities)
+    if lead is None:
+        return []
+    resolved, _lstart, lend = lead
+    out: list[dict] = []
+    for match in re.finditer(rf"\b(?:{_ATTRIBUTION_VERB_RE})\b", sent, re.I):
+        vstart, _vend = match.span()
+        if any(cs <= vstart < ce for cs, ce in covered):
+            continue
+        if lend > vstart:
+            continue
+        between = sent[lend:vstart]
+        if "," not in between or len(between) > 200:
+            continue
+        verb = match.group(0).lower()
+        kind = "speech" if re.fullmatch(_SPEECH_VERB_RE, verb) else "announcement"
+        out.append({"origin": resolved, "resolved": resolved, "kind": kind, "pi": pi, "si": si})
+    return out
+
+
+def _cue_occurrences(
+    text: str,
+    claim: dict,
+    aliases: dict[str, str] | None = None,
+    entities: list[str] | None = None,
+) -> tuple[list[dict], list[tuple[int, int]]]:
     """Every attribution cue in the claim's window, with its verb kind.
 
     ``kind`` is ``"speech"`` (a person speaks), ``"announcement"`` (an
     organization puts something out) or ``"lead"`` (a reporting phrase such as
-    "according to").
+    "according to"). A cue that only names a document or product is dropped, and
+    a coreference phrase is mapped to the organization it stands for.
     """
+    aliases = load_origin_aliases() if aliases is None else aliases
     window, hits = _claim_attribution_window(text, claim)
+    starts = _sentence_starts(text)
     occurrences: list[dict] = []
     for pi, si, sent in window:
+        base = starts.get((pi, si), 0)
+        covered: list[tuple[int, int]] = []
         for match in _LEAD_CUE_RE.finditer(sent):
-            occurrences.append(
-                {"origin": match.group("origin").strip(), "kind": "lead", "pi": pi, "si": si}
+            occ = _make_occurrence(
+                match.group("origin").strip(), "lead", text,
+                base + match.start("origin"), pi, si, aliases, entities,
             )
+            if occ:
+                occurrences.append(occ)
         for match in _SUBJECT_CUE_RE.finditer(sent):
             verb = match.group("verb").lower()
             kind = "speech" if re.fullmatch(_SPEECH_VERB_RE, verb) else "announcement"
-            occurrences.append(
-                {"origin": match.group("origin").strip(), "kind": kind, "pi": pi, "si": si}
+            occ = _make_occurrence(
+                match.group("origin").strip(), kind, text,
+                base + match.start("origin"), pi, si, aliases, entities,
             )
+            if occ:
+                occurrences.append(occ)
+            covered.append((match.start("verb"), match.end("verb")))
+        occurrences.extend(
+            _clause_subject_occurrences(sent, base, text, covered, pi, si, aliases, entities)
+        )
     return occurrences, hits
 
 
@@ -1587,6 +1954,8 @@ def _is_anonymous_origin(origin: object, aliases: dict[str, str]) -> bool:
     folded = _origin_key(origin)
     if not folded:
         return True
+    if _is_coreference_phrase(folded):
+        return False
     if _is_known_origin_name(folded, aliases):
         return False
     tokens = _anonymous_tokens(folded)
@@ -1607,15 +1976,52 @@ def _attribution_winner(text: str, claim: dict, aliases: dict[str, str] | None =
     """
     if aliases is None:
         aliases = load_origin_aliases()
-    occurrences, hits = _cue_occurrences(text, claim)
-    named = [occ for occ in occurrences if not _is_anonymous_origin(occ["origin"], aliases)]
-    if not named:
-        return ""
-    ordered = sorted(
-        enumerate(named),
-        key=lambda pair: (_cue_distance(pair[1], hits), pair[0]),
-    )
-    return ordered[0][1]["origin"]
+    occurrences, hits = _cue_occurrences(text, claim, aliases)
+    best = ""
+    best_key: tuple | None = None
+    for index, occ in enumerate(occurrences):
+        resolved = occ.get("resolved") or occ["origin"]
+        if _is_anonymous_origin(resolved, aliases):
+            continue
+        if not _is_valid_source_name(occ["origin"], resolved, aliases):
+            continue
+        # A subject cue ("Epic Games claims ...") outranks a same-sentence lead
+        # cue ("according to ..."), so the sentence's own subject owns its verb.
+        kind_rank = 1 if occ["kind"] == "lead" else 0
+        key = (_cue_distance(occ, hits), kind_rank, index)
+        if best_key is None or key < best_key:
+            best_key = key
+            best = occ["origin"]
+    return best
+
+
+def _attribution_trace_entry(
+    claim: dict, token: str, text: str, aliases: dict[str, str]
+) -> dict:
+    """A compact record of why a claim's origin could not be attributed.
+
+    It lists the valid source names the claim's own window offered and the cue
+    the winner rule settled on, so a downgrade can be diagnosed from the sheet
+    without re-reading the article.
+    """
+    occurrences, _ = _cue_occurrences(text, claim, aliases)
+    cue_sources: list[str] = []
+    for occurrence in occurrences:
+        resolved = occurrence.get("resolved") or occurrence["origin"]
+        if not _is_valid_source_name(occurrence["origin"], resolved, aliases):
+            continue
+        label = str(resolved) if str(resolved) == str(occurrence["origin"]) else (
+            f"{occurrence['origin']} -> {resolved}"
+        )
+        if label not in cue_sources:
+            cue_sources.append(label)
+    return {
+        "claim": str(claim.get("claim", ""))[:200],
+        "origin": str(token),
+        "cue_sources": cue_sources,
+        "winner": _attribution_winner(text, claim, aliases),
+        "rule": "cue does not attribute the claim to this origin",
+    }
 
 
 def _speech_subjects(text: str, claim: dict) -> list[str]:
@@ -1920,6 +2326,7 @@ def resolve_claim_origins(
     story_id: str = "",
     entities: list[str] | None = None,
     downgrades: list[dict] | None = None,
+    attribution_traces: list[dict] | None = None,
 ) -> list[dict]:
     """Canonicalize each claim's origin and drop any its source never names.
 
@@ -1997,6 +2404,16 @@ def resolve_claim_origins(
                 # attribution gap, so it is dropped quietly.
                 if _is_publication(token, source):
                     reason = "outlet self-reference"
+                elif reason == "not attributed" and attribution_traces is not None:
+                    tally = per_source.setdefault(
+                        source_key, {"url": claim_url, "reasons": Counter()}
+                    )
+                    traced = int(tally.get("traced") or 0)
+                    if traced < 20:
+                        attribution_traces.append(
+                            _attribution_trace_entry(claim, token, text, aliases)
+                        )
+                        tally["traced"] = traced + 1
                 _record(token, reason)
                 continue
             canonical = canonicalize_origin(token, aliases)
@@ -2558,26 +2975,34 @@ def central_claim(claims: list[dict], *, title: str = "") -> Optional[dict]:
     The cluster seed is its newest source; the seed headline becomes the cluster
     title, passed to ``facts()`` as ``title``. The central claim is the one
     whose text and value share the most words with that headline -- the claim
-    the headline states is the claim this story must confirm. Returns None when
-    no headline is given or no extracted claim overlaps it; ties break to the
-    longest text.
+    the headline states is the claim this story must confirm. Among claims whose
+    overlap is within 80% of the best, a confirmed claim with a named origin
+    wins over a longer unstated statement; ties then break to the longer text.
+    Returns None when no headline is given or no extracted claim overlaps it.
     """
     title = str(title or "").strip()
     if not title:
         return None
     title_tokens = _word_tokens(title)
-    best: Optional[dict] = None
-    best_key = (0, 0, "")
+    scored: list[tuple[float, dict]] = []
     for claim in claims or []:
         score = _title_overlap_score(claim, title_tokens)
-        key = (
-            score,
-            len(str(claim.get("claim", ""))) + len(str(claim.get("value", ""))),
-            str(claim.get("claim", "")),
-        )
-        if score > 0 and key > best_key:
-            best, best_key = claim, key
-    return best
+        if score > 0:
+            scored.append((score, claim))
+    if not scored:
+        return None
+    best_score = max(score for score, _ in scored)
+    ranked: list[tuple[int, float, int, str, dict]] = []
+    for score, claim in scored:
+        if score < 0.8 * best_score:
+            continue
+        origin_key = _origin_key(claim.get("origin"))
+        named = bool(origin_key) and origin_key != UNSTATED_ORIGIN
+        confirmed_named = 1 if str(claim.get("kind")) == "confirmed" and named else 0
+        length = len(str(claim.get("claim", ""))) + len(str(claim.get("value", "")))
+        ranked.append((confirmed_named, score, length, str(claim.get("claim", "")), claim))
+    ranked.sort(key=lambda item: item[:4])
+    return ranked[-1][4]
 
 
 #: How much of the shared wording two claims must share -- the Jaccard overlap
@@ -2648,6 +3073,56 @@ def _overlap_score(candidate: dict, central: dict) -> float:
     return len(candidate_words & central_words) / len(union)
 
 
+def _claim_all_hard_tokens(claim: dict) -> tuple[set[str], set[str]]:
+    """The figures and month names a claim's text *and* value state."""
+    text = f"{claim.get('claim', '')} {claim.get('value', '')}"
+    numbers: set[str] = set()
+    months: set[str] = set()
+    for token in re.findall(r"[a-z0-9]+", str(text or "").lower()):
+        if token in _MONTHS:
+            months.add(token)
+            continue
+        digits = re.match(r"^\d+", token)
+        if digits:
+            numbers.add(digits.group(0))
+    return numbers, months
+
+
+def _containment_score(candidate: dict, central: dict) -> float:
+    """``1.0`` when the shorter claim's content words sit inside the longer one.
+
+    A shorter restatement ("Fortnite is coming to Linux") is corroborated by a
+    longer version of the same fact that adds context ("... once Epic improves
+    Easy Anti-Cheat"), even though the extra words dilute the Jaccard overlap.
+    Requires at least three content words so a two-word phrase cannot stand in
+    for any claim that happens to contain it.
+    """
+    candidate_words = _corroboration_words(candidate)
+    central_words = _corroboration_words(central)
+    if not candidate_words or not central_words:
+        return 0.0
+    shorter, longer = (
+        (candidate_words, central_words)
+        if len(candidate_words) <= len(central_words)
+        else (central_words, candidate_words)
+    )
+    if len(shorter) < 3 or not shorter <= longer:
+        return 0.0
+    return 1.0
+
+
+def _central_adds_hard_token(candidate: dict, central: dict) -> bool:
+    """True when the central claim states a figure or month the candidate omits.
+
+    "coming to Linux in March" is a different fact from "coming to Linux": the
+    month in the central claim is not restated by the candidate, so the candidate
+    must not be read as corroborating it.
+    """
+    candidate_numbers, candidate_months = _claim_all_hard_tokens(candidate)
+    central_numbers, central_months = _claim_all_hard_tokens(central)
+    return bool((central_numbers - candidate_numbers) or (central_months - candidate_months))
+
+
 def corroboration_score(
     candidate: dict, central: dict, *, entities: list[str] | None = None
 ) -> float:
@@ -2660,8 +3135,12 @@ def corroboration_score(
     """
     score = _overlap_score(candidate, central)
     if score < _corroboration_overlap():
+        score = _containment_score(candidate, central)
+    if score < _corroboration_overlap():
         return 0.0
     if _claims_conflict(candidate, central):
+        return 0.0
+    if _central_adds_hard_token(candidate, central):
         return 0.0
     if entities:
         text = f"{candidate.get('claim', '')} {candidate.get('value', '')}"
@@ -3147,6 +3626,7 @@ def _write_unconfirmed_sheet(
     grounding_details: list[dict] | None = None,
     origin_downgrades: list[dict] | None = None,
     date_anchors: list[dict] | None = None,
+    attribution_traces: list[dict] | None = None,
 ) -> Optional[Path]:
     """Persist a rejected story's sheet under ``<output_dir>/unconfirmed/``.
 
@@ -3179,6 +3659,7 @@ def _write_unconfirmed_sheet(
         "grounding": [_grounding_entry(entry) for entry in (grounding_details or [])],
         "date_anchors": list(date_anchors or []),
         "origins_downgraded": list(origin_downgrades or []),
+        "attribution_trace": list(attribution_traces or []),
         "coherence": {
             "checked": bool(primary),
             "primary_entities": primary,
@@ -3352,6 +3833,7 @@ def facts(
     # Origins are canonicalized and verified against each claim's own source
     # text before anything is counted or stored; a product/title is not an origin.
     origin_downgrades: list[dict] = []
+    attribution_traces: list[dict] = []
     kept = resolve_claim_origins(
         kept,
         sources,
@@ -3359,6 +3841,7 @@ def facts(
         story_id=name,
         entities=canonical,
         downgrades=origin_downgrades,
+        attribution_traces=attribution_traces,
     )
 
     tier1_present = any(int(source.get("tier") or 0) == 1 for source in sources)
@@ -3470,6 +3953,7 @@ def facts(
             output_dir, name, now, confirmation, central, kept, claims, sheet_sources, dropped,
             primary=primary, canonical=canonical, grounding_details=grounding_details,
             origin_downgrades=origin_downgrades, date_anchors=date_anchors,
+            attribution_traces=attribution_traces,
         )
         raise UnconfirmedStory(message, budget_truncated=budget_truncated)
 
@@ -3483,6 +3967,7 @@ def facts(
         "grounding": [_grounding_entry(entry) for entry in grounding_details],
         "date_anchors": date_anchors,
         "origins_downgraded": origin_downgrades,
+        "attribution_trace": attribution_traces,
         "coherence": {
             "checked": bool(primary),
             "primary_entities": primary,

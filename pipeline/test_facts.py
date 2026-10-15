@@ -2437,6 +2437,119 @@ def test_descriptor_only_phrases_are_anonymous(origin):
     assert facts._is_anonymous_origin(origin, facts.load_origin_aliases()) is True
 
 
+# --- a cue names a source, not a document, product or back-reference ----------
+
+
+def test_document_noun_after_a_lead_resolves_to_the_organization():
+    # "According to an Epic blog post" names Epic, never the "blog post": the
+    # lead filler is lowercase-only, so the capture keeps "Epic blog post", and
+    # the alias resolves it to Epic Games.
+    src = source(
+        text=(
+            "Fortnite will launch via the Epic Games Launcher. "
+            "According to an Epic blog post, Easy Anti-Cheat is being rebuilt."
+        )
+    )
+    resolved = facts.resolve_claim_origins(
+        [claim(claim="Easy Anti-Cheat is being rebuilt", origin="epic games")], [src]
+    )
+    assert resolved[0]["origin"] == "epic games"
+
+
+def test_a_product_or_software_noun_is_never_the_source():
+    # "via Wine" and "the Epic Games Launcher" place a product next to a claim;
+    # the attribution belongs to the organization that spoke, Epic.
+    src = source(text="It runs via Wine. Epic says the client supports Linux.")
+    resolved = facts.resolve_claim_origins(
+        [claim(claim="the client supports Linux", origin="wine")], [src]
+    )
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+    kept = facts.resolve_claim_origins(
+        [claim(claim="the client supports Linux", origin="epic")], [src]
+    )
+    assert kept[0]["origin"] == "epic games"
+
+
+def test_a_clause_subject_attributes_a_later_clause():
+    # A headline names its source once and then attributes a later clause to it:
+    # "Epic Games vibe codes ..., claims ..." must credit Epic Games.
+    src = source(
+        text="Epic Games vibe codes a new launcher, claims it starts 46 percent faster."
+    )
+    assert facts._attribution_winner(src["text"], claim(claim="it starts 46 percent faster")) == (
+        "epic games"
+    )
+    assert facts.resolve_claim_origins(
+        [claim(claim="it starts 46 percent faster", origin="epic games")], [src]
+    )[0]["origin"] == "epic games"
+
+
+def test_a_person_talking_to_an_outlet_is_the_speaker_not_the_outlet():
+    # "told IGN" names where the person spoke, not who produced the claim.
+    src = source(
+        text=(
+            "After a Bloomberg report, Martin Keely, vice president at Epic Games, "
+            "told IGN that AI is highly visible."
+        )
+    )
+    resolved = facts.resolve_claim_origins(
+        [claim(claim="AI is highly visible", origin="martin keely", affiliation="epic games")], [src]
+    )
+    assert resolved[0]["origin"] == "martin keely"
+    assert resolved[0]["affiliation"] == "epic games"
+    spoken = facts.resolve_claim_origins(
+        [claim(claim="AI is highly visible", origin="ign")], [src]
+    )
+    assert spoken[0]["origin"] == facts.UNSTATED_ORIGIN
+
+
+def test_coreference_phrase_resolves_to_the_prior_organization():
+    # "The company" stands for the organization the paragraph already named.
+    src = source(
+        text="Epic Games announced a preview. The company says it vibe coded the launcher."
+    )
+    resolved = facts.resolve_claim_origins(
+        [claim(claim="it vibe coded the launcher", origin="epic games")], [src]
+    )
+    assert resolved[0]["origin"] == "epic games"
+
+
+def test_coreference_phrase_without_a_prior_organization_is_unstated():
+    # With no organization before it, "the company" names nothing: the claim is
+    # unstated, and the phrase is not treated as an anonymous descriptor either.
+    src = source(text="The company says it is cheaper.")
+    assert facts._is_anonymous_origin("the company", facts.load_origin_aliases()) is False
+    resolved = facts.resolve_claim_origins(
+        [claim(claim="it is cheaper", origin="epic games")], [src]
+    )
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+
+
+def test_an_industry_quantity_phrase_is_still_anonymous():
+    # The coreference fix must not turn a quantity descriptor into a source.
+    assert facts._is_anonymous_origin("four industry sources", facts.load_origin_aliases()) is True
+
+
+def test_an_unattributed_origin_leaves_a_diagnostic_trace():
+    # A downgraded "not attributed" origin must explain itself in the sheet.
+    src = source(
+        text=(
+            "According to Bloomberg, Rockstar crunched for months. "
+            "The studio lengthened shifts. Staff were exhausted."
+        )
+    )
+    traces: list[dict] = []
+    resolved = facts.resolve_claim_origins(
+        [claim(claim="Staff were exhausted", origin="rockstar")],
+        [src],
+        attribution_traces=traces,
+    )
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+    assert traces and traces[0]["origin"] == "rockstar"
+    assert traces[0]["winner"] == "Bloomberg"
+    assert any("bloomberg" in entry for entry in traces[0]["cue_sources"])
+
+
 # --- canonical organization names and aliases (stage 6) ----------------------
 
 
@@ -2507,6 +2620,48 @@ def test_corroboration_requires_a_primary_entity():
     )
     assert facts.corroboration_score(report, central) > 0
     assert facts.corroboration_score(report, central, entities=["Fortnite"]) == 0.0
+
+
+def test_corroboration_accepts_a_longer_restatement_of_the_same_fact():
+    # The extra words dilute the Jaccard overlap, but the shorter claim's words
+    # are all contained in the longer version, so it is the same fact.
+    central = claim(claim="Fortnite is coming to Linux", value="Fortnite is coming to Linux")
+    longer = claim(
+        claim="Fortnite will come to Linux once Epic improves Easy Anti-Cheat",
+        value="Fortnite is coming to Linux once Epic improves Easy Anti-Cheat",
+    )
+    assert facts._overlap_score(longer, central) < facts.DEFAULT_CORROBORATION_OVERLAP
+    assert facts.corroboration_score(longer, central, entities=["Fortnite"]) > 0
+
+
+def test_corroboration_rejects_a_different_route_to_the_same_entity():
+    # "distributed through the Epic Games Launcher" is a different fact from
+    # "coming to Linux", however many words the two share.
+    central = claim(claim="Fortnite is coming to Linux", value="Fortnite is coming to Linux")
+    launcher = claim(
+        claim="Fortnite will be distributed through the Epic Games Launcher",
+        value="Fortnite will be distributed through the Epic Games Launcher",
+    )
+    assert facts.corroboration_score(launcher, central, entities=["Fortnite"]) == 0.0
+
+
+def test_corroboration_rejects_a_central_date_the_candidate_omits():
+    # "coming to Linux in March" is not restated by "coming to Linux": the
+    # candidate never states the month the central claim does.
+    march = claim(claim="Fortnite is coming to Linux in March", value="Fortnite is coming to Linux in March")
+    plain = claim(claim="Fortnite is coming to Linux", value="Fortnite is coming to Linux")
+    assert facts.corroboration_score(plain, march, entities=["Fortnite"]) == 0.0
+
+
+def test_central_claim_prefers_a_confirmed_named_claim_over_a_longer_unstated_one():
+    title = "Fortnite is coming to Linux"
+    unstated = claim(
+        claim="Fortnite is coming to Linux and it will be amazing",
+        origin="unstated",
+        kind="reported",
+    )
+    confirmed = claim(claim="Fortnite is coming to Linux", origin="epic games", kind="confirmed")
+    assert facts.central_claim([unstated, confirmed], title=title)["origin"] == "epic games"
 
 
 def test_corroborating_claims_count_toward_two_independent_origins():
