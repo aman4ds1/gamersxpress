@@ -11,11 +11,11 @@ from providers import Generation, RunState
 NOW = dt.datetime(2026, 10, 9, 12, 0, 0, tzinfo=dt.timezone.utc)
 
 
-def source(link="https://a.example/1", name="Alpha", tier=2, owner="co-a", region="us", text="Some body text about the story.", title="", published=None):
+def source(link="https://a.example/1", name="Alpha", tier=2, owner="co-a", region="us", text="Some body text about the story.", title="", published=None, url_date=None):
     return {
         "link": link, "title": title, "source_name": name, "tier": tier, "owner": owner,
         "region": region, "status": "ok", "text": text, "error": None,
-        "published": published,
+        "published": published, "url_date": url_date,
     }
 
 
@@ -1370,6 +1370,120 @@ def test_facts_absolutizes_relative_time_from_the_source_url_date(tmp_path):
         gathered(sources=[src]), output_dir=tmp_path, now=NOW, generate=make_generate(payload)
     )
     assert result["claims"][0]["value"] == "arrives on October 7, 2026"
+
+
+def test_url_date_wins_over_a_feed_date_one_day_later_and_is_noted(tmp_path):
+    # The URL date (2026-10-07) and the feed date (2026-10-08) differ by one day,
+    # so the URL date is used and the disagreement is recorded in the sheet.
+    src = source(
+        link="https://blog.example/2026/10/07/cyclops",
+        url_date="2026-10-07",
+        published="2026-10-08T02:06:00Z",
+        name="Official Blog",
+        tier=1,
+        owner="co-a",
+        text="Phoenix Cyclops arrives today.",
+    )
+    payload = {
+        "claims": [
+            claim(claim="Phoenix Cyclops release", value="arrives today", source_url=src["link"])
+        ]
+    }
+    result = facts.facts(
+        gathered(sources=[src]), output_dir=tmp_path, now=NOW, generate=make_generate(payload)
+    )
+    assert result["claims"][0]["value"] == "arrives on October 7, 2026"
+    notes = result["date_anchors"]
+    assert len(notes) == 1
+    note = notes[0]
+    assert note["used"] == "url"
+    assert note["differs"] is True
+    assert note["gap_days"] == 1
+    assert note["anchors"] == {"url": "2026-10-07", "feed": "2026-10-08T02:06:00Z"}
+
+
+def test_anchors_that_agree_need_no_note(tmp_path):
+    src = source(
+        link="https://blog.example/2026/10/07/cyclops",
+        url_date="2026-10-07",
+        published="2026-10-07T17:00:00+00:00",
+        name="Official Blog",
+        tier=1,
+        owner="co-a",
+        text="Phoenix Cyclops arrives today.",
+    )
+    payload = {
+        "claims": [
+            claim(claim="Phoenix Cyclops release", value="arrives today", source_url=src["link"])
+        ]
+    }
+    result = facts.facts(
+        gathered(sources=[src]), output_dir=tmp_path, now=NOW, generate=make_generate(payload)
+    )
+    assert result["claims"][0]["value"] == "arrives on October 7, 2026"
+    assert result["date_anchors"] == []
+
+
+def test_no_url_date_falls_back_to_the_feed_date(tmp_path):
+    src = source(
+        link="https://blog.example/cyclops",
+        published="2026-10-07T17:00:00+00:00",
+        name="Official Blog",
+        tier=1,
+        owner="co-a",
+        text="Phoenix Cyclops arrives today.",
+    )
+    payload = {
+        "claims": [
+            claim(claim="Phoenix Cyclops release", value="arrives today", source_url=src["link"])
+        ]
+    }
+    result = facts.facts(
+        gathered(sources=[src]), output_dir=tmp_path, now=NOW, generate=make_generate(payload)
+    )
+    assert result["claims"][0]["value"] == "arrives on October 7, 2026"
+    assert result["date_anchors"][0]["used"] == "feed"
+    assert result["date_anchors"][0]["anchors"]["url"] is None
+
+
+def test_anchors_more_than_a_day_apart_drop_relative_claims_only(tmp_path):
+    # A two-week gap between the URL date and the feed date is too ambiguous to
+    # date from: the relative-time claim is dropped with a reason, while the
+    # other claim is kept unchanged.
+    src = source(
+        link="https://blog.example/2026/09/20/cyclops",
+        url_date="2026-09-20",
+        published="2026-10-07T17:00:00+00:00",
+        name="Official Blog",
+        tier=1,
+        owner="co-a",
+        text="Phoenix Cyclops arrives today. It is available on PC.",
+    )
+    payload = {
+        "claims": [
+            claim(claim="Phoenix Cyclops release", value="arrives today", source_url=src["link"]),
+            claim(claim="Phoenix Cyclops platforms", value="available on PC", source_url=src["link"]),
+        ]
+    }
+    result = facts.facts(
+        gathered(sources=[src]), output_dir=tmp_path, now=NOW, generate=make_generate(payload)
+    )
+    values = [claim_["value"] for claim_ in result["claims"]]
+    assert values == ["available on PC"]
+    grounding = result["grounding"]
+    assert grounding and grounding[0]["reason"] == "ambiguous publication date"
+    assert grounding[0]["anchors"] == {"url": "2026-09-20", "feed": "2026-10-07T17:00:00+00:00"}
+    assert result["date_anchors"][0]["reason"] == "ambiguous publication date"
+
+
+def test_a_date_is_grounded_by_either_anchor():
+    value = claim(claim="Release", value="ships 2026-10-07")
+    body = "The game ships later this year."
+    assert facts.grounding_failure(
+        value, body, anchors=[dt.date(2026, 10, 1), dt.date(2026, 10, 7)]
+    ) is None
+    # With only the other anchor the URL/feed date is not grounded.
+    assert facts.grounding_failure(value, body, anchors=[dt.date(2026, 10, 1)]) is not None
 
 
 def test_grounding_drops_a_value_that_adds_a_qualifier_the_source_never_states():

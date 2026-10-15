@@ -659,3 +659,25 @@ def test_adverb_and_time_phrases_are_not_entities():
         assert cluster.story_entities(tail) == [], tail
     assert cluster.story_entities("Holly Willoughby") == ["holly willoughby"]
     assert cluster.story_entities("The Last of Us Part II") == ["last of us part ii"]
+
+
+def test_distinct_owners_counts_each_publisher_once():
+    sources = [
+        {"owner": "sony"},
+        {"owner": "Sony"},  # same publisher, different casing
+        {"owner": "sony"},  # regional duplicate of the same post
+        {"owner": "microsoft"},
+    ]
+    assert cluster.distinct_owners(sources) == {"sony", "microsoft"}
+
+
+def test_distinct_owners_ignores_unfetchable_and_tier3_and_blank():
+    sources = [
+        {"owner": "a"},
+        {"owner": "b", "fetchable": False},
+        {"owner": "c", "tier": 3},
+        {"owner": "d", "tier": "3"},
+        {"owner": "  "},
+        {"tier": 1},
+    ]
+    assert cluster.distinct_owners(sources) == {"a"}

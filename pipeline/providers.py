@@ -36,6 +36,7 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -48,6 +49,49 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name("config.yaml")
 VALID_ROLES = ("fast", "writer", "verifier")
+
+#: Prompt-token estimate: one token per ~3.5 characters. This is the same
+#: approximation the pipeline uses elsewhere to size a prompt before a provider's
+#: rate limit is consulted. ``len(prompt) / _PROMPT_CHARS_PER_TOKEN``.
+_PROMPT_CHARS_PER_TOKEN = 3.5
+
+#: Default tokens-per-minute limits for OpenAI-compatible providers, keyed by
+#: provider name then model id. Groq's Free Plan coding-model limits, from
+#: https://console.groq.com/docs/rate-limits (checked 2026-10-15): gpt-oss-120b
+#: and gpt-oss-20b are 8K TPM; qwen3.8-27b is listed at 8K TPM on the live page,
+#: so 6K is kept here as the conservative default. Overridable via
+#: ``provider.limits`` in config.yaml. A model that is absent is not capped.
+DEFAULT_TPM_LIMITS: dict[str, dict[str, int]] = {
+    "groq": {
+        "openai/gpt-oss-120b": 8000,
+        "openai/gpt-oss-20b": 8000,
+        "qwen/qwen3.8-27b": 6000,
+    },
+}
+
+#: Smallest output budget worth a call, per role. A rate-limit-sized completion
+#: cap below this means the prompt nearly fills the provider's per-minute limit,
+#: so the provider is skipped with reason "prompt too large for provider rate
+#: limit" instead of sending a request that would be rejected.
+DEFAULT_MIN_OUTPUT_TOKENS: dict[str, int] = {
+    "writer": 1500,
+    "verifier": 1200,
+    "fast": 600,
+}
+
+#: Hard wall-clock caps (seconds) for one provider call and for a whole role
+#: across its providers. Overridable via ``provider.max_call_seconds`` and
+#: ``provider.max_role_seconds`` in config.yaml. A non-positive value disables it.
+DEFAULT_MAX_CALL_SECONDS: dict[str, float] = {
+    "writer": 150.0,
+    "verifier": 120.0,
+    "fast": 60.0,
+}
+DEFAULT_MAX_ROLE_SECONDS: dict[str, float] = {
+    "writer": 420.0,
+    "verifier": 300.0,
+    "fast": 180.0,
+}
 
 logger = logging.getLogger("gamersxpress.pipeline")
 
@@ -90,6 +134,24 @@ class ProviderError(Exception):
         super().__init__(message)
         self.retryable = retryable
         self.status = status
+
+
+class PromptTooLargeError(ProviderError):
+    """The prompt leaves too little output budget under a provider's TPM limit.
+
+    Raised before any request is sent, so the provider is skipped rather than
+    rejected with HTTP 413. The message is the skip reason callers record.
+    """
+
+    def __init__(self, limit: int, prompt_estimate: float):
+        super().__init__(
+            "prompt too large for provider rate limit "
+            f"(prompt ~{prompt_estimate:.0f} tokens, limit {limit} TPM)",
+            retryable=False,
+            status=413,
+        )
+        self.limit = limit
+        self.prompt_estimate = prompt_estimate
 
 
 @dataclass
@@ -245,6 +307,105 @@ class _RoleTimeBudget:
             return False
         self.remaining -= delay
         return True
+
+
+def estimate_prompt_tokens(prompt: str) -> float:
+    """Return a tokens estimate for ``prompt`` using chars/3.5."""
+    return len(prompt) / _PROMPT_CHARS_PER_TOKEN
+
+
+def _is_request_too_large(exc: Exception) -> bool:
+    """True when ``exc`` indicates a payload rejected for being too large."""
+    message = str(exc).lower()
+    return exc.status == 413 or "request too large" in message
+
+
+def _limit_from_error_message(message: str) -> int | None:
+    """Parse the provider's limit token count from an error message."""
+    match = re.search(r"limit\s+(\d+)", message, re.IGNORECASE)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def _call_with_timeout(fn: Callable[[], Any], timeout: float | None) -> Any:
+    """Run ``fn`` in a thread and return its result, abandoning after ``timeout``.
+
+    On timeout, the worker may still complete later, but its return value is
+    discarded. The caller never reads it. Any exception the worker raises is
+    propagated by the caller only if it finishes within ``timeout``.
+    """
+    if timeout is None or timeout <= 0:
+        return fn()
+    box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def worker() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=worker, name="llm-call", daemon=True)
+    thread.start()
+    if not done.wait(timeout):
+        raise ProviderError(
+            f"provider call exceeded {timeout:.0f}s (abandoned)",
+            retryable=False,
+        )
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def _tpm_limit(provider_name: str, model: str, limits: Mapping[str, Mapping[str, int]]) -> int | None:
+    """Return the per-minute token limit for this provider/model, or None."""
+    models = limits.get(provider_name)
+    if not models:
+        return None
+    limit = models.get(model)
+    return int(limit) if limit is not None else None
+
+
+def _sized_options_for_openai(
+    provider_name: str,
+    model: str,
+    prompt: str,
+    options: Mapping[str, Any] | None,
+    role: str,
+    limits: Mapping[str, Mapping[str, int]],
+    min_outputs: Mapping[str, int],
+) -> tuple[dict, int | None]:
+    """Return sized options and the effective cap, or raise PromptTooLargeError.
+
+    Returns ``(sized_options, cap)``. ``cap`` is the effective ``max_completion_tokens``
+    after capping to the configured value and to ``0.9*limit - est``. If ``cap``
+    falls below the role's minimum output, :class:`PromptTooLargeError` is raised.
+    """
+    options_map = dict(options or {})
+    limit = _tpm_limit(provider_name, model, limits)
+    if limit is None:
+        return options_map, None
+    est = estimate_prompt_tokens(prompt)
+    configured = options_map.get("max_completion_tokens")
+    budget = 0.9 * limit - est
+    if budget <= 0:
+        raise PromptTooLargeError(int(limit), est)
+    if configured is None:
+        cap = int(budget)
+    else:
+        cap = min(int(configured), int(budget))
+    min_out = int(min_outputs.get(role, 0))
+    if cap < min_out:
+        raise PromptTooLargeError(int(limit), est)
+    sized = dict(options_map)
+    sized["max_completion_tokens"] = cap
+    return sized, cap
 
 
 def _jitter(delay: float, ratio: float, rand: Callable[[], float]) -> float:
@@ -702,6 +863,7 @@ def _complete_with_retry(
     jitter_ratio: float = 0.0,
     rand: Callable[[], float] = random.random,
     time_budget: _RoleTimeBudget | None = None,
+    call_timeout: float | None = None,
 ) -> Completion:
     """Call ``provider.complete`` with backoff, returning a :class:`Completion`.
 
@@ -727,8 +889,11 @@ def _complete_with_retry(
     length_remaining = max(0, int(length_retries))
     while True:
         try:
-            completion = provider.complete(
-                model, prompt, api_key=api_key, json_schema=json_schema, options=budget
+            completion = _call_with_timeout(
+                lambda: provider.complete(
+                    model, prompt, api_key=api_key, json_schema=json_schema, options=budget
+                ),
+                call_timeout,
             )
         except ProviderError as exc:
             if not exc.retryable or attempt >= max_attempts - 1:
@@ -877,6 +1042,31 @@ def generate(
         dry_run = _env_flag(os.environ.get("DRY_RUN"))
     providers = providers if providers is not None else default_providers()
 
+    # Load provider/time/TPM limits from config.
+    provider_cfg = config.get("provider", {}) or {}
+    max_call = float((provider_cfg.get("max_call_seconds") or {}).get(role, DEFAULT_MAX_CALL_SECONDS.get(role, 0)) or 0)
+    max_role = float((provider_cfg.get("max_role_seconds") or {}).get(role, DEFAULT_MAX_ROLE_SECONDS.get(role, 0)) or 0)
+
+    # Build TPM limits mapping (config overrides defaults).
+    limits_cfg = {}
+    limits = {p: dict(m) for p, m in DEFAULT_TPM_LIMITS.items()}
+    for p, m in (provider_cfg.get("limits") or {}).items():
+        models = limits.setdefault(p, {})
+        if isinstance(m, dict):
+            for model_id, val in m.items():
+                try:
+                    models[model_id] = int(val)
+                except (ValueError, TypeError):
+                    pass
+    limits_cfg = limits
+
+    min_outputs = dict(DEFAULT_MIN_OUTPUT_TOKENS)
+    for r, v in (provider_cfg.get("min_output_tokens") or {}).items():
+        try:
+            min_outputs[str(r)] = int(v)
+        except (ValueError, TypeError):
+            pass
+
     if (
         exclude_families is None
         and role == "verifier"
@@ -938,7 +1128,24 @@ def generate(
     length_budget_multiplier = int(retry.get("length_budget_multiplier", 2))
     length_budget_cap = int(retry.get("length_budget_cap", 0))
 
+    role_deadline = None
+    if max_role > 0:
+        role_deadline = time.monotonic() + max_role
+    role_started = time.monotonic() if max_role > 0 else None
+
     for entry in chain:
+        # Role wall-clock deadline.
+        if role_deadline is not None:
+            remaining = role_deadline - time.monotonic()
+            if remaining <= 0:
+                message = f"role {role!r} exceeded max_role_seconds {int(max_role)}s"
+                fallbacks.append(f"role={role} {name} ({model}): {message}") if False else None  # dummy
+                fallbacks.append(f"role={role}: {message}")
+                logger.warning("fallback role=%s: %s", role, message)
+                break
+            call_timeout = min(max_call, remaining) if max_call > 0 else None
+        else:
+            call_timeout = max_call if max_call > 0 else None
         name = entry.get("provider")
         model = entry.get("model")
         family = entry.get("family")
@@ -952,20 +1159,78 @@ def generate(
             fallbacks.append(f"role={role} {name} (family={family}): missing {provider.env_key}")
             logger.warning("fallback role=%s: missing env %s for provider %s", role, provider.env_key, name)
             continue
+        entry_options = entry.get("options")
+        cap_for_length = length_budget_cap
+        sized = entry_options
+        shrunk_once = False
+        # Pre-size for OpenAI-compatible.
+        if isinstance(provider, OpenAICompatibleProvider):
+            try:
+                sized, cap = _sized_options_for_openai(name, model, prompt, entry_options, role, limits_cfg, min_outputs)
+                if cap is not None:
+                    cap_for_length = min(length_budget_cap, cap) if length_budget_cap else cap
+                entry_options = sized
+            except PromptTooLargeError as exc:
+                fallbacks.append(f"role={role} {name} ({model}, family={family}): prompt too large for provider rate limit")
+                logger.warning("fallback role=%s provider=%s model=%s family=%s: prompt too large for provider rate limit", role, name, model, family)
+                continue
         try:
             completion = _complete_with_retry(
                 provider, model, prompt, json_schema, api_key,
                 max_attempts, base_delay, max_delay, sleep, role,
-                options=entry.get("options"),
+                options=entry_options,
                 length_retries=length_retries,
                 length_budget_multiplier=length_budget_multiplier,
-                length_budget_cap=length_budget_cap,
+                length_budget_cap=cap_for_length,
                 busy_delays=busy_delays,
                 jitter_ratio=jitter_ratio,
                 rand=rand,
                 time_budget=time_budget,
+                call_timeout=call_timeout,
             )
         except ProviderError as exc:
+            # Handle "Request too large" / 413 once by shrinking.
+            if isinstance(provider, OpenAICompatibleProvider) and _is_request_too_large(exc) and not shrunk_once:
+                shrunk_once = True
+                limit_from_err = _limit_from_error_message(str(exc)) or None
+                limit_use = limit_from_err or _tpm_limit(name, model, limits_cfg)
+                if limit_use is not None:
+                    est = estimate_prompt_tokens(prompt)
+                    fit = int(limit_use - est)
+                    min_out = int(min_outputs.get(role, 0))
+                    if fit >= min_out:
+                        sized_shrink = dict(entry_options)
+                        sized_shrink["max_completion_tokens"] = fit
+                        cap_shrink = fit
+                        cap_for_length_s = min(length_budget_cap, cap_shrink) if length_budget_cap else cap_shrink
+                        try:
+                            completion = _complete_with_retry(
+                                provider, model, prompt, json_schema, api_key,
+                                max_attempts, base_delay, max_delay, sleep, role,
+                                options=sized_shrink,
+                                length_retries=length_retries,
+                                length_budget_multiplier=length_budget_multiplier,
+                                length_budget_cap=cap_for_length_s,
+                                busy_delays=busy_delays,
+                                jitter_ratio=jitter_ratio,
+                                rand=rand,
+                                time_budget=time_budget,
+                                call_timeout=call_timeout,
+                            )
+                            # Success after shrink; treat as success.
+                            generation = Generation(
+                                role=role, provider=name, model=model, family=family,
+                                value=completion.value, fallbacks=list(fallbacks),
+                                finish_reason=completion.finish_reason,
+                                usage=completion.usage,
+                                raw=completion.raw,
+                            )
+                            logger.info("role=%s provider=%s model=%s family=%s fallbacks=%d", role, name, model, family, len(fallbacks))
+                            if run_state is not None:
+                                run_state.record(generation)
+                            return generation
+                        except ProviderError:
+                            pass  # fall through to append this exc as fallback
             fallbacks.append(f"role={role} {name} ({model}, family={family}): {exc}")
             logger.warning("fallback role=%s provider=%s model=%s family=%s: %s", role, name, model, family, exc)
             continue

@@ -452,3 +452,38 @@ def test_print_fetch_health_summary_lists_domains():
     data = {"domains": {"xbox.com": {"successes": 1, "failures": 2}}}
     lines = gather.print_fetch_health_summary(data)
     assert lines == ["fetch health: xbox.com 1 ok / 2 failed"]
+
+
+# --- url_date: the date a dated URL path states -------------------------------
+
+
+def test_url_date_reads_a_valid_dated_path():
+    assert gather.url_date("https://blog.example/2026/10/07/post") == "2026-10-07"
+    assert gather.url_date("https://blog.example/2026/10/07") == "2026-10-07"
+
+
+def test_url_date_rejects_invalid_future_and_absent_dates():
+    assert gather.url_date("https://x/2026/13/40/post") is None
+    assert gather.url_date("https://x/2026/02/30/post") is None
+    assert gather.url_date("https://x/news/post") is None
+    assert gather.url_date(None) is None
+    assert gather.url_date("https://x/2026/10/07/post", now=NOW) == "2026-10-07"
+    # A date after ``now`` is not a publication date.
+    assert gather.url_date("https://x/2026/10/20/post", now=NOW) is None
+
+
+def test_gather_carries_url_date_from_the_final_url_after_redirect(tmp_path):
+    def fetcher(url):
+        return ("<html>body</html>", "https://blog.example/2026/10/07/canonical")
+
+    payload = run_gather(tmp_path, fetcher=fetcher)
+    source = payload["sources"][0]
+    assert source["final_url"] == "https://blog.example/2026/10/07/canonical"
+    assert source["url_date"] == "2026-10-07"
+    # The feed date is left exactly as the item supplied it.
+    assert source["published"] is None
+
+
+def test_gather_url_date_is_null_without_a_dated_path(tmp_path):
+    payload = run_gather(tmp_path, fetcher=lambda url: ("<html>body</html>", url))
+    assert payload["sources"][0]["url_date"] is None

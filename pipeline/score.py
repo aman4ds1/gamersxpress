@@ -48,6 +48,14 @@ DEFAULT_MODEL_CALL_BUDGET = 12
 #: ``content_limits.min_sources`` is the single source of truth (shared with the
 #: publish gates); this default keeps the pipeline running with a partial config.
 DEFAULT_MIN_SOURCES = 2
+
+#: Minimum distinct owners a cluster's countable sources must have to be
+#: eligible, from ``score.min_distinct_owners``. Two posts from one publisher
+#: are one voice, so a story needs independent owners (see
+#: :func:`cluster.distinct_owners`). The score-stage eligibility gate and the
+#: run's post-gather readiness check share this value.
+DEFAULT_MIN_DISTINCT_OWNERS = 2
+
 DEFAULT_WEIGHTS = {
     "tier1": 40,
     "tier2": 15,
@@ -325,6 +333,21 @@ def load_min_sources(config: dict | None = None) -> int:
     return int(DEFAULT_MIN_SOURCES)
 
 
+def load_min_distinct_owners(config: dict | None = None) -> int:
+    """Minimum distinct owners for eligibility, from ``score.min_distinct_owners``.
+
+    Falls back to :data:`DEFAULT_MIN_DISTINCT_OWNERS` when the key is missing or
+    malformed. The same value gates the run's post-gather readiness check.
+    """
+    if config is None:
+        return int(DEFAULT_MIN_DISTINCT_OWNERS)
+    section = config.get("score") or {}
+    value = section.get("min_distinct_owners", DEFAULT_MIN_DISTINCT_OWNERS)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(DEFAULT_MIN_DISTINCT_OWNERS)
+
+
 def _countable_items(cluster_dict: dict) -> list[dict]:
     """Member items that count toward the source floor.
 
@@ -356,6 +379,16 @@ def source_urls(cluster_dict: dict) -> list[str]:
 def source_count(cluster_dict: dict) -> int:
     """How many distinct countable source URLs a cluster has (one-source stories are not eligible)."""
     return len(source_urls(cluster_dict))
+
+
+def owner_count(cluster_dict: dict) -> int:
+    """How many distinct countable owners a cluster has.
+
+    Delegates to :func:`cluster.distinct_owners` so eligibility and the run's
+    post-gather readiness check count owners the same way (several posts from one
+    publisher count once, and ``fetchable: false``/tier-3 items are ignored).
+    """
+    return len(cluster.distinct_owners(_countable_items(cluster_dict)))
 
 
 def filter_excluded_items(
@@ -466,23 +499,29 @@ def ineligible_reason(
     cluster_dict: dict,
     exclude_patterns: list[str] | None = None,
     min_sources: int | None = None,
+    min_distinct_owners: int | None = None,
 ) -> str | None:
     """Why a cluster cannot be gathered, or None when it is eligible.
 
     A cluster is eligible only when it is confirmable (:func:`cluster.confirmable`),
-    has at least ``min_sources`` distinct source URLs, its headline matches no
+    has at least ``min_sources`` distinct source URLs, is backed by at least
+    ``min_distinct_owners`` distinct owners, its headline matches no
     format-exclusion pattern, and it is topically relevant
     (:func:`relevant_cluster`). Reasons are reported verbatim:
-    ``"not confirmable"``, ``"too few sources"``, ``"excluded pattern: <pattern>"``,
-    or ``"off-topic"``.
+    ``"not confirmable"``, ``"too few sources"``, ``"too few independent owners"``,
+    ``"excluded pattern: <pattern>"``, or ``"off-topic"``.
     """
     patterns = load_exclude_title_patterns() if exclude_patterns is None else list(exclude_patterns)
     if min_sources is None:
         min_sources = load_min_sources()
+    if min_distinct_owners is None:
+        min_distinct_owners = load_min_distinct_owners()
     if not cluster.confirmable(cluster_dict):
         return "not confirmable"
     if source_count(cluster_dict) < int(min_sources):
         return "too few sources"
+    if owner_count(cluster_dict) < int(min_distinct_owners):
+        return "too few independent owners"
     pattern = cluster.excluded_title_pattern(str(cluster_dict.get("title") or ""), patterns)
     if pattern is not None:
         return f"excluded pattern: {pattern!r}"
@@ -548,6 +587,7 @@ def rank(
     news_bonus: float | None = None,
     news_verbs: list[str] | None = None,
     min_sources: int | None = None,
+    min_distinct_owners: int | None = None,
 ) -> list[dict]:
     patterns = load_exclude_title_patterns() if exclude_patterns is None else list(exclude_patterns)
     if relevance_keywords is None:
@@ -556,6 +596,8 @@ def rank(
         source_topics = load_source_topics()
     if min_sources is None:
         min_sources = load_min_sources()
+    if min_distinct_owners is None:
+        min_distinct_owners = load_min_distinct_owners()
     # Resolve the news bonus/phrases once for the whole ranking instead of once
     # per cluster, so score_cluster never re-reads config.yaml inside the loop.
     if news_bonus is None or news_verbs is None:
@@ -568,6 +610,7 @@ def rank(
     for cluster_dict in clusters:
         confirmable = cluster.confirmable(cluster_dict)
         sources = source_count(cluster_dict)
+        owners = owner_count(cluster_dict)
         excluded_by = cluster.excluded_title_pattern(
             str(cluster_dict.get("title") or ""), patterns
         )
@@ -587,10 +630,12 @@ def rank(
                 ),
                 "confirmable": confirmable,
                 "source_count": sources,
+                "owner_count": owners,
                 "excluded_by": excluded_by,
                 "relevant": relevant,
                 "eligible": (
                     confirmable and sources >= int(min_sources)
+                    and owners >= int(min_distinct_owners)
                     and excluded_by is None and relevant
                 ),
             }
@@ -612,6 +657,7 @@ def pick(
     news_bonus: float | None = None,
     news_verbs: list[str] | None = None,
     min_sources: int | None = None,
+    min_distinct_owners: int | None = None,
 ) -> dict | None:
     """Return the highest-scoring eligible cluster that reaches its threshold.
 
@@ -636,6 +682,7 @@ def pick(
         news_bonus=news_bonus,
         news_verbs=news_verbs,
         min_sources=min_sources,
+        min_distinct_owners=min_distinct_owners,
     )
     eligible = [cluster for cluster in ranked if cluster.get("eligible")]
     if not eligible:
@@ -673,6 +720,7 @@ def pick_candidates(
     news_bonus: float | None = None,
     news_verbs: list[str] | None = None,
     min_sources: int | None = None,
+    min_distinct_owners: int | None = None,
 ) -> list[dict]:
     """Rank once, then walk the ranked list for up to ``max_candidates`` stories.
 
@@ -698,6 +746,7 @@ def pick_candidates(
         news_bonus=news_bonus,
         news_verbs=news_verbs,
         min_sources=min_sources,
+        min_distinct_owners=min_distinct_owners,
     )
     eligible = [cluster_dict for cluster_dict in ranked if cluster_dict.get("eligible")]
     if not eligible:
@@ -770,6 +819,7 @@ __all__ = [
     "DEFAULT_EXCLUDE_TITLE_PATTERNS",
     "DEFAULT_MAX_CANDIDATES_PER_RUN",
     "DEFAULT_MAX_CANDIDATES_PER_ENTITY",
+    "DEFAULT_MIN_DISTINCT_OWNERS",
     "DEFAULT_MIN_SCORE",
     "DEFAULT_MIN_SCORE_CORROBORATED",
     "DEFAULT_MIN_SOURCES",
@@ -784,6 +834,7 @@ __all__ = [
     "has_news_signal",
     "ineligible_reason",
     "load_exclude_title_patterns",
+    "load_min_distinct_owners",
     "load_min_score_corroborated",
     "load_min_sources",
     "load_news_settings",
@@ -791,6 +842,7 @@ __all__ = [
     "load_relevance_keywords",
     "load_source_topics",
     "min_score_for",
+    "owner_count",
     "pick",
     "pick_candidates",
     "rank",

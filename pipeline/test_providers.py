@@ -42,6 +42,35 @@ class FakeProvider(providers.Provider):
         return providers.Completion(text="ok", finish_reason="stop")
 
 
+class FakeOpenAIProvider(providers.OpenAICompatibleProvider):
+    """A fake OpenAI-compatible provider, so prompt sizing applies to it."""
+
+    def __init__(self, name, results=None, *, env_key=None):
+        self.name = name
+        self.env_key = env_key or f"{name.upper()}_KEY"
+        self.results = list(results or [])
+        self.calls = []
+
+    def complete(self, model, prompt, *, api_key, json_schema=None, options=None, transport=None):
+        self.calls.append(
+            {
+                "model": model,
+                "prompt": prompt,
+                "api_key": api_key,
+                "json_schema": json_schema,
+                "options": dict(options or {}),
+            }
+        )
+        if self.results:
+            item = self.results.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            if isinstance(item, providers.Completion):
+                return item
+            return providers.Completion(text=item, finish_reason="stop")
+        return providers.Completion(text="ok", finish_reason="stop")
+
+
 def make_config(role_chain, max_attempts=3, role="writer"):
     return {
         "roles": {role: role_chain},
@@ -1149,3 +1178,181 @@ def test_shipped_config_has_all_roles_and_families():
     for entries in config["roles"].values():
         for entry in entries:
             assert entry["provider"] and entry["model"] and entry["family"]
+
+
+# --- wall-clock call and role deadlines ---------------------------------------
+
+
+def test_a_call_past_max_call_seconds_is_abandoned_without_touching_shared_state():
+    class SlowProvider(providers.Provider):
+        name = "slow"
+        env_key = "SLOW_KEY"
+
+        def __init__(self):
+            self.finished = False
+
+        def complete(self, model, prompt, *, api_key, json_schema=None, options=None, transport=None):
+            time.sleep(0.4)
+            self.finished = True
+            return providers.Completion(text="late", finish_reason="stop")
+
+    slow = SlowProvider()
+    config = make_config(chain(("slow", "m", "fam")))
+    config["provider"] = {"max_call_seconds": {"writer": 0.05}}
+    run = providers.RunState()
+
+    started = time.monotonic()
+    with pytest.raises(providers.SkipRun) as excinfo:
+        providers.generate(
+            "writer", "p", config=config, providers={"slow": slow}, env=keyed("slow"),
+            run_state=run, sleep=lambda _d: None,
+        )
+    elapsed = time.monotonic() - started
+
+    # Abandoned in about max_call_seconds, not after the worker's 0.4s sleep.
+    assert elapsed < 0.35
+    assert "abandoned" in str(excinfo.value)
+    # Let the abandoned worker finish; its late return value cannot reach the
+    # pipeline's shared state (only the caller records a generation).
+    deadline = time.monotonic() + 2.0
+    while not slow.finished and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert slow.finished is True
+    assert run.calls == 0
+    assert run.generations == {}
+    assert run.writers == []
+
+
+def test_role_deadline_stops_further_attempts_and_raises_skiprun(monkeypatch):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(providers.time, "monotonic", lambda: clock["now"])
+
+    class TickingProvider(providers.Provider):
+        name = "a"
+        env_key = "A_KEY"
+
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, model, prompt, *, api_key, json_schema=None, options=None, transport=None):
+            self.calls.append(model)
+            clock["now"] += 11.0  # this attempt consumes the entire role budget
+            raise providers.ProviderError("boom", retryable=False)
+
+    first = TickingProvider()
+    second = FakeProvider("b", ["never"])
+    config = make_config(chain(("a", "m1", "fa"), ("b", "m2", "fb")))
+    config["provider"] = {"max_role_seconds": {"writer": 10}}
+
+    with pytest.raises(providers.SkipRun) as excinfo:
+        providers.generate(
+            "writer", "p", config=config, providers={"a": first, "b": second},
+            env=keyed("a", "b"), sleep=lambda _d: None,
+        )
+
+    assert first.calls == ["m1"]
+    assert second.calls == [], "a provider past the role deadline must never be called"
+    assert "max_role_seconds" in str(excinfo.value)
+
+
+# --- prompt sizing against a provider's TPM limit -----------------------------
+
+
+def test_a_4300_token_prompt_on_an_8000_limit_is_capped_near_2900():
+    prompt = "x" * 15050  # ~4300 tokens at 3.5 chars/token
+    sized, cap = providers._sized_options_for_openai(
+        "groq", "openai/gpt-oss-120b", prompt, None, "writer",
+        {"groq": {"openai/gpt-oss-120b": 8000}}, {"writer": 1500},
+    )
+    assert 2850 <= cap <= 2950  # 0.9*8000 - 4300 = 2900
+    assert sized["max_completion_tokens"] == cap
+
+
+def test_a_prompt_leaving_less_than_min_output_is_skipped_without_a_request():
+    provider = FakeOpenAIProvider("groq")
+    config = make_config([{"provider": "groq", "model": "openai/gpt-oss-120b", "family": "openai"}])
+    # ~6000 tokens: 0.9*8000 - 6000 = 1200, below the writer's 1500 minimum.
+    prompt = "x" * 21000
+
+    with pytest.raises(providers.SkipRun) as excinfo:
+        providers.generate(
+            "writer", prompt, config=config, providers={"groq": provider}, env=keyed("groq"),
+        )
+
+    assert provider.calls == [], "no request may be issued when the prompt is too large"
+    assert "prompt too large for provider rate limit" in str(excinfo.value)
+
+
+def test_a_413_shrinks_the_cap_and_retries_once():
+    too_large = providers.ProviderError(
+        "HTTP 413 from groq: Request too large ... Limit 3000 TPM",
+        retryable=False, status=413,
+    )
+    provider = FakeOpenAIProvider("groq", [too_large, "ok"])
+    config = make_config(
+        [{"provider": "groq", "model": "openai/gpt-oss-120b", "family": "openai"}], max_attempts=1
+    )
+
+    result = providers.generate(
+        "writer", "p", config=config, providers={"groq": provider}, env=keyed("groq"),
+    )
+
+    assert result.value == "ok"
+    assert len(provider.calls) == 2, "exactly one shrink-and-retry"
+    first_cap = provider.calls[0]["options"]["max_completion_tokens"]
+    second_cap = provider.calls[1]["options"]["max_completion_tokens"]
+    assert second_cap < first_cap
+    # The cap is rebuilt from the (lower) limit named in the 413 body.
+    assert second_cap == int(3000 - len("p") / 3.5)
+
+
+def test_a_second_413_moves_to_the_next_provider():
+    def too_large():
+        return providers.ProviderError(
+            "HTTP 413 from groq: Request too large ... Limit 3000 TPM",
+            retryable=False, status=413,
+        )
+
+    groq = FakeOpenAIProvider("groq", [too_large(), too_large()])
+    other = FakeProvider("b", ["from-b"])
+    config = make_config(
+        chain(("groq", "openai/gpt-oss-120b", "openai"), ("b", "m2", "fb")), max_attempts=1
+    )
+
+    result = providers.generate(
+        "writer", "p", config=config, providers={"groq": groq, "b": other},
+        env=keyed("groq", "b"),
+    )
+
+    assert result.provider == "b"
+    assert result.value == "from-b"
+    assert len(groq.calls) == 2, "one initial call plus one shrink-and-retry, then fall back"
+    assert any("413" in fallback for fallback in result.fallbacks)
+
+
+# --- unchanged behaviour: family guard and failure reasons --------------------
+
+
+def test_family_guard_and_failure_reason_format_are_unchanged():
+    provider = FakeProvider("a", [providers.ProviderError("bad request", retryable=False)])
+    config = make_config(chain(("a", "m1", "fa")))
+    with pytest.raises(providers.SkipRun) as excinfo:
+        providers.generate(
+            "writer", "p", config=config, providers={"a": provider}, env=keyed("a"),
+        )
+    message = str(excinfo.value)
+    assert "all providers failed for role 'writer'" in message
+    assert "role=writer a (m1, family=fa): bad request" in message
+
+    assert [call["model"] for call in provider.calls] == ["m1"]
+
+    # The fail-closed verifier guard is unchanged: with no recorded writer
+    # family it raises and never calls a provider.
+    verifier_config = make_config(chain(("mistral", "m", "mistral")), role="verifier")
+    mistral = FakeProvider("mistral", ["never"])
+    with pytest.raises(providers.MissingWriterFamilyError):
+        providers.generate(
+            "verifier", "p", config=verifier_config, providers={"mistral": mistral},
+            env=keyed("mistral"), run_state=providers.RunState(),
+        )
+    assert mistral.calls == []

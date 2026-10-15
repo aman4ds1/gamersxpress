@@ -20,17 +20,20 @@ def cluster(title, *, tiers=(1,), owners=("a",), age_hours=2.0, entities=(), ite
 
 def two_source_cluster(title, *, tiers=(1,), owners=("a",), age_hours=2.0, entities=(),
                        source_names=(), second_owner=None):
-    """A cluster with two distinct source URLs, the ``content_limits.min_sources``
-    minimum. ``owners`` is left exactly as passed and the second URL usually shares
-    the first owner, so scoring and confirmability stay as the test intended and
-    only the distinct source count changes (which is now required for eligibility).
+    """A cluster with two distinct source URLs (the ``content_limits.min_sources``
+    minimum) that also has two distinct source owners, so it clears both the
+    source floor and the ``score.min_distinct_owners`` owner floor. The cluster's
+    ``owners`` field is left exactly as passed (scoring and confirmability stay as
+    the test intended); only the per-item owner of the second URL is made distinct.
+    Pass ``second_owner=...`` to control it, or build with :func:`cluster` when the
+    test is about the owner gate itself.
     """
     names = list(source_names)
     first_name = names[0] if names else "Outlet A"
     second_name = names[1] if len(names) > 1 else first_name
     first_owner = owners[0] if owners else "a"
     if second_owner is None:
-        second_owner = owners[1] if len(owners) > 1 else first_owner
+        second_owner = owners[1] if len(owners) > 1 else f"{first_owner}-b"
     items = [
         {"source_name": first_name, "link": "https://a.example/1", "owner": first_owner},
         {"source_name": second_name, "link": "https://b.example/1", "owner": second_owner},
@@ -510,9 +513,13 @@ def test_fetch_false_and_tier3_items_do_not_count_toward_source_floor():
 def test_items_without_fetchable_field_still_count():
     c = cluster(
         "Nvidia announces RTX 5090",
-        items=[{"link": "https://a.example/1"}, {"link": "https://b.example/1"}],
+        items=[
+            {"link": "https://a.example/1", "owner": "a"},
+            {"link": "https://b.example/1", "owner": "b"},
+        ],
     )
     assert score.source_count(c) == 2
+    assert score.owner_count(c) == 2
     assert score.ineligible_reason(c, min_sources=2) is None
 
 
@@ -696,3 +703,59 @@ def test_affiliate_listicle_headline_is_filtered_out():
         score.DEFAULT_EXCLUDE_TITLE_PATTERNS,
     )
     assert kept == []
+
+
+# --- distinct-owner floor (score.min_distinct_owners) -------------------------
+
+
+def test_two_urls_from_one_owner_are_not_eligible():
+    c = cluster(
+        "Nvidia announces RTX 5090",
+        tiers=(1,),
+        owners=("nvidia",),
+        items=[
+            {"link": "https://a.example/1", "owner": "nvidia"},
+            {"link": "https://b.example/1", "owner": "nvidia"},
+        ],
+    )
+    assert score.source_count(c) == 2
+    assert score.owner_count(c) == 1
+    assert score.ineligible_reason(c, min_sources=2) == "too few independent owners"
+    assert score.rank([c], min_sources=2)[0]["eligible"] is False
+
+
+def test_tier1_plus_second_owner_is_eligible():
+    c = cluster(
+        "Xbox and PlayStation US sales sink",
+        tiers=(1, 2),
+        owners=("microsoft", "sony"),
+        items=[
+            {"link": "https://a.example/1", "owner": "microsoft"},
+            {"link": "https://b.example/1", "owner": "sony"},
+        ],
+    )
+    assert score.owner_count(c) == 2
+    assert score.ineligible_reason(c, min_sources=2) is None
+    assert score.rank([c], min_sources=2)[0]["eligible"] is True
+
+
+def test_owner_count_ignores_unfetchable_and_tier3_items():
+    c = cluster(
+        "Nvidia announces RTX 5090",
+        items=[
+            {"link": "https://a.example/1", "owner": "a"},
+            {"link": "https://b.example/1", "owner": "b", "fetchable": False},
+            {"link": "https://c.example/1", "owner": "c", "tier": 3},
+        ],
+    )
+    assert score.source_count(c) == 1
+    assert score.owner_count(c) == 1
+    assert score.ineligible_reason(c, min_sources=1) == "too few independent owners"
+
+
+def test_load_min_distinct_owners_reads_config_and_defaults():
+    assert score.load_min_distinct_owners({}) == score.DEFAULT_MIN_DISTINCT_OWNERS
+    assert score.load_min_distinct_owners({"score": {"min_distinct_owners": 1}}) == 1
+    assert score.load_min_distinct_owners({"score": {"min_distinct_owners": "x"}}) == (
+        score.DEFAULT_MIN_DISTINCT_OWNERS
+    )

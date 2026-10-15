@@ -66,7 +66,13 @@ FETCH_TIMEOUT_SECONDS = 20
 REQUEST_DELAY_SECONDS = 1.0
 # Bump when fetch/extract handling that can change the stored text is tuned, so
 # previously-gathered files read as stale and are re-fetched.
-GATHER_SETTINGS_VERSION = 4
+GATHER_SETTINGS_VERSION = 5
+
+#: A dated URL path (``/2026/10/07/slug``) often carries a page's true
+#: publication date, which the feed's own date can misreport (an "updated" or
+#: crawl time). The date is captured here as ``url_date`` and the facts stage
+#: decides which anchor to trust.
+_URL_DATE_PATH_RE = re.compile(r"/(\d{4})/(\d{2})/(\d{2})(?:/|$)")
 #: Largest response body accepted for one source page. Mirrors trafilatura's
 #: default ``MAX_FILE_SIZE`` (20 MB): the previous default fetcher streamed a
 #: download up to this cap, and the stdlib fetcher enforces the same limit.
@@ -193,6 +199,27 @@ def robots_allowed(
     return parser.can_fetch(user_agent, url)
 
 
+def url_date(url: object, *, now: dt.datetime | None = None) -> Optional[str]:
+    """The ISO date (``YYYY-MM-DD``) a dated URL path states, else ``None``.
+
+    Reads a ``/YYYY/MM/DD/`` segment from the URL's path, validates that it is a
+    real calendar date, and rejects a date in the future (relative to ``now``),
+    so an obviously bogus path never becomes a publication anchor.
+    """
+    match = _URL_DATE_PATH_RE.search(urllib.parse.urlsplit(str(url or "")).path)
+    if not match:
+        return None
+    try:
+        date = dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+    if now is not None:
+        reference = now.date() if isinstance(now, dt.datetime) else now
+        if date > reference:
+            return None
+    return date.isoformat()
+
+
 def gather(
     cluster: dict,
     *,
@@ -246,6 +273,8 @@ def gather(
             logger.info("source '%s' %s skipped: robots.txt", base["source_name"], url)
         else:
             source = _fetch_one(base, url, fetcher, extractor)
+        # The URL date comes from the final URL after redirects, when it has one.
+        source["url_date"] = url_date(source.get("final_url") or url, now=now)
         sources.append(source)
         sleep(delay)
 
@@ -367,6 +396,7 @@ __all__ = [
     "fetch_html_and_url",
     "extract_text",
     "robots_allowed",
+    "url_date",
     "ROBOTS_CACHE",
     "load_fetch_health",
     "update_fetch_health",

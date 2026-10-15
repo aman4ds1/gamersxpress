@@ -113,6 +113,12 @@ _READY_CLAIM_KINDS = frozenset({"confirmed", "reported", "estimate", "statement"
 #: floor; a page that yielded less than this is treated as unusable.
 READINESS_MIN_SOURCE_CHARS = 400
 
+#: Hard wall-clock ceiling for one run, from ``run.max_total_seconds``. When the
+#: limit is reached between candidates the run stops starting new candidates and
+#: finishes as ``skipped``; a candidate already in flight is never interrupted, so
+#: this only bounds how many candidates a slow run attempts. ``0`` disables it.
+DEFAULT_MAX_TOTAL_SECONDS = 900
+
 
 def _tier_value(value: Any) -> int | None:
     try:
@@ -126,14 +132,20 @@ def _facts_readiness(
     *,
     min_sources: int,
     min_claims: int,
+    min_distinct_owners: int = score_stage.DEFAULT_MIN_DISTINCT_OWNERS,
 ) -> tuple[bool, str | None]:
     """Whether a facts sheet is ready for the writer, and why not when it is not.
 
     Ready means at least ``min_sources`` distinct contributing sources (the sheet
-    lists only sources that produced a claim; tier-3 pages never count) and at
-    least ``min_claims`` claims whose kind is confirmed, reported, estimate or
-    statement. A rumor or opinion never counts. Returns ``(ready, reason)`` where
-    ``reason`` is ``"insufficient sources"`` or ``"too few facts"``.
+    lists only sources that produced a claim; tier-3 pages never count), at least
+    ``min_distinct_owners`` distinct owners among those sources (several outlets
+    under one publisher count once), and at least ``min_claims`` claims whose kind
+    is confirmed, reported, estimate or statement. A rumor or opinion never
+    counts. Owners are counted with :func:`cluster.distinct_owners`, the same
+    helper the score stage's eligibility gate uses, so this readiness check cannot
+    disagree with it. Returns ``(ready, reason)`` where ``reason`` is
+    ``"insufficient sources"``, ``"too few independent owners"`` or
+    ``"too few facts"``.
     """
     sources = payload.get("sources") or []
     links = [
@@ -144,6 +156,8 @@ def _facts_readiness(
     contributing = len(cluster._normalized_urls(links))
     if contributing < int(min_sources):
         return False, "insufficient sources"
+    if len(cluster.distinct_owners(sources)) < int(min_distinct_owners):
+        return False, "too few independent owners"
     claims = payload.get("claims") or []
     usable = sum(1 for claim in claims if str(claim.get("kind") or "") in _READY_CLAIM_KINDS)
     if usable < int(min_claims):
@@ -424,6 +438,18 @@ def run(
     # min_sources is the shared content_limits value, read through the gates
     # config so the score gate, the readiness check and the publish gate agree.
     readiness_min_sources = int(gates_config.get("min_sources", score_stage.DEFAULT_MIN_SOURCES))
+    # The owner floor is shared by the score-stage eligibility gate and the
+    # post-gather readiness check (both call cluster.distinct_owners).
+    min_distinct_owners = int(
+        score_section.get(
+            "min_distinct_owners", score_stage.DEFAULT_MIN_DISTINCT_OWNERS
+        )
+    )
+    run_section = raw_config.get("run") or {}
+    max_total_seconds = float(
+        run_section.get("max_total_seconds", DEFAULT_MAX_TOTAL_SECONDS) or 0.0
+    )
+    run_started = time.monotonic()
     exclude_patterns = score_stage.load_exclude_title_patterns(raw_config)
     try:
         sources = ingest_stage.load_sources(config_path)
@@ -576,6 +602,7 @@ def run(
                 weights=weights,
                 performance=performance,
                 min_sources=readiness_min_sources,
+                min_distinct_owners=min_distinct_owners,
             )
         if not candidates:
             return finish("nothing", "no story scored high enough")
@@ -618,7 +645,7 @@ def run(
                 if cluster_dict.get("id") in tried:
                     continue
                 reason = score_stage.ineligible_reason(
-                    cluster_dict, patterns, readiness_min_sources
+                    cluster_dict, patterns, readiness_min_sources, min_distinct_owners
                 )
                 if reason is None:
                     continue
@@ -663,8 +690,22 @@ def run(
         cluster_id = None
         gathered = None
         facts = None
+        run_limit_reached = False
         for candidate in candidates:
             cluster_id = candidate["id"]
+            # Hard wall-clock ceiling: checked between candidates only, so a
+            # candidate already being gathered/fact-checked always runs to
+            # completion. Hitting it stops the search and ends the run skipped.
+            if max_total_seconds > 0 and time.monotonic() - run_started >= max_total_seconds:
+                run_limit_reached = True
+                candidates_report.append(
+                    _candidate_entry(candidate, reason="run time limit", outcome="skipped")
+                )
+                logger.warning(
+                    "run time limit reached (%.0fs); stopping candidate search",
+                    max_total_seconds,
+                )
+                break
             if run_state.calls >= budget:
                 candidates_report.append(
                     _candidate_entry(candidate, reason="model budget spent", outcome="skipped")
@@ -749,6 +790,7 @@ def run(
                 facts,
                 min_sources=readiness_min_sources,
                 min_claims=readiness_min_claims,
+                min_distinct_owners=min_distinct_owners,
             )
             if not ready:
                 cluster.record_unconfirmed(failed, cluster_id, now=now)
@@ -775,6 +817,8 @@ def run(
         if chosen is None:
             if not candidates_report:
                 return finish("nothing", "model budget spent before any candidate could be tried")
+            if run_limit_reached:
+                return finish("skipped", "run time limit")
             return finish("nothing", "no eligible candidate confirmed itself")
 
         with timings.stage("write"):

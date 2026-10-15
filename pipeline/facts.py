@@ -134,7 +134,7 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v6"
+PROMPT_VERSION = "facts-v7"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -398,7 +398,7 @@ def build_prompt(
         f"(tier {source['tier']}, owner {source['owner']}, region {source['region']})"
     )
     parts.append(f"URL: {source['link']}")
-    date = _as_date(published) or _source_published(source)
+    date = _as_date(published) or _relative_anchor(source)
     if date:
         parts.append(f"PUBLISHED: {_MONTH_NAMES[date.month]} {date.day}, {date.year}")
     if source.get("title") and str(source["title"]).strip():
@@ -565,17 +565,16 @@ def _as_date(value: object) -> Optional[dt.date]:
         return None
 
 
-def _source_published(source: dict) -> Optional[dt.date]:
-    """A source's publication date: its ``published`` field, else its URL date.
+def _source_url_date(source: dict) -> Optional[dt.date]:
+    """The date a source's URL path states (``/2026/10/07/``), else ``None``.
 
-    Gathered sources carry ``published`` (the feed item's date, carried through
-    the gather stage); a dated URL path (``/2026/10/07/``) is the fallback.
-    When neither is present the claim has no date to absolutize from, and a
-    feed-only figure cannot be grounded against it.
+    Prefers the ``url_date`` field the gather stage derived from the final URL
+    after redirects; falls back to reading the date out of the item's ``link`` so
+    sheets built before that field existed still work.
     """
-    published = _as_date(source.get("published"))
-    if published:
-        return published
+    from_field = _as_date(source.get("url_date"))
+    if from_field:
+        return from_field
     match = _LINK_DATE_RE.search(str(source.get("link") or ""))
     if not match:
         return None
@@ -583,6 +582,30 @@ def _source_published(source: dict) -> Optional[dt.date]:
         return dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
     except ValueError:
         return None
+
+
+def _source_feed_date(source: dict) -> Optional[dt.date]:
+    """The date a source's feed ``published`` field states, else ``None``."""
+    return _as_date(source.get("published"))
+
+
+def _source_anchors(source: dict) -> list[dt.date]:
+    """Both publication anchors for a source, distinct, URL date first."""
+    anchors: list[dt.date] = []
+    for date in (_source_url_date(source), _source_feed_date(source)):
+        if date is not None and date not in anchors:
+            anchors.append(date)
+    return anchors
+
+
+def _relative_anchor(source: dict) -> Optional[dt.date]:
+    """The date to absolutize a claim from: the URL date, else the feed date.
+
+    A dated URL (``/2026/10/07/``) is a page's own publication date; a feed's
+    ``published`` can instead be an "updated" or crawl time, so it is only the
+    fallback.
+    """
+    return _source_url_date(source) or _source_feed_date(source)
 
 
 #: Words that already introduce a date: "from today" must become "from <date>",
@@ -655,19 +678,132 @@ def absolutize_relative_time(value: object, published: object) -> Optional[str]:
     return rewritten
 
 
+def _has_relative_time(value: object) -> bool:
+    """True when a value contains a configured relative-time word."""
+    text = str(value or "")
+    words = _relative_time_words()
+    if not text or not words:
+        return False
+    pattern = re.compile(
+        r"(?<!\w)(" + "|".join(re.escape(word) for word in words) + r")(?!\w)",
+        re.IGNORECASE,
+    )
+    return pattern.search(text) is not None
+
+
+def _anchor_info(source: dict) -> dict:
+    """Resolve a source's two publication anchors and which one to use.
+
+    ``url``/``feed`` are the anchors as dates, ``feed_raw`` the feed string as
+    stored (for the sheet), ``used`` the anchor to absolutize from (the URL date
+    when present, else the feed date), and ``ambiguous`` true when the two dates
+    differ by more than a day -- too far apart to trust either.
+    """
+    url = _source_url_date(source)
+    feed = _source_feed_date(source)
+    info: dict = {
+        "url": url, "feed": feed, "feed_raw": source.get("published"),
+        "used": None, "gap_days": None, "ambiguous": False,
+    }
+    if url is not None and feed is not None:
+        info["gap_days"] = abs((url - feed).days)
+        if info["gap_days"] <= 1:
+            info["used"] = "url"
+        else:
+            info["ambiguous"] = True
+    elif url is not None:
+        info["used"] = "url"
+    elif feed is not None:
+        info["used"] = "feed"
+    return info
+
+
+def _anchor_strings(info: dict) -> dict:
+    """The two anchors as stored (ISO date / raw feed string or ``None``)."""
+    return {
+        "url": info["url"].isoformat() if info["url"] is not None else None,
+        "feed": info["feed_raw"] if info["feed"] is not None else None,
+    }
+
+
+def _anchor_note(link: str, info: dict) -> Optional[dict]:
+    """A sheet note about a source's anchors, or ``None`` when none is needed.
+
+    Anchors that agree need no note; a single anchor is recorded (which one was
+    used) and so is a one-day disagreement (the URL date is used). The note never
+    touches the claim text.
+    """
+    url, feed = info["url"], info["feed"]
+    if url is not None and feed is not None and url == feed:
+        return None
+    if not info["ambiguous"] and info["used"] is None:
+        return None
+    note = {
+        "source": link,
+        "anchors": _anchor_strings(info),
+        "used": info["used"],
+        "differs": bool(url is not None and feed is not None and url != feed),
+        "gap_days": info["gap_days"],
+    }
+    if info["ambiguous"]:
+        note["reason"] = "ambiguous publication date"
+    return note
+
+
 def _absolutize_claims(
     claims: list[dict],
     sources: list[dict],
     *,
     story_id: str = "",
-) -> tuple[list[dict], list[dict]]:
-    """Replace relative-time values with dates; drop claims with no date."""
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """Replace relative-time values with dates using each source's anchor.
+
+    Returns ``(kept, dropped, anchor_notes, ambiguous_details)``. ``dropped`` are
+    claims whose value holds a relative-time word but which have no date to
+    convert from. When the URL date and the feed date disagree by more than a day
+    the source's anchors are too far apart to trust, so every claim of that source
+    whose value holds a relative-time word is dropped as ``ambiguous_details``
+    (with both anchors, for the sheet's grounding block) instead of being dated
+    from either; the source's other claims are kept unchanged. ``anchor_notes``
+    records which anchor was used for each source (and any disagreement).
+    """
     by_url = _sources_by_url(sources)
     kept: list[dict] = []
     dropped: list[dict] = []
+    notes: list[dict] = []
+    ambiguous_details: list[dict] = []
+    noted: set[str] = set()
     for claim in claims:
         source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
-        rewritten = absolutize_relative_time(claim.get("value"), _source_published(source))
+        link = str(source.get("link") or claim.get("source_url") or "")
+        info = _anchor_info(source)
+        if link not in noted:
+            note = _anchor_note(link, info)
+            if note is not None:
+                notes.append(note)
+            noted.add(link)
+        if info["ambiguous"]:
+            if _has_relative_time(claim.get("value")):
+                ambiguous_details.append(
+                    {
+                        "claim": claim,
+                        "reason": "ambiguous publication date",
+                        "anchors": _anchor_strings(info),
+                    }
+                )
+                logger.warning(
+                    "story %s: dropping claim with a relative time and an ambiguous "
+                    "publication date (url %s vs feed %s): %r",
+                    story_id or "?",
+                    _anchor_strings(info)["url"],
+                    _anchor_strings(info)["feed"],
+                    claim.get("value"),
+                )
+            else:
+                kept.append(claim)
+            continue
+        anchor = info["url"] if info["used"] == "url" else info["feed"]
+        rewritten = absolutize_relative_time(claim.get("value"), anchor)
         if rewritten is None:
             dropped.append(claim)
             logger.warning(
@@ -677,7 +813,7 @@ def _absolutize_claims(
             )
             continue
         kept.append({**claim, "value": rewritten})
-    return kept, dropped
+    return kept, dropped, notes, ambiguous_details
 
 
 # --- grounding: a claim's value must stay inside its own source ---------------
@@ -817,22 +953,25 @@ def _format_date(date: DateTuple) -> str:
 def _date_grounded(
     date: DateTuple,
     source_dates: set[DateTuple],
-    anchor: Optional[dt.date],
+    anchors: Optional[Iterable[dt.date]],
 ) -> bool:
-    """True when a value's date appears in the source, or is the anchor date.
+    """True when a value's date appears in the source or either anchor date.
 
     A date matches on month and day; a year given in the value must match too,
     but a source or anchor without a year still grounds the month and day
-    ("2026-11-02" is grounded by a body that says only "November 2").
+    ("2026-11-02" is grounded by a body that says only "November 2"). Both
+    publication anchors count, so a date taken from either the URL date or the
+    feed date is grounded.
     """
     year, month, day = date
     for source_year, source_month, source_day in source_dates:
         if source_month == month and source_day == day:
             if year is None or source_year is None or source_year == year:
                 return True
-    if anchor is not None and anchor.month == month and anchor.day == day:
-        if year is None or anchor.year == year:
-            return True
+    for anchor in anchors or ():
+        if anchor.month == month and anchor.day == day:
+            if year is None or anchor.year == year:
+                return True
     return False
 
 
@@ -878,6 +1017,7 @@ def grounding_failure(
     source_text: object,
     *,
     anchor: Optional[dt.date] = None,
+    anchors: Optional[Iterable[dt.date]] = None,
 ) -> Optional[str]:
     """Why a claim's value or label goes beyond its source, or ``None``.
 
@@ -886,20 +1026,32 @@ def grounding_failure(
     acronym the value uses must appear in the text, an absolute qualifier
     ("full", "complete") is allowed only when the text uses it, and a contrast
     connective in the label ("and not", "rather than") is allowed only when the
-    text states it. ``anchor`` is the source's publication date: figures equal
-    to any component of it (year, month, day, in any common format, the month's
-    name and abbreviation included) count as grounded too, because such tokens
-    come from the feed/URL date rather than the article body.
+    text states it. ``anchors`` are the source's publication dates (its URL date
+    and its feed date); a single ``anchor`` is accepted for callers that have
+    only one. Figures equal to any component of an anchor (year, month, day, in
+    any common format, the month's name and abbreviation included) count as
+    grounded too, because such tokens come from the date rather than the body.
 
     Dates are compared as calendar dates, not digit strings, so a value written
     as "2026-11-02" is grounded by a body that says "November 2", and a value's
-    date is grounded when it matches the source's month and day or the anchor
+    date is grounded when it matches the source's month and day or either anchor
     date. The digits a date is made of are not treated as loose figures.
     """
+    if anchors is None:
+        anchors = [anchor] if anchor is not None else []
+    else:
+        anchors = list(anchors)
+        if anchor is not None and anchor not in anchors:
+            anchors.append(anchor)
     value = str(claim.get("value") or "")
     label = str(claim.get("claim") or "")
     source = str(source_text or "")
-    anchor_figures, anchor_terms = _anchor_tokens(anchor)
+    anchor_figures: set[str] = set()
+    anchor_terms: set[str] = set()
+    for item in anchors:
+        figures, terms = _anchor_tokens(item)
+        anchor_figures |= figures
+        anchor_terms |= terms
     value_dates = _dates_in(value)
     date_tokens = _date_number_tokens(value)
     missing_numbers = (
@@ -910,7 +1062,7 @@ def grounding_failure(
     source_dates = _dates_in(source)
     month_words = _value_month_words(value_dates)
     for date in sorted(value_dates, key=lambda item: -1 if item[0] is None else item[0]):
-        if not _date_grounded(date, source_dates, anchor):
+        if not _date_grounded(date, source_dates, anchors):
             return f"value states the date {_format_date(date)} the source never gives"
     for term in _capitalized_terms(value):
         if term in anchor_terms or term in month_words:
@@ -936,9 +1088,9 @@ def ground_claims_details(
 
     Each entry in ``dropped_details`` is ``{"claim": <claim>, "reason": <str>}``
     so the caller can persist why a claim was discarded. Each claim is checked
-    against its own source's text; the source's publication date (feed
-    ``published``, else the URL date) is passed as the grounding anchor, so a
-    feed-only date token is never treated as ungrounded.
+    against its own source's text; the source's publication anchors (its URL date
+    and its feed date) are passed, so either date's tokens count as grounded and a
+    feed-only or URL-only date is never treated as ungrounded.
     """
     by_url = _sources_by_url(sources)
     kept: list[dict] = []
@@ -948,7 +1100,7 @@ def ground_claims_details(
         reason = grounding_failure(
             claim,
             source.get("text") or "",
-            anchor=_source_published(source),
+            anchors=_source_anchors(source),
         )
         if reason is None:
             kept.append(claim)
@@ -2967,6 +3119,18 @@ def _corroboration_diagnostics(
     ]
 
 
+def _grounding_entry(entry: dict) -> dict:
+    """One grounding-block row: the claim's text, its reason, and any anchors."""
+    claim = entry.get("claim")
+    row = {
+        "claim": claim.get("claim") if isinstance(claim, dict) else claim,
+        "reason": entry.get("reason"),
+    }
+    if entry.get("anchors") is not None:
+        row["anchors"] = entry["anchors"]
+    return row
+
+
 def _write_unconfirmed_sheet(
     output_dir: Path,
     name: str,
@@ -2982,6 +3146,7 @@ def _write_unconfirmed_sheet(
     canonical: list[str] | None = None,
     grounding_details: list[dict] | None = None,
     origin_downgrades: list[dict] | None = None,
+    date_anchors: list[dict] | None = None,
 ) -> Optional[Path]:
     """Persist a rejected story's sheet under ``<output_dir>/unconfirmed/``.
 
@@ -3011,10 +3176,8 @@ def _write_unconfirmed_sheet(
         # (the writer never sees these keys).
         "claims_by_source": _claims_by_source(kept),
         "corroboration": _corroboration_diagnostics(kept, central, entities=canonical),
-        "grounding": [
-            {"claim": entry["claim"].get("claim"), "reason": entry["reason"]}
-            for entry in (grounding_details or [])
-        ],
+        "grounding": [_grounding_entry(entry) for entry in (grounding_details or [])],
+        "date_anchors": list(date_anchors or []),
         "origins_downgraded": list(origin_downgrades or []),
         "coherence": {
             "checked": bool(primary),
@@ -3166,8 +3329,15 @@ def facts(
         logger.warning("story %s: dropped %d ungrounded claim(s)", name, len(ungrounded))
 
     # Relative-time values are converted to absolute dates using each source's
-    # publication date; a relative claim with no date to convert from is dropped.
-    kept = _absolutize_claims(kept, sources, story_id=name)[0]
+    # anchor (its URL date, else the feed date); a relative claim with no date to
+    # convert from is dropped, and a source whose two anchors differ by more than
+    # a day is too ambiguous to date from at all.
+    kept, _relative_dropped, date_anchors, ambiguous_details = _absolutize_claims(
+        kept, sources, story_id=name
+    )
+    # The sheet's grounding block lists every claim cut for going beyond its
+    # source, including relative-time claims dropped for an ambiguous date.
+    grounding_details = list(ungrounded_details) + list(ambiguous_details)
 
     # One canonical entity per concept, for SEO and hub pages; the flat
     # primary-entity set is the matching surface used by the coherence check.
@@ -3298,8 +3468,8 @@ def facts(
         logger.warning("%s", message)
         _write_unconfirmed_sheet(
             output_dir, name, now, confirmation, central, kept, claims, sheet_sources, dropped,
-            primary=primary, canonical=canonical, grounding_details=ungrounded_details,
-            origin_downgrades=origin_downgrades,
+            primary=primary, canonical=canonical, grounding_details=grounding_details,
+            origin_downgrades=origin_downgrades, date_anchors=date_anchors,
         )
         raise UnconfirmedStory(message, budget_truncated=budget_truncated)
 
@@ -3310,10 +3480,8 @@ def facts(
         "confirmation_reason": _confirmation_reason(confirmation),
         "sources": sheet_sources,
         "claims": claims,
-        "grounding": [
-            {"claim": entry["claim"].get("claim"), "reason": entry["reason"]}
-            for entry in ungrounded_details
-        ],
+        "grounding": [_grounding_entry(entry) for entry in grounding_details],
+        "date_anchors": date_anchors,
         "origins_downgraded": origin_downgrades,
         "coherence": {
             "checked": bool(primary),

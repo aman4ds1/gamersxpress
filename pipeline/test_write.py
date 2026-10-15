@@ -1,5 +1,9 @@
+import json
+from pathlib import Path
+
 import pytest
 
+import providers
 import write as write_module
 from providers import Generation, RunState
 
@@ -342,3 +346,84 @@ def test_repair_accepts_an_explicit_prompt_and_skips_build():
         prompt="EXPLICIT", generate=fake_generate,
     )
     assert seen["prompt"] == "EXPLICIT"
+
+
+# --- compact writer view ------------------------------------------------------
+
+
+def test_writer_view_keeps_value_kind_and_central_for_every_claim():
+    sheet = {
+        "generated_at": "2026-10-09T12:00:00+00:00",
+        "sources": [{"source_name": "Xbox Wire", "link": "https://news.xbox.com/a"}],
+        "claims": [
+            {"claim": "a", "value": "one", "kind": "confirmed", "central": True},
+            {"claim": "b", "value": "two", "kind": "reported"},
+            {"claim": "c", "value": "three", "kind": "estimate", "central": False},
+        ],
+    }
+    view = write_module.writer_view(sheet)
+    assert [claim["value"] for claim in view["claims"]] == ["one", "two", "three"]
+    assert [claim["kind"] for claim in view["claims"]] == ["confirmed", "reported", "estimate"]
+    assert [claim["central"] for claim in view["claims"]] == [True, False, False]
+
+
+def test_writer_view_drops_gathered_text_and_prose_fields():
+    view = write_module.writer_view(
+        {
+            "generated_at": "2026-10-09T12:00:00+00:00",
+            "text": "gathered article prose",
+            "gathered_at": "2026-10-09T12:00:00+00:00",
+            "sources": [
+                {"source_name": "X", "link": "https://x", "text": "source prose", "gathered_at": "t"}
+            ],
+            "claims": [{"claim": "c", "value": "v", "text": "leaked body"}],
+        }
+    )
+    blob = json.dumps(view)
+    for leaked in ("gathered prose", "source prose", "body", "leak"):
+        assert leaked not in blob
+    assert '"text"' not in blob
+    assert '"gathered_at"' not in blob
+
+
+def test_build_prompt_uses_the_compact_view():
+    sheet = {
+        **facts_sheet(),
+        "coherence": {"checked": True, "entities": []},
+        "grounding": [{"claim": "x", "reason": "y"}],
+        "origins_downgraded": [{"source": "z"}],
+        "extractor": {"model": "m", "prompt_version": "facts-v7"},
+        "fingerprint": "deadbeef",
+    }
+    prompt = write_module.build_prompt(sheet)
+    for internal in ("coherence", "grounding", "origins_downgraded", "extractor", "fingerprint"):
+        assert internal not in prompt
+    assert "A game was announced" in prompt
+
+
+def test_repair_prompt_uses_the_compact_view():
+    sheet = {**facts_sheet(), "grounding": [{"claim": "x", "reason": "y"}]}
+    prompt = write_module.build_repair_prompt("## Body\nA sentence.", ["A sentence"], sheet)
+    assert "F1: 'A game was announced'" in prompt
+    assert "- A sentence" in prompt
+    assert "grounding" not in prompt
+
+
+def test_saved_sheet_writer_prompt_fits_groq_after_compaction():
+    sheet_path = Path(write_module.PROJECT_ROOT) / "data" / "facts" / "b70cf3951d15.json"
+    if not sheet_path.is_file():
+        pytest.skip("saved facts sheet data/facts/b70cf3951d15.json is not present")
+    sheet = json.loads(sheet_path.read_text(encoding="utf-8"))
+
+    prompt = write_module.build_prompt(sheet)
+    estimate = providers.estimate_prompt_tokens(prompt)
+
+    limit = providers._tpm_limit("groq", "openai/gpt-oss-120b", {"groq": {"openai/gpt-oss-120b": 8000}})
+    assert limit == 8000
+    cap = int(0.9 * limit - estimate)
+
+    assert estimate <= 5000, f"compact writer prompt is {estimate:.0f} tokens"
+    assert cap >= providers.DEFAULT_MIN_OUTPUT_TOKENS["writer"], (
+        f"computed Groq cap {cap} is below the writer minimum "
+        f"{providers.DEFAULT_MIN_OUTPUT_TOKENS['writer']}; the sheet would be skipped"
+    )

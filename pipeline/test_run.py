@@ -844,7 +844,10 @@ def test_confirmed_but_too_few_usable_facts_is_not_ready(tmp_path):
         # Two contributing sources but only one writer-ready claim (an opinion
         # never counts): not ready, so no article is written.
         return {
-            "sources": [{"link": "https://h.example/1"}, {"link": "https://h.example/2"}],
+            "sources": [
+                {"link": "https://h.example/1", "owner": "owner-h1"},
+                {"link": "https://h.example/2", "owner": "owner-h2"},
+            ],
             "claims": [{"kind": "confirmed"}, {"kind": "opinion"}],
         }
 
@@ -853,6 +856,41 @@ def test_confirmed_but_too_few_usable_facts_is_not_ready(tmp_path):
     assert not list(paths.articles_dir.glob("*.md"))
     failed = json.loads(paths.failed.read_text(encoding="utf-8"))
     assert next(iter(failed["unconfirmed"].values()))["reason"] == "too few facts"
+
+
+def test_eligibility_and_readiness_agree_on_owner_floor():
+    # The score-stage eligibility gate and the run's post-gather readiness check
+    # both call cluster.distinct_owners, so for the same set of sources they give
+    # the same verdict: two outlets under one publisher are rejected by both, a
+    # tier-1 source plus an outlet from a different owner is accepted by both.
+    claims = [{"kind": "confirmed"}] * 6
+    one_owner_items = [
+        {"link": "https://a.example/1", "owner": "sony", "tier": 1},
+        {"link": "https://b.example/1", "owner": "sony", "tier": 2},
+    ]
+    one_owner_cluster = {"id": "c1", "title": "Nvidia announces RTX 5090",
+                         "items": one_owner_items, "tiers": [1, 2],
+                         "owners": ["sony"], "entities": ["nvidia"]}
+    assert score.ineligible_reason(one_owner_cluster, [], 2, 2) == "too few independent owners"
+    ready, reason = run_module._facts_readiness(
+        {"sources": one_owner_items, "claims": claims},
+        min_sources=2, min_claims=6, min_distinct_owners=2,
+    )
+    assert (ready, reason) == (False, "too few independent owners")
+
+    two_owner_items = [
+        {"link": "https://a.example/1", "owner": "microsoft", "tier": 1},
+        {"link": "https://b.example/1", "owner": "sony", "tier": 2},
+    ]
+    two_owner_cluster = {"id": "c2", "title": "Nvidia announces RTX 5090",
+                         "items": two_owner_items, "tiers": [1, 2],
+                         "owners": ["microsoft", "sony"], "entities": ["nvidia"]}
+    assert score.ineligible_reason(two_owner_cluster, [], 2, 2) is None
+    ready, reason = run_module._facts_readiness(
+        {"sources": two_owner_items, "claims": claims},
+        min_sources=2, min_claims=6, min_distinct_owners=2,
+    )
+    assert (ready, reason) == (True, None)
 
 
 # --- post-gather source floor, item exclusion, observability -----------------
@@ -1102,6 +1140,56 @@ def test_budget_truncated_unconfirmed_is_incomplete_and_not_remembered(tmp_path)
     )
     assert second.status == "nothing"
     assert calls["gather"] == 1, "an incomplete cluster must be tried again next run"
+
+
+def run_limit_config(tmp_path, seconds):
+    source_config = Path(run_module.__file__).resolve().parent / "config.yaml"
+    config = yaml.safe_load(source_config.read_text(encoding="utf-8"))
+    config.setdefault("run", {})["max_total_seconds"] = seconds
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return config_path
+
+
+def test_run_time_limit_starts_no_new_candidate_and_skips(tmp_path, monkeypatch):
+    paths = make_paths(tmp_path)
+    config_path = run_limit_config(tmp_path, 1)
+    items = [
+        item("Halo returns to Xbox Game Pass", "https://h.example/1", owner="owner-h1"),
+        item("Halo returns to Xbox Game Pass", "https://h.example/2", owner="owner-h2"),
+    ]
+    gather_calls = {"n": 0}
+
+    def gather_fn(chosen, *, output_dir=None, id=None):
+        gather_calls["n"] += 1
+        return dryrun.sample_gathered(id, NOW)
+
+    # First monotonic() reads the run's start; every later read is past the limit.
+    ticks = {"n": 0}
+
+    def monotonic():
+        ticks["n"] += 1
+        return 0.0 if ticks["n"] == 1 else 10_000.0
+
+    monkeypatch.setattr(run_module.time, "monotonic", monotonic)
+
+    result = run_with_items(tmp_path, items, config_path=config_path, gather_fn=gather_fn)
+
+    assert result.status == "skipped"
+    assert result.exit_code == 2
+    assert result.error == "run time limit"
+    assert gather_calls["n"] == 0, "the run limit must stop the run before any candidate is gathered"
+    assert not list(paths.articles_dir.glob("*.md"))
+
+    report = latest_candidates_report(paths)
+    assert report["outcome"] == "no confirmed story"
+    assert report["candidates"][0]["reason"] == "run time limit"
+
+    # A run-time-limit skip, like a provider outage, never touches the breaker.
+    if paths.breaker.exists():
+        breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
+        assert breaker["consecutive_failures"] == 0
+        assert breaker["open"] is False
 
 
 def test_plain_unconfirmed_is_still_remembered(tmp_path):

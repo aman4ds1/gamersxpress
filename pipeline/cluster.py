@@ -1540,6 +1540,38 @@ def cluster_items(
     return clusters
 
 
+def distinct_owners(sources: Iterable[dict]) -> set[str]:
+    """The distinct owners of the sources that can actually support a story.
+
+    A source counts only when its feed did not disable fetching
+    (``fetchable: false``) and it was not demoted to tier 3 (an external page on
+    an unconfigured domain). Owner names are normalized (trimmed, lower-cased);
+    an empty owner is ignored. Several articles from one owner count once, so two
+    regional posts from the same publisher (for example a "(For Southeast Asia)"
+    duplicate) contribute a single owner.
+
+    This is the one owner-counting helper: the score stage's eligibility gate and
+    the run's post-gather readiness check both call it, so they cannot disagree.
+    """
+    owners: set[str] = set()
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        if source.get("fetchable") is False:
+            continue
+        tier = source.get("tier")
+        if tier not in (None, ""):
+            try:
+                if int(tier) == 3:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        owner = str(source.get("owner") or "").strip().lower()
+        if owner:
+            owners.add(owner)
+    return owners
+
+
 def confirmable(cluster: dict) -> bool:
     """A cluster can be confirmed, before any model call, when it has a tier-1
     source or sources from at least two different owners.
@@ -1621,6 +1653,7 @@ __all__ = [
     "cluster_id_for_urls",
     "cluster_items",
     "confirmable",
+    "distinct_owners",
     "contains_entity",
     "event_overlap",
     "event_words",

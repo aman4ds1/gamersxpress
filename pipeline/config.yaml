@@ -596,6 +596,7 @@ score:
   # fail confirmation are recorded in data/failed.json under "unconfirmed",
   # keyed by their member-URL hash, and skipped for the same membership until
   # the failed cooldown lapses.
+  min_distinct_owners: 2
   max_candidates_per_run: 5
   model_call_budget: 15
   # Cost control (pipeline/facts.py): extract claims from at most this many
@@ -762,6 +763,32 @@ safety:
   daily_cap: 4
   publish_modes: [draft, auto]
   breaker_threshold: 3
+
+# Per-provider and per-role timeouts and TPM limits.
+provider:
+  max_call_seconds:
+    fast: 60
+    writer: 150
+    verifier: 120
+  max_role_seconds:
+    fast: 180
+    writer: 420
+    verifier: 300
+  # TPM limits (per-minute) for OpenAI-compatible providers.
+  limits:
+    groq:
+      openai/gpt-oss-120b: 8000
+      openai/gpt-oss-20b: 8000
+      qwen/qwen3.8-27b: 6000
+  # Smallest output budget worth a call.
+  min_output_tokens:
+    fast: 600
+    writer: 1500
+    verifier: 1200
+
+# Pipeline run budget.
+run:
+  max_total_seconds: 900
 
 # RSS sources used by the ingest stage (PLAN.md section 6 trust tiers).
 # Tier 1 = official sources, tier 2 = reputable outlets.
