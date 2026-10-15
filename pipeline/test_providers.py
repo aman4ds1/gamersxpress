@@ -1,3 +1,4 @@
+import http.client
 import logging
 import os
 import time
@@ -1356,3 +1357,235 @@ def test_family_guard_and_failure_reason_format_are_unchanged():
             env=keyed("mistral"), run_state=providers.RunState(),
         )
     assert mistral.calls == []
+
+
+# --- transport failures are retryable, not crashes ----------------------------
+
+
+def test_http_post_json_wraps_a_connection_reset_while_reading(monkeypatch):
+    class ResettingResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            raise ConnectionResetError(10054, "forcibly closed by the remote host")
+
+    monkeypatch.setattr(
+        providers.urllib.request, "urlopen",
+        lambda request, timeout: ResettingResponse(),
+    )
+    with pytest.raises(providers.ProviderError) as excinfo:
+        providers.http_post_json("https://api.example/x", {"a": 1}, {})
+    assert excinfo.value.retryable is True
+    assert "ConnectionResetError" in str(excinfo.value)
+
+
+def test_http_post_json_wraps_an_incomplete_read(monkeypatch):
+    class TruncatedResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            raise http.client.IncompleteRead(b"partial")
+
+    monkeypatch.setattr(
+        providers.urllib.request, "urlopen",
+        lambda request, timeout: TruncatedResponse(),
+    )
+    with pytest.raises(providers.ProviderError) as excinfo:
+        providers.http_post_json("https://api.example/x", {"a": 1}, {})
+    assert excinfo.value.retryable is True
+    assert "IncompleteRead" in str(excinfo.value)
+
+
+def test_a_connection_reset_from_a_provider_is_retried_then_falls_back():
+    first = FakeProvider("a", [ConnectionResetError(10054, "reset")] * 3)
+    second = FakeProvider("b", ["from-b"])
+    config = make_config(chain(("a", "m1", "fa"), ("b", "m2", "fb")))
+
+    result = providers.generate(
+        "writer", "p", config=config, providers={"a": first, "b": second},
+        env=keyed("a", "b"), sleep=lambda _d: None,
+    )
+
+    assert result.provider == "b"
+    assert result.value == "from-b"
+    assert len(first.calls) == 3, "a transport error uses the configured retries"
+    assert any("ConnectionResetError" in fallback for fallback in result.fallbacks)
+
+
+def test_a_programming_error_is_never_retried():
+    provider = FakeProvider("a", [TypeError("a real bug")])
+    config = make_config(chain(("a", "m1", "fa")))
+
+    with pytest.raises(TypeError, match="a real bug"):
+        providers.generate(
+            "writer", "p", config=config, providers={"a": provider}, env=keyed("a"),
+            sleep=lambda _d: None,
+        )
+
+    assert len(provider.calls) == 1, "a programming error is not retried"
+
+
+# --- one clock per role: hung attempts, socket timeout, deadline --------------
+
+
+def test_a_hung_attempt_is_retried_once_then_the_next_provider_is_used():
+    class HangingProvider(providers.Provider):
+        name = "hang"
+        env_key = "HANG_KEY"
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, model, prompt, *, api_key, json_schema=None, options=None, transport=None):
+            self.calls += 1
+            time.sleep(0.5)
+            return providers.Completion(text="late", finish_reason="stop")
+
+    hang = HangingProvider()
+    other = FakeProvider("b", ["from-b"])
+    config = make_config(chain(("hang", "m", "fh"), ("b", "m2", "fb")))
+    config["provider"] = {"max_call_seconds": {"writer": 0.05}}
+
+    started = time.monotonic()
+    result = providers.generate(
+        "writer", "p", config=config, providers={"hang": hang, "b": other},
+        env=keyed("hang", "b"), sleep=lambda _d: None,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.provider == "b"
+    assert result.value == "from-b"
+    assert hang.calls == 2, "a hung attempt is retried at most once before falling back"
+    assert elapsed < 0.4, "each abandoned attempt costs max_call_seconds, not the worker's sleep"
+
+
+def test_the_transport_socket_timeout_matches_the_per_attempt_timeout(monkeypatch):
+    captured = {}
+
+    def fake_post(url, payload, headers, timeout=60):
+        captured["timeout"] = timeout
+        return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr(providers, "http_post_json", fake_post)
+    config = make_config(
+        [{"provider": "groq", "model": "openai/gpt-oss-120b", "family": "openai"}]
+    )
+    config["provider"] = {"max_call_seconds": {"writer": 7.0}}
+
+    result = providers.generate(
+        "writer", "p", config=config, providers={"groq": providers.GroqProvider()},
+        env={"GROQ_API_KEY": "k"},
+    )
+
+    assert result.value == "ok"
+    assert captured["timeout"] == 7.0, "the socket timeout equals min(max_call, role time left)"
+
+
+def test_the_role_deadline_caps_backoff_sleeps_and_total_time(monkeypatch):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(providers.time, "monotonic", lambda: clock["now"])
+    slept = []
+
+    def fake_sleep(delay):
+        slept.append(delay)
+        clock["now"] += delay
+
+    class AlwaysFailing(providers.Provider):
+        name = "a"
+        env_key = "A_KEY"
+
+        def complete(self, model, prompt, *, api_key, json_schema=None, options=None, transport=None):
+            raise providers.ProviderError("flaky", retryable=True)
+
+    config = make_config(chain(("a", "m1", "fa")), max_attempts=10)
+    config["provider"] = {"max_role_seconds": {"writer": 10}}
+
+    with pytest.raises(providers.SkipRun) as excinfo:
+        providers.generate(
+            "writer", "p", config=config, providers={"a": AlwaysFailing()},
+            env=keyed("a"), sleep=fake_sleep,
+        )
+
+    assert "max_role_seconds" in str(excinfo.value)
+    assert clock["now"] <= 10, "the role never runs past its deadline"
+    assert sum(slept) <= 10, "backoff sleeps are capped to the role time left"
+
+
+def test_a_verifier_connection_reset_is_retried_and_succeeds_without_falling_back():
+    config = {
+        "roles": {
+            "writer": chain(("gemini", "g", "google")),
+            "verifier": chain(("mistral", "m", "mistral"), ("gemini", "g", "google")),
+        },
+        "retry": {"max_attempts": 3, "base_delay_seconds": 1, "max_delay_seconds": 30},
+    }
+    gemini = FakeProvider("gemini", ["written"])
+    mistral = FakeProvider("mistral", [ConnectionResetError("reset"), "verified"])
+    run = providers.RunState()
+
+    providers.generate(
+        "writer", "p", config=config, providers={"gemini": gemini, "mistral": mistral},
+        env=keyed("gemini", "mistral"), run_state=run, sleep=lambda _d: None,
+    )
+    result = providers.generate(
+        "verifier", "p", config=config, providers={"gemini": gemini, "mistral": mistral},
+        env=keyed("gemini", "mistral"), run_state=run, sleep=lambda _d: None,
+    )
+
+    assert result.provider == "mistral"
+    assert result.value == "verified"
+    assert result.fallbacks == [], "a transient reset is retried, not a fallback"
+    assert len(mistral.calls) == 2, "the reset attempt is retried once on the same provider"
+    assert len(gemini.calls) == 1, "gemini served the writer only; no verifier fallback"
+
+
+def test_a_verifier_that_always_resets_skips_at_the_role_deadline(monkeypatch):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(providers.time, "monotonic", lambda: clock["now"])
+    call_times = []
+
+    class ResettingProvider(providers.Provider):
+        name = "mistral"
+        env_key = "MISTRAL_KEY"
+
+        def complete(self, model, prompt, *, api_key, json_schema=None, options=None, transport=None):
+            call_times.append(clock["now"])
+            raise ConnectionResetError("reset")
+
+    config = {
+        "roles": {
+            "writer": chain(("gemini", "g", "google")),
+            "verifier": chain(("mistral", "m", "mistral")),
+        },
+        "retry": {"max_attempts": 100, "base_delay_seconds": 1, "max_delay_seconds": 30},
+        "provider": {"max_role_seconds": {"verifier": 10}},
+    }
+    gemini = FakeProvider("gemini", ["written"])
+    run = providers.RunState()
+    providers.generate(
+        "writer", "p", config=config,
+        providers={"gemini": gemini, "mistral": ResettingProvider()},
+        env=keyed("gemini", "mistral"), run_state=run, sleep=lambda _d: None,
+    )
+
+    with pytest.raises(providers.SkipRun) as excinfo:
+        providers.generate(
+            "verifier", "p", config=config,
+            providers={"gemini": gemini, "mistral": ResettingProvider()},
+            env=keyed("gemini", "mistral"), run_state=run,
+            sleep=lambda delay: clock.__setitem__("now", clock["now"] + delay),
+        )
+
+    assert "max_role_seconds" in str(excinfo.value)
+    assert call_times, "the verifier provider was tried at least once"
+    assert all(t < 10 for t in call_times), "no provider call happens past the role deadline"
+    assert clock["now"] <= 10, "the role never runs past max_role_seconds"
+

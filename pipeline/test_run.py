@@ -1192,6 +1192,119 @@ def test_run_time_limit_starts_no_new_candidate_and_skips(tmp_path, monkeypatch)
         assert breaker["open"] is False
 
 
+# --- provider/transport errors skip the run (exit 2) without a breaker hit ---
+
+
+def test_a_provider_error_skips_the_run_without_touching_the_breaker(tmp_path):
+    paths = make_paths(tmp_path)
+    run_module.save_breaker(
+        {"consecutive_failures": 2, "last_failure_date": None, "open": False, "recent_failures": []},
+        paths.breaker,
+    )
+
+    def reset(*_args, **_kwargs):
+        raise providers.ProviderError(
+            "connection error calling https://api: ConnectionResetError", retryable=True
+        )
+
+    result = run_once(tmp_path, dry_run=True, generate=reset)
+
+    assert result.status == "skipped"
+    assert result.exit_code == 2
+    assert "ConnectionResetError" in result.error
+    breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
+    assert breaker["consecutive_failures"] == 2, "an outage is not counted against the story"
+    assert breaker["open"] is False
+
+
+def test_a_repair_transport_error_keeps_the_draft_and_skips(tmp_path):
+    paths = make_paths(tmp_path)
+    run_module.save_breaker(
+        {"consecutive_failures": 1, "last_failure_date": None, "open": False, "recent_failures": []},
+        paths.breaker,
+    )
+    original = dryrun.sample_body() + f"\n\n{UNSUPPORTED}\n"
+    calls = repair_calls()
+    base = repair_generate([original], [verdict_json(UNSUPPORTED)], calls)
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        if role == "writer" and calls["writer"] >= 1:
+            # The repair call drops its connection: an outage, not a bad article.
+            raise providers.ProviderError("connection reset by peer", retryable=True)
+        return base(role, prompt, json_schema, run_state=run_state, **kwargs)
+
+    result = run_module.run(
+        paths=paths, now=NOW, env={}, dry_run=True, generate=generate,
+        link_checker=lambda url: 200, site_checks=STUB_CHECKS,
+    )
+
+    assert result.status == "skipped"
+    assert result.exit_code == 2
+    assert "connection reset by peer" in result.error
+    breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
+    assert breaker["consecutive_failures"] == 1, "a repair outage never touches the breaker"
+    assert breaker["open"] is False
+
+    drafts = list(paths.drafts_dir.glob("*/article.md"))
+    assert drafts, "the original draft must be kept when the repair fails"
+    assert drafts[0].read_text(encoding="utf-8") == original
+
+
+def test_a_verifier_transport_error_keeps_the_draft_and_skips(tmp_path):
+    paths = make_paths(tmp_path)
+    run_module.save_breaker(
+        {"consecutive_failures": 2, "last_failure_date": None, "open": False, "recent_failures": []},
+        paths.breaker,
+    )
+    draft_text = dryrun.sample_body()
+    calls = repair_calls()
+    base = repair_generate([draft_text], [verdict_json()], calls)
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        if role == "verifier":
+            # Every provider in the verifier chain drops its connection.
+            raise ConnectionResetError(10054, "forcibly closed by the remote host")
+        return base(role, prompt, json_schema, run_state=run_state, **kwargs)
+
+    result = run_module.run(
+        paths=paths, now=NOW, env={}, dry_run=True, generate=generate,
+        link_checker=lambda url: 200, site_checks=STUB_CHECKS,
+    )
+
+    assert result.status == "skipped"
+    assert result.exit_code == 2
+    assert "ConnectionResetError" in result.error
+    breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
+    assert breaker["consecutive_failures"] == 2, "a verifier outage never touches the breaker"
+    assert breaker["open"] is False
+
+    drafts = list(paths.drafts_dir.glob("*/article.md"))
+    assert drafts, "the draft written before verification must be kept"
+    assert drafts[0].read_text(encoding="utf-8") == draft_text
+
+    assert not list(paths.articles_dir.glob("*.md")), "nothing is published on a skip"
+
+
+def test_a_programming_error_still_fails_and_counts_against_the_breaker(tmp_path):
+    paths = make_paths(tmp_path)
+    run_module.save_breaker(
+        {"consecutive_failures": 1, "last_failure_date": None, "open": False, "recent_failures": []},
+        paths.breaker,
+    )
+
+    def buggy(*_args, **_kwargs):
+        raise TypeError("a real pipeline bug")
+
+    result = run_once(tmp_path, dry_run=True, generate=buggy)
+
+    assert result.status == "failed"
+    assert result.exit_code == 3
+    assert "TypeError" in result.error
+    breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
+    assert breaker["consecutive_failures"] == 2, "a genuine bug is still counted"
+    assert breaker["open"] is False
+
+
 def test_plain_unconfirmed_is_still_remembered(tmp_path):
     paths = make_paths(tmp_path)
     items = [

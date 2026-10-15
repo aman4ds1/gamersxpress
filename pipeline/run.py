@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import http.client
 import json
 import logging
 import os
@@ -74,6 +75,7 @@ from providers import (
     PROJECT_ROOT,
     Generation,
     MissingWriterFamilyError,
+    ProviderError,
     RunState,
     SkipRun,
     generate as default_generate,
@@ -514,6 +516,14 @@ def run(
         logger.warning("daily cap reached (%d/%d)", published_today, daily_cap)
         return finish("paused", f"daily cap reached ({published_today}/{daily_cap})")
 
+    # Tracks the in-flight article so a provider/transport error escaping a
+    # stage can still save whatever draft exists (see the exception handlers).
+    slug: str | None = None
+    provisional_slug: str | None = None
+    cluster_id: str | None = None
+    chosen: dict | None = None
+    draft: str | None = None
+
     try:
         with timings.stage("ingest"):
             if dry_run:
@@ -844,12 +854,14 @@ def run(
                 report_dir=paths.reports_dir, id=cluster_id,
             )
 
-            # One repair attempt: an article_rejected verdict with unsupported
-            # clauses gets a single writer call to delete or re-ground them, then
-            # a full re-verification. A verifier_output_invalid verdict (no usable
-            # verdict) is never repaired, and no article is ever repaired twice.
-            if verify_report.failure_reason == "article_rejected" and verify_report.unsupported:
-                changed_clauses = list(verify_report.unsupported)
+        # One repair attempt: an article_rejected verdict with unsupported
+        # clauses gets a single writer call to delete or re-ground them, then a
+        # full re-verification. A verifier_output_invalid verdict (no usable
+        # verdict) is never repaired, and no article is ever repaired twice.
+        # Timed as its own "repair" stage so verifier latency stays visible.
+        if verify_report.failure_reason == "article_rejected" and verify_report.unsupported:
+            changed_clauses = list(verify_report.unsupported)
+            with timings.stage("repair"):
                 repaired = repair_fn(
                     draft, changed_clauses, facts, run_state=run_state, generate=generate,
                 )
@@ -857,7 +869,8 @@ def run(
                     draft, repaired.value, slug=provisional_slug, drafts_dir=paths.drafts_dir,
                     changed_clauses=changed_clauses,
                 )
-                draft = repaired.value
+            draft = repaired.value
+            with timings.stage("verify"):
                 verify_report = verify_fn(
                     draft, facts, run_state=run_state, generate=generate,
                     report_dir=paths.reports_dir, id=cluster_id,
@@ -945,9 +958,22 @@ def run(
         )
 
     except SkipRun as exc:
-        save_breaker(breaker, paths.breaker)
         logger.warning("run skipped: %s", exc)
-        return finish("skipped", str(exc))
+        return _skip(
+            self_finish=finish, breaker=breaker, paths=paths, error=str(exc),
+            slug=slug or provisional_slug, cluster_id=cluster_id, chosen=chosen,
+            article=draft,
+        )
+    except (ProviderError, OSError, http.client.HTTPException) as exc:
+        # A provider or transport failure is an outage, not a bad article: skip
+        # (exit 2), leave the breaker alone, and keep any draft already written.
+        logger.warning("run skipped due to provider/transport error: %s", exc)
+        return _skip(
+            self_finish=finish, breaker=breaker, paths=paths,
+            error=f"{type(exc).__name__}: {exc}",
+            slug=slug or provisional_slug, cluster_id=cluster_id, chosen=chosen,
+            article=draft,
+        )
     except (facts_stage.UnconfirmedStory, facts_stage.FactsError) as exc:
         if candidates_report:
             _write_candidates_report("facts error")
@@ -970,6 +996,39 @@ def run(
             self_finish=finish, breaker=breaker, paths=paths, threshold=threshold, now=now,
             status="failed", exit_code=EXIT_FAIL, error=f"{type(exc).__name__}: {exc}",
         )
+
+
+def _skip(
+    *,
+    self_finish: Callable[..., RunResult],
+    breaker: dict,
+    paths: Paths,
+    error: str,
+    slug: str | None = None,
+    cluster_id: str | None = None,
+    chosen: dict | None = None,
+    article: str | None = None,
+    cover_path: str | Path | None = None,
+    failures: list[str] | None = None,
+    **extra: Any,
+) -> RunResult:
+    """End the run as skipped (exit 2) without touching the circuit breaker.
+
+    Used when a provider/transport error escapes a stage: no article was judged
+    bad, so nothing is counted against the story. A draft, when one exists, is
+    still written so the work is not lost.
+    """
+    if article is not None and slug:
+        publish_stage.save_draft(
+            article, slug=slug, cover_path=cover_path, drafts_dir=paths.drafts_dir,
+            failures=failures,
+        )
+    save_breaker(breaker, paths.breaker)
+    return self_finish(
+        "skipped", error, exit_code=EXIT_SKIP,
+        slug=slug, cluster_id=cluster_id, category=(chosen or {}).get("category"),
+        failures=failures or [], **extra,
+    )
 
 
 def _fail(

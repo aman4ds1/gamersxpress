@@ -31,6 +31,7 @@ OpenRouter) only need to subclass :class:`OpenAICompatibleProvider` and set
 from __future__ import annotations
 
 import copy
+import http.client
 import json
 import logging
 import os
@@ -134,6 +135,39 @@ class ProviderError(Exception):
         super().__init__(message)
         self.retryable = retryable
         self.status = status
+
+
+class ProviderTimeoutError(ProviderError):
+    """One provider attempt was abandoned for exceeding its wall-clock timeout.
+
+    Retryable like a transient failure, but a hung attempt is retried at most
+    once on the same provider before falling back (a second hang is unlikely to
+    be a blip, and each retry costs the full call timeout).
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message, retryable=True)
+
+
+class _RoleDeadlineExceeded(Exception):
+    """Internal: a role ran past its ``max_role_seconds`` deadline.
+
+    Never escapes :func:`generate`; it is converted there into a
+    :class:`SkipRun` naming the role, the elapsed time and the last error.
+    """
+
+    def __init__(self, role: str, max_role: float, elapsed: float, last_error: str | None = None):
+        self.role = role
+        self.max_role = max_role
+        self.elapsed = elapsed
+        self.last_error = last_error
+        detail = (
+            f"role {role!r} exceeded max_role_seconds {int(max_role)}s "
+            f"({elapsed:.0f}s elapsed)"
+        )
+        if last_error is not None:
+            detail += f"; last error: {last_error}"
+        super().__init__(detail)
 
 
 class PromptTooLargeError(ProviderError):
@@ -354,13 +388,43 @@ def _call_with_timeout(fn: Callable[[], Any], timeout: float | None) -> Any:
     thread = threading.Thread(target=worker, name="llm-call", daemon=True)
     thread.start()
     if not done.wait(timeout):
-        raise ProviderError(
-            f"provider call exceeded {timeout:.0f}s (abandoned)",
-            retryable=False,
+        raise ProviderTimeoutError(
+            f"provider call exceeded {timeout:.0f}s (abandoned)"
         )
     if "error" in box:
         raise box["error"]
     return box["value"]
+
+
+def _attempt_timeout(
+    deadline: float | None,
+    max_call: float,
+    role: str,
+    max_role: float,
+    last_error: str | None,
+) -> float | None:
+    """Seconds one attempt may run: ``min(max_call_seconds, role time left)``.
+
+    Both the worker thread and the HTTP socket use this same value so a call can
+    never outlive its budget. With no role deadline, it is ``max_call_seconds``
+    (or ``None`` when that is disabled). Raises :class:`_RoleDeadlineExceeded`
+    when no time is left.
+    """
+    if deadline is None:
+        return max_call if max_call > 0 else None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise _RoleDeadlineExceeded(role, max_role, max_role - remaining, last_error)
+    return min(max_call, remaining) if max_call > 0 else remaining
+
+
+def _timeout_transport(timeout: float) -> Callable[..., dict]:
+    """A transport bound to ``timeout`` so the socket timeout matches the worker."""
+
+    def transport(url: str, payload: Mapping[str, Any], headers: Mapping[str, str]) -> dict:
+        return http_post_json(url, payload, headers, timeout=timeout)
+
+    return transport
 
 
 def _tpm_limit(provider_name: str, model: str, limits: Mapping[str, Mapping[str, int]]) -> int | None:
@@ -423,7 +487,16 @@ def http_post_json(
     headers: Mapping[str, str],
     timeout: float = 60,
 ) -> dict:
-    """POST JSON and return the parsed response, raising ProviderError on failure."""
+    """POST JSON and return the parsed response, raising ProviderError on failure.
+
+    The whole exchange (connect, send, read, decode) is normalised: any
+    ``OSError`` subclass (``ConnectionResetError``, ``ConnectionAbortedError``,
+    ``BrokenPipeError``, ``ssl.SSLError``, ``socket.timeout``/``TimeoutError``)
+    and any ``http.client.HTTPException`` (``RemoteDisconnected``,
+    ``IncompleteRead``) becomes a retryable :class:`ProviderError`, so a dropped
+    connection fails the attempt instead of escaping the retry logic. A bad
+    status or malformed body is reported the same way.
+    """
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -443,8 +516,15 @@ def http_post_json(
         ) from exc
     except urllib.error.URLError as exc:
         raise ProviderError(f"network error calling {url}: {exc.reason}", retryable=True) from exc
-    except TimeoutError as exc:
-        raise ProviderError(f"timeout calling {url}", retryable=True) from exc
+    except (http.client.HTTPException, OSError) as exc:
+        # ConnectionResetError/ConnectionAbortedError/BrokenPipeError/ssl.SSLError
+        # are OSError subclasses; TimeoutError/socket.timeout are too. The reset
+        # that motivated this handler arrives while reading the body, after
+        # urlopen already returned, so it can only be caught here.
+        raise ProviderError(
+            f"connection error calling {url}: {type(exc).__name__}: {exc}",
+            retryable=True,
+        ) from exc
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -863,7 +943,9 @@ def _complete_with_retry(
     jitter_ratio: float = 0.0,
     rand: Callable[[], float] = random.random,
     time_budget: _RoleTimeBudget | None = None,
-    call_timeout: float | None = None,
+    deadline: float | None = None,
+    max_call: float = 0.0,
+    max_role: float = 0.0,
 ) -> Completion:
     """Call ``provider.complete`` with backoff, returning a :class:`Completion`.
 
@@ -875,6 +957,16 @@ def _complete_with_retry(
     retrying stops and the error propagates so the caller falls back to the next
     provider.
 
+    One clock per role: ``deadline`` is the monotonic end of ``max_role_seconds``
+    and every attempt's timeout is ``min(max_call, time left)``, passed to both
+    the worker thread and the HTTP socket. The deadline is re-checked before each
+    attempt and before each backoff sleep, and a sleep never overshoots it, so
+    the whole role call (retries included) cannot run past the deadline. A hung
+    attempt (:class:`ProviderTimeoutError`) is retried at most once on the same
+    provider before falling back. The transport safety net turns a stray
+    ``OSError``/``http.client.HTTPException`` into a retryable
+    :class:`ProviderError`; programming errors still propagate.
+
     A ``finish_reason="length"`` response is truncated output, which must never
     be parsed: it retries up to ``length_retries`` times with a larger token
     budget. If it stays truncated, a ``json_schema`` request raises
@@ -885,34 +977,69 @@ def _complete_with_retry(
     if time_budget is None:
         time_budget = _RoleTimeBudget(float("inf"))
     attempt = 0
+    timeout_retries = 0
     budget = dict(options or {})
     length_remaining = max(0, int(length_retries))
+    last_error: str | None = None
     while True:
+        timeout = _attempt_timeout(deadline, max_call, role, max_role, last_error)
+        transport = _timeout_transport(timeout) if timeout is not None else None
         try:
             completion = _call_with_timeout(
                 lambda: provider.complete(
-                    model, prompt, api_key=api_key, json_schema=json_schema, options=budget
+                    model, prompt, api_key=api_key, json_schema=json_schema,
+                    options=budget, transport=transport,
                 ),
-                call_timeout,
+                timeout,
             )
         except ProviderError as exc:
-            if not exc.retryable or attempt >= max_attempts - 1:
-                raise
-            if exc.status in _BUSY_STATUSES and busy_delays:
+            error: ProviderError | None = exc
+        except (http.client.HTTPException, OSError) as exc:
+            # Safety net for a transport failure that escaped http_post_json: an
+            # injected transport, or a provider that reads the socket itself.
+            # These are transient; programming errors (TypeError, KeyError, ...)
+            # are neither OSError nor HTTPException and keep propagating.
+            error = ProviderError(
+                f"connection error from {provider.name}/{model}: "
+                f"{type(exc).__name__}: {exc}",
+                retryable=True,
+            )
+            error.__cause__ = exc
+        else:
+            error = None
+
+        if error is not None:
+            last_error = str(error)
+            if isinstance(error, ProviderTimeoutError):
+                # A hung attempt gets one retry on the same provider, no matter
+                # how many generic retries the config allows.
+                if timeout_retries >= 1 or attempt >= max_attempts - 1:
+                    raise error
+                timeout_retries += 1
+            elif not error.retryable or attempt >= max_attempts - 1:
+                raise error
+            if error.status in _BUSY_STATUSES and busy_delays:
                 raw_delay = float(busy_delays[min(attempt, len(busy_delays) - 1)])
             else:
                 raw_delay = min(base_delay * (2 ** attempt), max_delay)
             delay = _jitter(raw_delay, jitter_ratio, rand)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _RoleDeadlineExceeded(
+                        role, max_role, max_role - remaining, last_error
+                    )
+                delay = min(delay, remaining)
             if not time_budget.spend(delay):
                 logger.warning(
                     "role=%s provider=%s model=%s: retry time budget exhausted "
                     "(%.1fs left, next wait %.1fs); falling back: %s",
-                    role, provider.name, model, time_budget.remaining, delay, exc,
+                    role, provider.name, model, time_budget.remaining, delay, error,
                 )
-                raise
+                raise error
             logger.warning(
                 "role=%s provider=%s model=%s retry %s/%s after %.1fs: %s",
-                role, provider.name, model, attempt + 1, max_attempts - 1, delay, exc,
+                role, provider.name, model, attempt + 1, max_attempts - 1, delay, error,
             )
             sleep(delay)
             attempt += 1
@@ -1128,24 +1255,26 @@ def generate(
     length_budget_multiplier = int(retry.get("length_budget_multiplier", 2))
     length_budget_cap = int(retry.get("length_budget_cap", 0))
 
-    role_deadline = None
-    if max_role > 0:
-        role_deadline = time.monotonic() + max_role
-    role_started = time.monotonic() if max_role > 0 else None
+    # One clock per role: started once and never restarted by a retry or a
+    # fallback. role_deadline is the monotonic instant this role must finish by.
+    role_deadline = time.monotonic() + max_role if max_role > 0 else None
+    last_error: str | None = None
+
+    def _deadline_skip(exc: _RoleDeadlineExceeded) -> SkipRun:
+        fallbacks.append(f"role={role}: {exc}")
+        if run_state is not None:
+            run_state.add_failures(list(fallbacks))
+        logger.warning("fallback role=%s: %s", role, exc)
+        return SkipRun(str(exc))
 
     for entry in chain:
-        # Role wall-clock deadline.
-        if role_deadline is not None:
-            remaining = role_deadline - time.monotonic()
-            if remaining <= 0:
-                message = f"role {role!r} exceeded max_role_seconds {int(max_role)}s"
-                fallbacks.append(f"role={role} {name} ({model}): {message}") if False else None  # dummy
-                fallbacks.append(f"role={role}: {message}")
-                logger.warning("fallback role=%s: %s", role, message)
-                break
-            call_timeout = min(max_call, remaining) if max_call > 0 else None
-        else:
-            call_timeout = max_call if max_call > 0 else None
+        # Role wall-clock deadline, checked before each provider so a provider
+        # that would run out the clock is never called.
+        if role_deadline is not None and time.monotonic() >= role_deadline:
+            elapsed = max_role - (role_deadline - time.monotonic())
+            raise _deadline_skip(
+                _RoleDeadlineExceeded(role, max_role, elapsed, last_error)
+            )
         name = entry.get("provider")
         model = entry.get("model")
         family = entry.get("family")
@@ -1186,9 +1315,14 @@ def generate(
                 jitter_ratio=jitter_ratio,
                 rand=rand,
                 time_budget=time_budget,
-                call_timeout=call_timeout,
+                deadline=role_deadline,
+                max_call=max_call,
+                max_role=max_role,
             )
+        except _RoleDeadlineExceeded as exc:
+            raise _deadline_skip(exc) from exc
         except ProviderError as exc:
+            last_error = str(exc)
             # Handle "Request too large" / 413 once by shrinking.
             if isinstance(provider, OpenAICompatibleProvider) and _is_request_too_large(exc) and not shrunk_once:
                 shrunk_once = True
@@ -1215,7 +1349,9 @@ def generate(
                                 jitter_ratio=jitter_ratio,
                                 rand=rand,
                                 time_budget=time_budget,
-                                call_timeout=call_timeout,
+                                deadline=role_deadline,
+                                max_call=max_call,
+                                max_role=max_role,
                             )
                             # Success after shrink; treat as success.
                             generation = Generation(
@@ -1229,6 +1365,8 @@ def generate(
                             if run_state is not None:
                                 run_state.record(generation)
                             return generation
+                        except _RoleDeadlineExceeded as exc:
+                            raise _deadline_skip(exc) from exc
                         except ProviderError:
                             pass  # fall through to append this exc as fallback
             fallbacks.append(f"role={role} {name} ({model}, family={family}): {exc}")
@@ -1259,6 +1397,7 @@ __all__ = [
     "SkipRun",
     "MissingWriterFamilyError",
     "ProviderError",
+    "ProviderTimeoutError",
     "Completion",
     "Generation",
     "RunState",
