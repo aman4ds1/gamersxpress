@@ -128,7 +128,9 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
     The readiness check (pipeline/run.py) needs at least ``readiness.min_claims``
     claims of kind confirmed/reported/estimate/statement, so the sample story
     carries six. Every value stays inside ``_SOURCE_PROSE`` (no numbers, no names
-    the prose does not use) so grounding never drops a claim.
+    the prose does not use) so grounding never drops a claim. Every claim also
+    carries the evidence fields with plausible values drawn from the prose, so
+    the evidence diagnostic exercises the whole path in a dry run.
     """
     specs = [
         (
@@ -137,6 +139,10 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
             "nvidia",
             "confirmed",
             0.9,
+            "Nvidia outlined its plans during a briefing with regional partners",
+            "According to people familiar with the matter, Nvidia",
+            "Nvidia",
+            "organization",
         ),
         (
             "Nvidia outlined its graphics card plans during a briefing with regional partners",
@@ -144,6 +150,10 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
             "unstated",
             "reported",
             0.8,
+            "Nvidia outlined its plans during a briefing with regional partners",
+            "Nvidia outlined its plans",
+            "Nvidia",
+            "organization",
         ),
         (
             "Nvidia representatives declined to comment on unannounced graphics card products",
@@ -151,6 +161,10 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
             "unstated",
             "statement",
             0.7,
+            "Representatives declined to comment on unannounced products",
+            "Representatives declined to comment",
+            "Nvidia",
+            "organization",
         ),
         (
             "Analysts estimate Nvidia graphics card supply remains uncertain across several markets",
@@ -158,33 +172,50 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
             "unstated",
             "estimate",
             0.6,
+            "analysts noted that supply and retail availability remain uncertain",
+            "analysts noted that supply and retail",
+            "analysts",
+            "person",
         ),
         (
-            "The next Nvidia graphics card announcement is expected alongside a scheduled event",
-            "the announcement is expected alongside a scheduled event",
-            "unstated",
-            "reported",
-            0.8,
-        ),
-        (
-            "Retailers have prepared internal Nvidia graphics card listings ahead of time",
-            "retailers have prepared internal listings ahead of time",
-            "unstated",
-            "reported",
+            "Nvidia confirms the full announcement is expected alongside its next scheduled event",
+            "the full announcement is expected alongside the next scheduled event",
+            "nvidia",
+            "confirmed",
             0.7,
+            "The full announcement is expected alongside the company's next scheduled event",
+            "The full announcement is expected",
+            "Nvidia",
+            "organization",
+        ),
+        (
+            "Retailers have reportedly begun preparing internal Nvidia graphics card listings",
+            "retailers have reportedly begun preparing internal listings",
+            "unstated",
+            "reported",
+            0.6,
+            "retailers have reportedly begun preparing internal listings ahead of time",
+            "retailers have reportedly begun",
+            "retailers",
+            "organization",
         ),
     ]
     return {
         "claims": [
             {
-                "claim": claim,
-                "value": value,
+                "claim": spec[0],
+                "value": spec[1],
                 "source_url": source_url,
-                "confidence": confidence,
-                "origin": origin,
-                "kind": kind,
+                "confidence": spec[4],
+                "origin": spec[2],
+                "kind": spec[3],
+                "affiliation": "",
+                "quote": spec[5],
+                "attribution_quote": spec[6],
+                "speaker": spec[7],
+                "speaker_type": spec[8],
             }
-            for claim, value, origin, kind, confidence in specs
+            for spec in specs
         ]
     }
 

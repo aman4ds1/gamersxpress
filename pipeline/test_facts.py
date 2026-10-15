@@ -23,11 +23,13 @@ def gathered(id="story-1", sources=None):
     return {"id": id, "gathered_at": NOW.isoformat(), "sources": sources or [source()]}
 
 
-def claim(claim="Announcement happened", value="it happened", source_url="https://a.example/1", confidence=0.9, kind="confirmed", origin="test-origin", affiliation=""):
+def claim(claim="Announcement happened", value="it happened", source_url="https://a.example/1", confidence=0.9, kind="confirmed", origin="test-origin", affiliation="", quote="", attribution_quote="", speaker="", speaker_type="none"):
     return {
         "claim": claim, "value": value, "source_url": source_url,
         "confidence": confidence, "origin": origin, "kind": kind,
         "affiliation": affiliation,
+        "quote": quote, "attribution_quote": attribution_quote,
+        "speaker": speaker, "speaker_type": speaker_type,
     }
 
 
@@ -2838,3 +2840,310 @@ def test_facts_records_a_corroborated_version_and_diagnostics(tmp_path):
         "Fortnite will come to Linux once Epic improves Easy Anti-Cheat"
     )
     assert by_url["https://b.example/2"]["score"] >= facts.DEFAULT_CORROBORATION_OVERLAP
+
+
+# --- evidence: quote, attribution and speaker are checked verbatim (stage 15) --
+
+
+def test_claim_schema_requires_the_evidence_fields():
+    item = facts.CLAIM_SCHEMA["properties"]["claims"]["items"]
+    for field in ("quote", "attribution_quote", "speaker", "speaker_type"):
+        assert field in item["properties"]
+        assert field in item["required"]
+    assert item["properties"]["speaker_type"]["enum"] == list(facts.SPEAKER_TYPES)
+    assert item["additionalProperties"] is False
+
+
+def test_validate_claims_fills_and_normalizes_evidence_fields():
+    raw = {
+        "claim": "X", "value": "y", "source_url": "https://a.example/1",
+        "confidence": 0.5, "origin": "sony", "kind": "reported", "affiliation": "",
+        "quote": "  quoted line  ", "attribution_quote": "said Sony",
+        "speaker": "  Sony  ", "speaker_type": "Organization",
+    }
+    validated = facts.validate_claims({"claims": [raw]})[0]
+    assert validated["quote"] == "quoted line"
+    assert validated["attribution_quote"] == "said Sony"
+    assert validated["speaker"] == "Sony"
+    assert validated["speaker_type"] == "organization"
+
+
+def test_validate_claims_defaults_missing_evidence_fields():
+    raw = {
+        "claim": "X", "value": "y", "source_url": "https://a.example/1",
+        "confidence": 0.5, "origin": "sony", "kind": "reported", "affiliation": "",
+    }
+    validated = facts.validate_claims({"claims": [raw]})
+    assert validated[0]["quote"] == ""
+    assert validated[0]["attribution_quote"] == ""
+    assert validated[0]["speaker"] == ""
+    assert validated[0]["speaker_type"] == "none"
+
+
+def test_validate_claims_clips_evidence_quotes_and_unknown_speaker_type():
+    raw = {
+        "claim": "X",
+        "value": "y",
+        "source_url": "https://a.example/1",
+        "confidence": 0.5,
+        "origin": "sony",
+        "kind": "reported",
+        "affiliation": "",
+        "quote": "q" * 500,
+        "attribution_quote": "a" * 400,
+        "speaker": "Sony",
+        "speaker_type": "wizard",
+    }
+    validated = facts.validate_claims({"claims": [raw]})
+    assert len(validated[0]["quote"]) == facts.MAX_QUOTE_CHARS
+    assert len(validated[0]["attribution_quote"]) == facts.MAX_ATTRIBUTION_QUOTE_CHARS
+    assert validated[0]["speaker_type"] == "none"
+
+
+def test_claim_schema_exposes_every_evidence_key_as_required():
+    item = facts.CLAIM_SCHEMA["properties"]["claims"]["items"]
+    assert set(item["required"]) == set(item["properties"])
+    assert facts.CLAIM_SCHEMA["additionalProperties"] is False
+
+
+def test_verify_evidence_accepts_a_verbatim_quote_and_attribution():
+    text = 'Epic Games said "the update lands in June" to fans.'
+    result = facts.verify_evidence(
+        claim(
+            quote='"the update lands in June"',
+            attribution_quote="Epic Games said",
+            speaker="Epic Games",
+            speaker_type="organization",
+        ),
+        text,
+    )
+    assert result["quote_found"] is True
+    assert result["attribution_found"] is True
+    assert result["speaker_grounded"] is True
+    assert result["ok"] is True
+    assert result["reason"] == ""
+
+
+def test_verify_evidence_normalizes_curly_quotes_dashes_and_whitespace():
+    text = "Epic Games said \u201cthe update lands in June\u201d \u2013 soon."
+    result = facts.verify_evidence(
+        claim(
+            quote='"the update lands in June" - soon',
+            attribution_quote="Epic Games   said",
+            speaker="Epic",
+            speaker_type="organization",
+        ),
+        text,
+    )
+    assert result["quote_found"] is True
+    assert result["attribution_found"] is True
+    assert result["ok"] is True
+
+
+def test_verify_evidence_quote_must_be_verbatim():
+    result = facts.verify_evidence(
+        claim(
+            quote="Sony will ship in June",
+            attribution_quote="Sony said",
+            speaker="Sony",
+            speaker_type="organization",
+        ),
+        "Sony said it would ship later this year.",
+    )
+    assert result["quote_found"] is False
+    assert result["ok"] is False
+    assert result["reason"] == "quote not found"
+
+
+def test_verify_evidence_attribution_must_be_in_source():
+    result = facts.verify_evidence(
+        claim(
+            quote="it would ship later",
+            attribution_quote="Microsoft said",
+            speaker="Sony",
+            speaker_type="organization",
+        ),
+        "Sony said it would ship later this year.",
+    )
+    assert result["quote_found"] is True
+    assert result["attribution_found"] is False
+    assert result["ok"] is False
+    assert result["reason"] == "attribution quote not found"
+
+
+def test_verify_evidence_empty_quotes_fail():
+    result = facts.verify_evidence(
+        claim(speaker="Sony", speaker_type="organization"),
+        "Sony said something.",
+    )
+    assert result["quote_found"] is False
+    assert result["attribution_found"] is False
+    assert result["ok"] is False
+    assert result["reason"] == "quote missing"
+
+
+def test_verify_evidence_grounds_a_speaker_named_in_the_attribution():
+    result = facts.verify_evidence(
+        claim(
+            quote="the update lands in June",
+            attribution_quote="Epic Games said",
+            speaker="Epic Games",
+            speaker_type="organization",
+        ),
+        "Epic Games said the update lands in June.",
+    )
+    assert result["speaker_grounded"] is True
+
+
+def test_verify_evidence_needs_a_company_coference_named_nearby():
+    claim_text = claim(
+        quote="it vibe coded the launcher",
+        attribution_quote="The company says",
+        speaker="Epic Games",
+        speaker_type="organization",
+    )
+    source_text = "The company says it vibe coded the launcher."
+    without = facts.verify_evidence(claim_text, source_text)
+    assert without["speaker_grounded"] is False
+    assert without["reason"] == "speaker not grounded"
+
+    with_headline = facts.verify_evidence(
+        claim_text, source_text, "Epic Games ships a new launcher"
+    )
+    assert with_headline["speaker_grounded"] is True
+
+
+def test_verify_evidence_grounds_a_speaker_in_a_preceding_sentence():
+    text = "Epic Games stayed quiet. The company says the update lands in June."
+    result = facts.verify_evidence(
+        claim(
+            quote="the update lands in June",
+            attribution_quote="The company says",
+            speaker="Epic Games",
+            speaker_type="organization",
+        ),
+        text,
+    )
+    assert result["speaker_grounded"] is True
+
+
+def test_verify_evidence_rejects_an_anonymous_speaker():
+    result = facts.verify_evidence(
+        claim(
+            quote="the plan is in motion",
+            attribution_quote="four industry sources said",
+            speaker="four industry sources",
+            speaker_type="anonymous",
+        ),
+        "The plan is in motion, four industry sources said.",
+    )
+    assert result["anonymous"] is True
+    assert result["ok"] is False
+    assert result["reason"] == "speaker is anonymous"
+
+
+def test_verify_evidence_rejects_an_outlet_citing_itself():
+    result = facts.verify_evidence(
+        claim(
+            quote="the release is planned",
+            attribution_quote="Eurogamer understands",
+            speaker="Eurogamer",
+            speaker_type="outlet",
+        ),
+        "Eurogamer understands the release is planned.",
+        source_outlet="Eurogamer",
+    )
+    assert result["self_reference"] is True
+    assert result["ok"] is False
+    assert result["reason"] == "source cites itself"
+
+
+def test_verify_evidence_rejects_a_product_as_speaker():
+    result = facts.verify_evidence(
+        claim(
+            quote="the update is coming",
+            attribution_quote="the launcher client said",
+            speaker="Steam Deck",
+            speaker_type="none",
+        ),
+        "The update is coming, the launcher client said.",
+        entities=["Steam Deck"],
+    )
+    assert result["product"] is True
+    assert result["ok"] is False
+    assert result["reason"] == "speaker is a product"
+
+
+def test_facts_stores_evidence_per_claim_and_a_per_source_summary(tmp_path):
+    text = "Epic Games said Fortnite is coming to Linux. Epic Games will ship it soon."
+    sources = [source(link="https://a.example/1", tier=1, name="Alpha", text=text)]
+    payload = {
+        "claims": [
+            claim(
+                claim="Fortnite is coming to Linux",
+                value="coming to Linux",
+                origin="epic games",
+                source_url="https://a.example/1",
+                quote="Fortnite is coming to Linux",
+                attribution_quote="Epic Games said",
+                speaker="Epic Games",
+                speaker_type="organization",
+            )
+        ]
+    }
+    generate = make_generate(payload)
+    sheet = facts.facts(
+        gathered("ev-1", sources),
+        id="ev-1",
+        title="Fortnite is coming to Linux",
+        entities=["Fortnite"],
+        output_dir=tmp_path,
+        now=NOW,
+        generate=generate,
+    )
+    merged = sheet["claims"][0]
+    assert merged["evidence"][0]["source_url"] == "https://a.example/1"
+    assert merged["evidence"][0]["ok"] is True
+    assert sheet["evidence"] == [
+        {
+            "source_url": "https://a.example/1",
+            "claims": 1,
+            "ok": 1,
+            "failed": 0,
+            "reasons": {},
+        }
+    ]
+
+
+def test_unconfirmed_sheet_carries_evidence_diagnostics(tmp_path):
+    text = "A rumor circulates about the launch."
+    sources = [source(link="https://a.example/1", tier=2, name="Alpha", text=text)]
+    payload = {
+        "claims": [
+            claim(
+                claim="Launch rumor",
+                value="a rumor",
+                kind="rumor",
+                origin="unstated",
+                source_url="https://a.example/1",
+                quote="A rumor circulates about the launch",
+                attribution_quote="A rumor circulates",
+                speaker="",
+                speaker_type="none",
+            )
+        ]
+    }
+    generate = make_generate(payload)
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("ev-2", sources),
+            id="ev-2",
+            title="Launch rumor",
+            entities=["Launch"],
+            output_dir=tmp_path,
+            now=NOW,
+            generate=generate,
+        )
+    sheet = json.loads((tmp_path / "unconfirmed" / "ev-2.json").read_text(encoding="utf-8"))
+    assert sheet["evidence"]
+    assert sheet["claims"][0]["evidence"]

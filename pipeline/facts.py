@@ -117,6 +117,11 @@ MAX_SOURCE_CHARS = 4000
 # verbatim passage copied from a source, so they are clipped before the sheet is
 # saved (PLAN.md principle 3: facts, not source prose).
 MAX_FIELD_CHARS = 300
+# A verbatim quote stored with a claim is a short evidence span, not a passage:
+# the extractor copies the words that state the fact and the words that attribute
+# it, and both are clipped so a sheet never carries a long slice of the article.
+MAX_QUOTE_CHARS = 300
+MAX_ATTRIBUTION_QUOTE_CHARS = 200
 # Extraction runs once per source; one long article may contribute at most this
 # many claims, so it cannot crowd out the story's other sources. Overridable per
 # story via `facts.max_claims_per_source` in config.yaml.
@@ -134,7 +139,7 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v7"
+PROMPT_VERSION = "facts-v8"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -149,6 +154,14 @@ KIND_STRENGTH: dict[str, int] = {
     "opinion": 1,
 }
 ALLOWED_KINDS = tuple(KIND_STRENGTH)
+
+#: What kind of thing a claim's speaker is. ``speaker_type`` is the extractor's
+#: own label for the speaker it named: an organization (a company, studio or
+#: platform holder), a person, the publishing outlet itself, an unnamed source
+#: ("people familiar with the matter"), or ``none`` when the extractor named no
+#: speaker at all. Evidence checking uses it to tell a product masquerading as a
+#: speaker from a real organization.
+SPEAKER_TYPES = ("organization", "person", "outlet", "anonymous", "none")
 
 #: Origin used when a source does not say who produced the claim. A claim with
 #: this origin is capped at ``reported`` (requirement: treat as at most reported).
@@ -324,6 +337,10 @@ CLAIM_SCHEMA: dict[str, Any] = {
                     "origin": {"type": "string"},
                     "affiliation": {"type": "string"},
                     "kind": {"type": "string", "enum": list(KIND_STRENGTH)},
+                    "quote": {"type": "string"},
+                    "attribution_quote": {"type": "string"},
+                    "speaker": {"type": "string"},
+                    "speaker_type": {"type": "string", "enum": list(SPEAKER_TYPES)},
                 },
                 "required": [
                     "claim",
@@ -333,6 +350,10 @@ CLAIM_SCHEMA: dict[str, Any] = {
                     "origin",
                     "affiliation",
                     "kind",
+                    "quote",
+                    "attribution_quote",
+                    "speaker",
+                    "speaker_type",
                 ],
                 "additionalProperties": False,
             },
@@ -354,7 +375,8 @@ SYSTEM_INSTRUCTION = (
     "when the body states other facts first.\n"
     "Return each fact as an object with: claim (a short statement), value (the "
     "concrete value or a one-line summary), source_url (the exact URL given "
-    "for this source), confidence (0 to 1), origin, affiliation, and kind.\n"
+    "for this source), confidence (0 to 1), origin, affiliation, kind, quote, "
+    "attribution_quote, speaker, and speaker_type.\n"
     "origin names who produced the claim: the company or official source, or "
     "the analyst or firm the article cites (for example 'Sony', 'Sensor "
     "Tower'). When the article does not say who produced the claim, set origin "
@@ -364,6 +386,20 @@ SYSTEM_INSTRUCTION = (
     "producer). Always include the affiliation field in every claim: when the "
     "origin is a company itself, or the article names no organization, set "
     "affiliation to an empty string \"\" (never omit the key).\n"
+    "quote is the exact sentence or clause in the text that states the fact, "
+    "copied word for word: never paraphrase it, never shorten it with an "
+    "ellipsis, and never fix its spelling, its quotation marks or its dashes. "
+    "attribution_quote is the exact words in the text that attribute the fact to "
+    "its speaker (for example 'according to Epic Games' or 'Epic Games said'), "
+    "copied the same way. speaker is the person, organization or outlet the fact "
+    "is attributed to, spelled as the text does; when the text attributes it to "
+    "a pronoun or a common noun ('the company', 'the studio'), resolve that to "
+    "the organization the text named. speaker_type is exactly one of "
+    "'organization' (a company, studio or platform holder), 'person', 'outlet' "
+    "(the publishing site itself), 'anonymous' (an unnamed source such as "
+    "'people familiar with the matter') or 'none'. Use 'none' and empty strings "
+    "\"\" for quote, attribution_quote and speaker only when the text gives no "
+    "such words; never omit the keys.\n"
     "kind is exactly one of: 'confirmed' (the company or an official source "
     "states it, with a named origin), 'reported' (an outlet citing a named "
     "source), 'estimate' (a third-party analyst or data estimate; never label "
@@ -497,14 +533,17 @@ def _clip_field(text: str, limit: int = MAX_FIELD_CHARS) -> str:
 
 
 def _with_claim_defaults(data: Any) -> Any:
-    """Return ``data`` with a missing ``affiliation`` filled in as ``""``.
+    """Return ``data`` with the strict string keys filled in when omitted.
 
     Strict JSON schemas (Groq, OpenAI) require every property to appear in
-    ``required``, so the extraction prompt always returns ``affiliation`` and
-    uses ``""`` when there is none. This keeps our own reader tolerant of an
-    output that nevertheless omits the key: ``""`` and a missing key are the
-    same. Anything not shaped like a claims payload is returned untouched and
-    left to :func:`schema_errors` to reject.
+    ``required``, so the extraction prompt always returns ``affiliation``,
+    ``quote``, ``attribution_quote``, ``speaker`` and ``speaker_type`` and uses
+    ``""`` (or ``"none"`` for ``speaker_type``) when there is none, coercing a
+    ``speaker_type`` outside :data:`SPEAKER_TYPES` to ``"none"``. This keeps our
+    own reader tolerant of an output that nevertheless omits a key -- the empty
+    value and a missing key are the same -- or misspells the type, and of an
+    older sheet written before these fields existed. Anything not shaped like a claims payload is
+    returned untouched and left to :func:`schema_errors` to reject.
     """
     if not isinstance(data, dict):
         return data
@@ -512,7 +551,14 @@ def _with_claim_defaults(data: Any) -> Any:
     if not isinstance(claims, list):
         return data
     normalized = [
-        {**claim, "affiliation": claim.get("affiliation", "")}
+        {
+            **claim,
+            "affiliation": claim.get("affiliation", ""),
+            "quote": claim.get("quote", ""),
+            "attribution_quote": claim.get("attribution_quote", ""),
+            "speaker": claim.get("speaker", ""),
+            "speaker_type": _normalize_speaker_type(claim.get("speaker_type")),
+        }
         if isinstance(claim, dict)
         else claim
         for claim in claims
@@ -532,9 +578,16 @@ def validate_claims(data: Any) -> list[dict]:
     never an estimate (requirement: treat an unstated origin as at most
     reported).
 
-    A missing ``affiliation`` key is treated exactly like an empty string
-    before validation, so a model that omits the (now strictly required) key
-    still yields a valid claim.
+    The evidence fields are kept verbatim but bounded: ``quote`` and
+    ``attribution_quote`` are trimmed and clipped to
+    :data:`MAX_QUOTE_CHARS` / :data:`MAX_ATTRIBUTION_QUOTE_CHARS`, ``speaker``
+    is trimmed, and ``speaker_type`` falls back to ``"none"`` when it is not one
+    of :data:`SPEAKER_TYPES`. Nothing here is lowercased: the quotes are matched
+    case-insensitively by :func:`verify_evidence`, which normalizes both sides.
+
+    A missing ``affiliation`` (or evidence) key is treated exactly like an empty
+    string before validation, so a model that omits the (now strictly required)
+    keys still yields a valid claim.
     """
     data = _with_claim_defaults(data)
     errors = schema_errors(data, CLAIM_SCHEMA)
@@ -558,9 +611,22 @@ def validate_claims(data: Any) -> list[dict]:
                 "origin": origin,
                 "affiliation": _normalize_affiliation(claim.get("affiliation")),
                 "kind": kind,
+                "quote": _clip_field(str(claim.get("quote") or "").strip(), MAX_QUOTE_CHARS),
+                "attribution_quote": _clip_field(
+                    str(claim.get("attribution_quote") or "").strip(),
+                    MAX_ATTRIBUTION_QUOTE_CHARS,
+                ),
+                "speaker": str(claim.get("speaker") or "").strip(),
+                "speaker_type": _normalize_speaker_type(claim.get("speaker_type")),
             }
         )
     return clipped
+
+
+def _normalize_speaker_type(value: object) -> str:
+    """A ``speaker_type`` in :data:`SPEAKER_TYPES`, or ``"none"`` when unknown."""
+    token = str(value or "").strip().lower()
+    return token if token in SPEAKER_TYPES else "none"
 
 
 def _normalize_origin(origin: object) -> str:
@@ -2197,6 +2263,181 @@ def _is_first_party_origin(
     return _origin_attributed(origin, text, claim, aliases)
 
 
+# --- evidence: a claim's quote and attribution must exist in its source ------
+
+#: Curly quotes, en/em dashes and the ellipsis character, mapped to their plain
+#: ASCII forms so a quote copied from a rendered page still matches the source
+#: text after both sides are normalized.
+_EVIDENCE_TRANSLATION = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u2032": "'", "\u2033": '"',
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-",
+    "\u2015": "-", "\u2212": "-", "\u2026": "...",
+})
+_EVIDENCE_MARKDOWN_RE = re.compile(r"[*_`#>]+")
+
+
+def _normalize_evidence(text: object) -> str:
+    """A comparable form of ``text`` for verbatim quote matching.
+
+    Lowercased, with curly quotes/dashes/ellipses straightened, markdown
+    emphasis markers stripped and runs of whitespace collapsed to one space, so
+    the same words match whether they came from a rendered page or plain text.
+    """
+    value = str(text or "").translate(_EVIDENCE_TRANSLATION)
+    value = _EVIDENCE_MARKDOWN_RE.sub(" ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip().lower()
+
+
+def _evidence_speaker_names(speaker: object, aliases: dict[str, str]) -> set[str]:
+    """Every match key that identifies a claim's speaker (own form plus aliases)."""
+    names = set(_origin_names(speaker, aliases))
+    own = _origin_key(speaker)
+    if own:
+        names.add(own)
+    return names
+
+
+def _evidence_speaker_grounded(
+    source_text: str,
+    headline: str,
+    attribution: str,
+    names: set[str],
+) -> bool:
+    """True when the speaker is named by its own attribution or just before it.
+
+    Grounded when the speaker's name appears in the attribution quote itself, or
+    -- for a pronoun/common-noun attribution ("the company says") -- in the
+    headline or in the same paragraph within three sentences before the sentence
+    that carries the attribution quote.
+    """
+    if not names:
+        return False
+    if attribution and any(_contains_name(attribution, name) for name in names):
+        return True
+    if headline and any(_contains_name(headline, name) for name in names):
+        return True
+    if not attribution:
+        return False
+    normalized = {
+        (pi, si): _normalize_evidence(sent)
+        for pi, si, sent in _sentences_with_positions(source_text)
+    }
+    for pi, si, _sent in _sentences_with_positions(source_text):
+        if attribution not in _normalize_evidence(_sent):
+            continue
+        window = [
+            text for (p, s), text in normalized.items() if p == pi and si - 3 <= s <= si - 1
+        ]
+        return any(any(_contains_name(text, name) for name in names) for text in window)
+    return False
+
+
+def verify_evidence(
+    claim: dict,
+    source_text: object,
+    source_title: object = "",
+    source_outlet: object = "",
+    config: dict | None = None,
+    *,
+    aliases: dict[str, str] | None = None,
+    entities: list[str] | None = None,
+) -> dict[str, Any]:
+    """Check one claim's stored quote and attribution against its own source.
+
+    Pure for a fixed set of inputs: it reads nothing but its arguments (aliases,
+    entities and the anonymous vocabulary override ``config``/defaults). Every
+    field is answered independently so a sheet can show exactly which rule a
+    claim failed:
+
+    * ``quote_found`` / ``attribution_found`` -- the claim's ``quote`` and
+      ``attribution_quote`` occur verbatim in the source text (after the
+      normalization in :func:`_normalize_evidence`).
+    * ``speaker_grounded`` -- the speaker is named by the attribution quote, or
+      (for a pronoun/noun attribution) by the headline or a sentence within
+      three before it in the same paragraph.
+    * ``anonymous`` -- the speaker is an unnamed descriptor ("people familiar
+      with the matter"), using the same closed vocabulary as origin checking.
+    * ``self_reference`` -- the speaker is the publishing outlet itself.
+    * ``product`` -- the speaker names a product, title or piece of software and
+      is not labeled an organization or person.
+
+    ``ok`` is true only when the quote and attribution are found, the speaker is
+    grounded and it is none of anonymous, self-referential or a product.
+    ``reason`` is the first failed rule, or ``""`` when ``ok`` is true.
+    """
+    if aliases is None:
+        aliases = load_origin_aliases()
+    if entities is None:
+        entities = []
+
+    text = _normalize_evidence(source_text)
+    headline = _normalize_evidence(source_title)
+    quote = _normalize_evidence(claim.get("quote"))
+    attribution = _normalize_evidence(claim.get("attribution_quote"))
+    speaker = str(claim.get("speaker") or "").strip()
+    speaker_type = _normalize_speaker_type(claim.get("speaker_type"))
+
+    quote_found = bool(quote) and quote in text
+    attribution_found = bool(attribution) and attribution in text
+
+    names = _evidence_speaker_names(speaker, aliases) if speaker else set()
+    anonymous = bool(speaker) and _is_anonymous_origin(speaker, aliases)
+    self_reference = bool(speaker) and _is_publication(
+        speaker, {"source_name": source_outlet}
+    )
+    product = (
+        bool(speaker)
+        and speaker_type not in ("organization", "person")
+        and (
+            _is_document_or_product(_origin_key(speaker))
+            or _is_product_origin(speaker, entities)
+        )
+    )
+    speaker_grounded = bool(names) and _evidence_speaker_grounded(
+        str(source_text or ""), headline, attribution, names
+    )
+
+    if not quote:
+        reason = "quote missing"
+    elif not quote_found:
+        reason = "quote not found"
+    elif not attribution:
+        reason = "attribution quote missing"
+    elif not attribution_found:
+        reason = "attribution quote not found"
+    elif anonymous:
+        reason = "speaker is anonymous"
+    elif self_reference:
+        reason = "source cites itself"
+    elif product:
+        reason = "speaker is a product"
+    elif not speaker_grounded:
+        reason = "speaker not grounded"
+    else:
+        reason = ""
+
+    ok = (
+        quote_found
+        and attribution_found
+        and speaker_grounded
+        and not anonymous
+        and not self_reference
+        and not product
+    )
+    return {
+        "quote_found": quote_found,
+        "attribution_found": attribution_found,
+        "speaker_grounded": speaker_grounded,
+        "anonymous": anonymous,
+        "self_reference": self_reference,
+        "product": product,
+        "ok": ok,
+        "reason": reason,
+    }
+
+
 def _min_first_party_sources() -> int:
     """How many independent sources the first-party rule requires (configurable)."""
     value = load_config().get("facts", {}).get("min_first_party_sources")
@@ -2652,6 +2893,10 @@ def _merge_group(group: list[dict], *, prefer_url: str | None = None) -> dict:
             {"source_url": claim["source_url"], "value": str(claim["value"])}
             for claim in group
         ],
+        # The evidence verdict of each source behind this fact (quote and
+        # attribution checked verbatim, speaker grounded, not anonymous/self/
+        # product). Diagnostics only: confirmation does not read it yet.
+        "evidence": _merge_evidence(group),
     }
 
 
@@ -3610,6 +3855,67 @@ def _grounding_entry(entry: dict) -> dict:
     return row
 
 
+def _evidence_for_claim(
+    claim: dict,
+    source: dict,
+    *,
+    aliases: dict[str, str],
+    entities: list[str] | None,
+) -> dict:
+    """Verify one claim against its own source and tag the result with the URL."""
+    result = verify_evidence(
+        claim,
+        source.get("text") or "",
+        source.get("title") or "",
+        source.get("source_name") or "",
+        aliases=aliases,
+        entities=entities,
+    )
+    return {"source_url": claim.get("source_url"), **result}
+
+
+def _merge_evidence(group: list[dict]) -> list[dict]:
+    """The evidence records of a merged fact's sources, one per source."""
+    return [
+        claim["evidence"]
+        for claim in group
+        if isinstance(claim.get("evidence"), dict)
+    ]
+
+
+def _evidence_summary(claims: list[dict]) -> list[dict]:
+    """Per-source tally of evidence outcomes for the saved sheet.
+
+    Counts every claim with an evidence record by its source URL, with how many
+    passed and a breakdown of the failure reasons, so a sheet shows at a glance
+    which source's claims carried verifiable quotes.
+    """
+    rows: dict[str, dict] = {}
+    for claim in claims or []:
+        result = claim.get("evidence")
+        if not isinstance(result, dict):
+            continue
+        key = _source_url_key(claim.get("source_url")) or str(claim.get("source_url") or "")
+        row = rows.setdefault(
+            key,
+            {
+                "source_url": claim.get("source_url"),
+                "claims": 0,
+                "ok": 0,
+                "failed": 0,
+                "reasons": {},
+            },
+        )
+        row["claims"] += 1
+        if result.get("ok"):
+            row["ok"] += 1
+        else:
+            row["failed"] += 1
+            reason = str(result.get("reason") or "failed")
+            row["reasons"][reason] = row["reasons"].get(reason, 0) + 1
+    return [rows[key] for key in sorted(rows)]
+
+
 def _write_unconfirmed_sheet(
     output_dir: Path,
     name: str,
@@ -3627,6 +3933,7 @@ def _write_unconfirmed_sheet(
     origin_downgrades: list[dict] | None = None,
     date_anchors: list[dict] | None = None,
     attribution_traces: list[dict] | None = None,
+    evidence: list[dict] | None = None,
 ) -> Optional[Path]:
     """Persist a rejected story's sheet under ``<output_dir>/unconfirmed/``.
 
@@ -3655,6 +3962,7 @@ def _write_unconfirmed_sheet(
         # corroborating the central fact. Present only in unconfirmed sheets
         # (the writer never sees these keys).
         "claims_by_source": _claims_by_source(kept),
+        "evidence": list(evidence or []),
         "corroboration": _corroboration_diagnostics(kept, central, entities=canonical),
         "grounding": [_grounding_entry(entry) for entry in (grounding_details or [])],
         "date_anchors": list(date_anchors or []),
@@ -3844,6 +4152,19 @@ def facts(
         attribution_traces=attribution_traces,
     )
 
+    # Evidence diagnostics: each claim's stored quote and attribution are checked
+    # verbatim against its own source text, and its speaker must be grounded,
+    # non-anonymous and not a product or the outlet itself. This is recorded on
+    # the claim (tagged with its source URL) and tallied per source below; it is
+    # a diagnostic only and does not affect confirmation yet.
+    sources_by_url = _sources_by_url(sources)
+    for claim in kept:
+        source = sources_by_url.get(_source_url_key(claim.get("source_url"))) or {}
+        claim["evidence"] = _evidence_for_claim(
+            claim, source, aliases=aliases, entities=canonical
+        )
+    evidence_summary = _evidence_summary(kept)
+
     tier1_present = any(int(source.get("tier") or 0) == 1 for source in sources)
 
     # Same facts merge (by shared claim text, or by a shared date/figure plus
@@ -3953,7 +4274,7 @@ def facts(
             output_dir, name, now, confirmation, central, kept, claims, sheet_sources, dropped,
             primary=primary, canonical=canonical, grounding_details=grounding_details,
             origin_downgrades=origin_downgrades, date_anchors=date_anchors,
-            attribution_traces=attribution_traces,
+            attribution_traces=attribution_traces, evidence=evidence_summary,
         )
         raise UnconfirmedStory(message, budget_truncated=budget_truncated)
 
@@ -3964,6 +4285,7 @@ def facts(
         "confirmation_reason": _confirmation_reason(confirmation),
         "sources": sheet_sources,
         "claims": claims,
+        "evidence": evidence_summary,
         "grounding": [_grounding_entry(entry) for entry in grounding_details],
         "date_anchors": date_anchors,
         "origins_downgraded": origin_downgrades,
@@ -4001,9 +4323,12 @@ __all__ = [
     "FIRST_PARTY_KINDS",
     "HEDGE_WORDS",
     "KIND_STRENGTH",
+    "MAX_ATTRIBUTION_QUOTE_CHARS",
     "MAX_FIELD_CHARS",
     "MAX_CLAIMS_PER_SOURCE",
+    "MAX_QUOTE_CHARS",
     "PROMPT_VERSION",
+    "SPEAKER_TYPES",
     "UNSTATED_ORIGIN",
     "FactsError",
     "UnconfirmedStory",
@@ -4024,6 +4349,7 @@ __all__ = [
     "primary_entities",
     "resolve_claim_origins",
     "validate_claims",
+    "verify_evidence",
     "confirmation_from_sources",
     "facts",
 ]

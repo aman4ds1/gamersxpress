@@ -12,8 +12,12 @@ def test_make_generate_answers_facts_schema():
     generation = generate("fast", "prompt", facts.CLAIM_SCHEMA)
     assert generation.family == "google"
     payload = generation.value
+    prose = dryrun._SOURCE_PROSE.lower()
     for claim in payload["claims"]:
         assert claim["source_url"].startswith("https://")
+        assert claim["speaker_type"] in facts.SPEAKER_TYPES
+        assert claim["quote"].lower() in prose
+        assert claim["attribution_quote"].lower() in prose
 
 
 def test_make_generate_answers_seo_schema():
