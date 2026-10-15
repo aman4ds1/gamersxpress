@@ -417,6 +417,16 @@ facts:
     - three
     - four
     - five
+  # Press-release markers (pipeline/facts.py). A source whose title or text
+  # carries one of these marks a press release or sponsored post, so an
+  # organization named as the subject of an announcement verb in the headline
+  # ("Acme Games announces ...") may be trusted as the announcer of its own news
+  # without an explicit attribution quote. Matched case-insensitively.
+  press_release_markers:
+    - "(PR)"
+    - "PR:"
+    - "Press Release"
+    - "Sponsored"
 
 
 # Verifier stage (pipeline/verify.py; PLAN.md principle 4 / stage 6).

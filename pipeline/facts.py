@@ -139,7 +139,7 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v8"
+PROMPT_VERSION = "facts-v9"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -290,7 +290,16 @@ _DEFAULT_ANONYMOUS_VOCABULARY = frozenset({
 # :func:`_is_coreference_phrase`. "studio" stays a descriptor token so "sources
 # familiar with the studio's plans" is still anonymous.
 
+#: Default press-release markers: a source whose title or text carries one is a
+#: press release or a sponsored post, not an outlet's own reporting. An
+#: organization named as the subject of an announcement verb in such a headline
+#: ("Acme Games announces ...") is the announcer of its own news and needs no
+#: explicit attribution quote. Extendable through
+#: ``facts.press_release_markers`` in config.yaml.
+_DEFAULT_PRESS_RELEASE_MARKERS = ("(PR)", "PR:", "Press Release", "Sponsored")
+
 _ANONYMOUS_VOCABULARY_CACHE: tuple[tuple[int, int] | None, frozenset[str]] | None = None
+_PRESS_RELEASE_MARKERS_CACHE: tuple[tuple[int, int] | None, tuple[str, ...]] | None = None
 
 
 def anonymous_vocabulary() -> frozenset[str]:
@@ -319,6 +328,35 @@ def anonymous_vocabulary() -> frozenset[str]:
                 words.add(token)
     result = frozenset(words)
     _ANONYMOUS_VOCABULARY_CACHE = (signature, result)
+    return result
+
+
+def press_release_markers() -> tuple[str, ...]:
+    """The press-release markers: the code defaults plus config additions.
+
+    A source whose title or text carries one of these marks a press release or a
+    sponsored post, so an organization named as the subject of an announcement
+    verb in the headline may be trusted as the announcer of its own news. Config
+    entries in ``facts.press_release_markers`` extend the defaults. Cached
+    against the config file's size and mtime.
+    """
+    global _PRESS_RELEASE_MARKERS_CACHE
+    resolved = DEFAULT_CONFIG_PATH
+    try:
+        stat = Path(resolved).stat()
+        signature = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        signature = None
+    if _PRESS_RELEASE_MARKERS_CACHE is not None and _PRESS_RELEASE_MARKERS_CACHE[0] == signature:
+        return _PRESS_RELEASE_MARKERS_CACHE[1]
+    entries = (load_config().get("facts") or {}).get("press_release_markers") or []
+    markers = list(_DEFAULT_PRESS_RELEASE_MARKERS)
+    for entry in entries:
+        text = str(entry).strip()
+        if text and text not in markers:
+            markers.append(text)
+    result = tuple(markers)
+    _PRESS_RELEASE_MARKERS_CACHE = (signature, result)
     return result
 
 
@@ -391,10 +429,17 @@ SYSTEM_INSTRUCTION = (
     "ellipsis, and never fix its spelling, its quotation marks or its dashes. "
     "attribution_quote is the exact words in the text that attribute the fact to "
     "its speaker (for example 'according to Epic Games' or 'Epic Games said'), "
-    "copied the same way. speaker is the person, organization or outlet the fact "
-    "is attributed to, spelled as the text does; when the text attributes it to "
-    "a pronoun or a common noun ('the company', 'the studio'), resolve that to "
-    "the organization the text named. speaker_type is exactly one of "
+    "copied the same way. When the article is a company's own press release or a "
+    "post on a company's own site that states the fact in the company's own "
+    "voice, set speaker to that company and speaker_type to 'organization' and "
+    "use the headline or the sentence that names the company as the announcer "
+    "(for example 'Acme Games announces ...') as the attribution_quote. When an "
+    "outlet reports a fact without attributing it to anyone, leave speaker and "
+    "attribution_quote empty and set speaker_type to 'none'. speaker is the "
+    "person, organization or outlet the fact is attributed to, spelled as the "
+    "text does; when the text attributes it to a pronoun or a common noun ('the "
+    "company', 'the studio'), resolve that to the organization the text named. "
+    "speaker_type is exactly one of "
     "'organization' (a company, studio or platform holder), 'person', 'outlet' "
     "(the publishing site itself), 'anonymous' (an unnamed source such as "
     "'people familiar with the matter') or 'none'. Use 'none' and empty strings "
@@ -2334,6 +2379,103 @@ def _evidence_speaker_grounded(
     return False
 
 
+#: Announcement verbs whose grammatical subject in a headline is the
+#: organization that put the news out ("Acme Games announces the Acme X1").
+#: Used by the ``headline_announcement`` attribution mode; both the present and
+#: past forms are listed so a headline reads the same either way.
+_HEADLINE_ANNOUNCEMENT_VERBS = (
+    "announces", "announced", "launches", "launched", "unveils", "unveiled",
+    "reveals", "revealed", "introduces", "introduced", "confirms", "confirmed",
+    "releases", "released", "opens", "opened", "adds", "added",
+)
+
+
+def _has_press_release_marker(source_title: object, source_text: object) -> bool:
+    """True when the title or text carries a configured press-release marker."""
+    haystack = f"{_normalize_evidence(source_title)} {_normalize_evidence(source_text)}"
+    return any(
+        _normalize_evidence(marker) in haystack
+        for marker in press_release_markers()
+        if _normalize_evidence(marker)
+    )
+
+
+def _headline_announces_speaker(headline: str, names: set[str]) -> bool:
+    """True when a speaker name is the subject of an announcement verb.
+
+    ``headline`` is already normalized (lowercased); a name qualifies when it
+    sits directly before an announcement verb, allowing up to two lowercase
+    adverbs between them ("Acme Games officially announces ...").
+    """
+    if not headline or not names:
+        return False
+    verb_re = "|".join(sorted(set(_HEADLINE_ANNOUNCEMENT_VERBS), key=len, reverse=True))
+    for name in names:
+        if re.search(
+            rf"\b{re.escape(name)}\b(?:\s+[a-z]+){{0,2}}\s+(?:{verb_re})\b",
+            headline,
+        ):
+            return True
+    return False
+
+
+def _source_owner_names(
+    source_owner: object, source_name: object, aliases: dict[str, str]
+) -> set[str]:
+    """Match keys for the organization(s) that own the source site.
+
+    The owner slug ("microsoft"), the source's own name ("Xbox Wire") and any
+    known organization (:func:`load_organizations`) contained in either are all
+    collected under :func:`_origin_key`, plus their aliases.
+    """
+    keys: set[str] = set()
+    organizations = load_organizations()
+    for value in (source_owner, source_name):
+        if value is None:
+            continue
+        key = _origin_key(value)
+        if not key:
+            continue
+        keys.add(key)
+        keys |= _origin_names(value, aliases)
+        keys.update(org for org in organizations if _contains_name(key, org))
+    return {name for name in keys if name}
+
+
+def _evidence_attribution_mode(
+    *,
+    attribution_found: bool,
+    source_tier: object,
+    owner_names: set[str],
+    names: set[str],
+    headline: str,
+    source_title: object,
+    source_text: object,
+) -> str:
+    """The way a claim's speaker is credited, one of the four attribution modes.
+
+    * ``explicit`` -- the claim's attribution quote is present and found.
+    * ``first_party_site`` -- a tier-1 source whose speaker is the organization
+      that owns the site; its own post speaks for itself.
+    * ``headline_announcement`` -- the speaker is an organization named as the
+      subject of an announcement verb in the headline, and the source is tier-1
+      or carries a press-release marker.
+    * ``none`` -- nothing credits the speaker.
+    """
+    if attribution_found:
+        return "explicit"
+    try:
+        tier = int(source_tier) if source_tier is not None else 0
+    except (TypeError, ValueError):
+        tier = 0
+    if tier == 1 and names and names & owner_names:
+        return "first_party_site"
+    if names and _headline_announces_speaker(headline, names):
+        if tier == 1 or _has_press_release_marker(source_title, source_text):
+            return "headline_announcement"
+    return "none"
+
+
 def verify_evidence(
     claim: dict,
     source_text: object,
@@ -2343,6 +2485,8 @@ def verify_evidence(
     *,
     aliases: dict[str, str] | None = None,
     entities: list[str] | None = None,
+    source_tier: object = None,
+    source_owner: object = None,
 ) -> dict[str, Any]:
     """Check one claim's stored quote and attribution against its own source.
 
@@ -2352,19 +2496,28 @@ def verify_evidence(
     claim failed:
 
     * ``quote_found`` / ``attribution_found`` -- the claim's ``quote`` and
-      ``attribution_quote`` occur verbatim in the source text (after the
-      normalization in :func:`_normalize_evidence`).
+      ``attribution_quote`` occur verbatim in the source text or, for the
+      attribution, the source title (after the normalization in
+      :func:`_normalize_evidence`).
+    * ``attribution_mode`` -- how the speaker is credited: ``explicit`` (the
+      attribution quote is found), ``first_party_site`` (a tier-1 source whose
+      speaker is the organization that owns the site), ``headline_announcement``
+      (the speaker is the subject of an announcement verb in the headline and
+      the source is tier-1 or carries a press-release marker) or ``none``.
     * ``speaker_grounded`` -- the speaker is named by the attribution quote, or
       (for a pronoun/noun attribution) by the headline or a sentence within
-      three before it in the same paragraph.
+      three before it in the same paragraph. A first-party own-site or headline
+      announcement grounds its speaker by naming it in the title.
     * ``anonymous`` -- the speaker is an unnamed descriptor ("people familiar
       with the matter"), using the same closed vocabulary as origin checking.
-    * ``self_reference`` -- the speaker is the publishing outlet itself.
+    * ``self_reference`` -- the speaker is the publishing outlet itself; never
+      set in ``first_party_site`` mode, where the speaker owns the site.
     * ``product`` -- the speaker names a product, title or piece of software and
       is not labeled an organization or person.
 
-    ``ok`` is true only when the quote and attribution are found, the speaker is
-    grounded and it is none of anonymous, self-referential or a product.
+    ``ok`` is true only when the quote is found, the speaker is grounded and not
+    anonymous, self-referential or a product, and the speaker is credited either
+    by an attribution quote or by one of the first-party/headline modes.
     ``reason`` is the first failed rule, or ``""`` when ``ok`` is true.
     """
     if aliases is None:
@@ -2380,12 +2533,27 @@ def verify_evidence(
     speaker_type = _normalize_speaker_type(claim.get("speaker_type"))
 
     quote_found = bool(quote) and quote in text
-    attribution_found = bool(attribution) and attribution in text
+    attribution_found = bool(attribution) and (attribution in text or attribution in headline)
 
     names = _evidence_speaker_names(speaker, aliases) if speaker else set()
+    owner_names = _source_owner_names(source_owner, source_outlet, aliases)
+    mode = _evidence_attribution_mode(
+        attribution_found=attribution_found,
+        source_tier=source_tier,
+        owner_names=owner_names,
+        names=names,
+        headline=headline,
+        source_title=source_title,
+        source_text=source_text,
+    )
+    # In headline_announcement mode the speaker is named in the title; in
+    # first_party_site mode the speaker is the site's own owner, so the source
+    # speaks for itself and a name need not appear in the body.
     anonymous = bool(speaker) and _is_anonymous_origin(speaker, aliases)
-    self_reference = bool(speaker) and _is_publication(
-        speaker, {"source_name": source_outlet}
+    self_reference = (
+        bool(speaker)
+        and mode != "first_party_site"
+        and _is_publication(speaker, {"source_name": source_outlet})
     )
     product = (
         bool(speaker)
@@ -2395,17 +2563,21 @@ def verify_evidence(
             or _is_product_origin(speaker, entities)
         )
     )
-    speaker_grounded = bool(names) and _evidence_speaker_grounded(
-        str(source_text or ""), headline, attribution, names
-    )
+    if mode == "first_party_site":
+        speaker_grounded = bool(names)
+    else:
+        speaker_grounded = bool(names) and _evidence_speaker_grounded(
+            str(source_text or ""), headline, attribution, names
+        )
 
+    no_attr_needed = mode in ("first_party_site", "headline_announcement")
     if not quote:
         reason = "quote missing"
     elif not quote_found:
         reason = "quote not found"
-    elif not attribution:
+    elif not no_attr_needed and not attribution:
         reason = "attribution quote missing"
-    elif not attribution_found:
+    elif not no_attr_needed and not attribution_found:
         reason = "attribution quote not found"
     elif anonymous:
         reason = "speaker is anonymous"
@@ -2420,8 +2592,8 @@ def verify_evidence(
 
     ok = (
         quote_found
-        and attribution_found
         and speaker_grounded
+        and (attribution_found or no_attr_needed)
         and not anonymous
         and not self_reference
         and not product
@@ -2429,6 +2601,7 @@ def verify_evidence(
     return {
         "quote_found": quote_found,
         "attribution_found": attribution_found,
+        "attribution_mode": mode,
         "speaker_grounded": speaker_grounded,
         "anonymous": anonymous,
         "self_reference": self_reference,
@@ -3870,6 +4043,8 @@ def _evidence_for_claim(
         source.get("source_name") or "",
         aliases=aliases,
         entities=entities,
+        source_tier=source.get("tier"),
+        source_owner=source.get("owner"),
     )
     return {"source_url": claim.get("source_url"), **result}
 
@@ -3887,8 +4062,9 @@ def _evidence_summary(claims: list[dict]) -> list[dict]:
     """Per-source tally of evidence outcomes for the saved sheet.
 
     Counts every claim with an evidence record by its source URL, with how many
-    passed and a breakdown of the failure reasons, so a sheet shows at a glance
-    which source's claims carried verifiable quotes.
+    passed, a breakdown of the failure reasons and a count of each attribution
+    mode, so a sheet shows at a glance which source's claims carried verifiable
+    quotes and how their speakers were credited.
     """
     rows: dict[str, dict] = {}
     for claim in claims or []:
@@ -3904,9 +4080,12 @@ def _evidence_summary(claims: list[dict]) -> list[dict]:
                 "ok": 0,
                 "failed": 0,
                 "reasons": {},
+                "modes": {},
             },
         )
         row["claims"] += 1
+        mode = str(result.get("attribution_mode") or "none")
+        row["modes"][mode] = row["modes"].get(mode, 0) + 1
         if result.get("ok"):
             row["ok"] += 1
         else:

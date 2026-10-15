@@ -3074,6 +3074,120 @@ def test_verify_evidence_rejects_a_product_as_speaker():
     assert result["reason"] == "speaker is a product"
 
 
+def test_verify_evidence_accepts_a_first_party_own_site_post():
+    text = "The Acme X1 is available now at every retailer."
+    result = facts.verify_evidence(
+        claim(
+            quote="The Acme X1 is available now at every retailer",
+            speaker="Acme Games",
+            speaker_type="organization",
+        ),
+        text,
+        "Acme X1 availability",
+        source_outlet="Acme Games",
+        source_tier=1,
+        source_owner="Acme Games",
+    )
+    assert result["attribution_mode"] == "first_party_site"
+    assert result["self_reference"] is False
+    assert result["speaker_grounded"] is True
+    assert result["ok"] is True
+    assert result["reason"] == ""
+
+
+def test_verify_evidence_rejects_an_unrelated_speaker_on_a_first_party_site():
+    text = "The Acme X1 is available now at every retailer."
+    result = facts.verify_evidence(
+        claim(
+            quote="The Acme X1 is available now at every retailer",
+            speaker="Beta Corp",
+            speaker_type="organization",
+        ),
+        text,
+        "Acme X1 availability",
+        source_outlet="Acme Games",
+        source_tier=1,
+        source_owner="Acme Games",
+    )
+    assert result["attribution_mode"] == "none"
+    assert result["ok"] is False
+    assert result["reason"] == "attribution quote missing"
+
+
+def test_verify_evidence_accepts_a_headline_announcement_on_a_tier_one_site():
+    text = "The Acme X1 is available now at every retailer."
+    result = facts.verify_evidence(
+        claim(
+            quote="The Acme X1 is available now at every retailer",
+            speaker="Acme Games",
+            speaker_type="organization",
+        ),
+        text,
+        "Acme Games announces availability of the Acme X1",
+        source_outlet="Wire Desk",
+        source_tier=1,
+        source_owner="wire-desk",
+    )
+    assert result["attribution_mode"] == "headline_announcement"
+    assert result["speaker_grounded"] is True
+    assert result["ok"] is True
+    assert result["reason"] == ""
+
+
+def test_verify_evidence_accepts_a_reposted_press_release_with_a_marker():
+    text = "The Acme X1 is available now at every retailer."
+    result = facts.verify_evidence(
+        claim(
+            quote="The Acme X1 is available now at every retailer",
+            speaker="Acme Games",
+            speaker_type="organization",
+        ),
+        text,
+        "(PR) Acme Games announces availability of the Acme X1",
+        source_outlet="Wire Desk",
+        source_tier=2,
+        source_owner="wire-desk",
+    )
+    assert result["attribution_mode"] == "headline_announcement"
+    assert result["ok"] is True
+    assert result["reason"] == ""
+
+
+def test_verify_evidence_rejects_an_unattributed_claim_without_a_press_marker():
+    text = "The Acme X1 is available now at every retailer."
+    result = facts.verify_evidence(
+        claim(quote="The Acme X1 is available now at every retailer"),
+        text,
+        "Acme Games announces availability of the Acme X1",
+        source_outlet="Wire Desk",
+        source_tier=2,
+        source_owner="wire-desk",
+    )
+    assert result["attribution_mode"] == "none"
+    assert result["ok"] is False
+    assert result["reason"] == "attribution quote missing"
+
+
+def test_verify_evidence_finds_an_attribution_quote_in_the_title():
+    result = facts.verify_evidence(
+        claim(
+            quote="The X1 ships in June",
+            attribution_quote="Acme Games said",
+            speaker="Acme Games",
+            speaker_type="organization",
+        ),
+        "The X1 ships in June.",
+        "Acme Games said the X1 ships in June",
+    )
+    assert result["attribution_found"] is True
+    assert result["attribution_mode"] == "explicit"
+    assert result["ok"] is True
+
+
+def test_press_release_markers_reads_the_config_with_a_default():
+    assert "(PR)" in facts.press_release_markers()
+
+
 def test_facts_stores_evidence_per_claim_and_a_per_source_summary(tmp_path):
     text = "Epic Games said Fortnite is coming to Linux. Epic Games will ship it soon."
     sources = [source(link="https://a.example/1", tier=1, name="Alpha", text=text)]
@@ -3111,6 +3225,7 @@ def test_facts_stores_evidence_per_claim_and_a_per_source_summary(tmp_path):
             "ok": 1,
             "failed": 0,
             "reasons": {},
+            "modes": {"explicit": 1},
         }
     ]
 
