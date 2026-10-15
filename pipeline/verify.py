@@ -120,6 +120,39 @@ DEFAULT_RELATIVE_TIME_WORDS: tuple[str, ...] = (
     "tomorrow", "recently", "soon",
 )
 
+#: Performance/marketing terms that, beside a number, make a sentence a
+#: company's own performance or marketing claim. Such a sentence must carry an
+#: attribution cue naming a source in the same sentence, or it is unsupported
+#: ("unattributed performance claim"). Overridable via
+#: ``verify.company_claim_terms`` in config.yaml. Plain facts (dates, prices,
+#: version numbers, counts) have no term from this list and are not affected.
+DEFAULT_COMPANY_CLAIM_TERMS: tuple[str, ...] = (
+    "faster", "slower", "better", "smoother", "more efficient", "up to",
+    "times faster", "percent faster", "record", "fastest", "best", "most",
+    "improves", "improvement", "boosts", "reduces", "higher", "lower",
+)
+
+#: Verbs that attribute a claim when the sentence also names a source before
+#: them ("Epic says", "Digital Foundry measured").
+_CLAIM_CUE_VERBS = (
+    "says", "said", "claims", "claimed", "announced", "reports", "reported",
+    "measured", "tested", "found", "estimates",
+)
+#: Lead phrases that attribute a claim when a capitalized name follows.
+_CLAIM_CUE_LEADS = ("according to", "in a statement", "in a blog post")
+#: A capitalized name (up to four words) before a cue verb or after a lead.
+_CAP_NAME = r"[A-Z][\w'’&.\-]*(?:\s+[A-Z][\w'’&.\-]*){0,3}"
+_CLAIM_CUE_RE = re.compile(
+    rf"\b{_CAP_NAME}\s+(?i:"
+    + "|".join(sorted(_CLAIM_CUE_VERBS, key=len, reverse=True))
+    + r")\b"
+)
+_CLAIM_LEAD_RE = re.compile(
+    rf"\b(?i:{'|'.join(sorted(_CLAIM_CUE_LEADS, key=len, reverse=True))})\b"
+    rf"[^.!?]{{0,20}}?[A-Z][\w'’&.\-]*"
+)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
 #: A quoted span (straight or curly double quotes) is a name, not reader text;
 #: relative-time words inside it are ignored.
 _QUOTED_SPAN_RE = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
@@ -551,10 +584,16 @@ def load_verify_config(path: str | Path | None = None) -> dict:
         relative_time_words = tuple(str(word) for word in words if str(word).strip())
     else:
         relative_time_words = DEFAULT_RELATIVE_TIME_WORDS
+    terms = section.get("company_claim_terms")
+    if isinstance(terms, (list, tuple)):
+        company_claim_terms = tuple(str(term) for term in terms if str(term).strip())
+    else:
+        company_claim_terms = DEFAULT_COMPANY_CLAIM_TERMS
     return {
         "list_markers": section.get("list_markers") or DEFAULT_LIST_MARKERS,
         "whitelist": whitelist,
         "relative_time_words": relative_time_words,
+        "company_claim_terms": company_claim_terms,
     }
 
 
@@ -895,6 +934,42 @@ def code_check(article: Any, facts: dict, config: dict) -> dict:
     return {"ok": not unmatched, "unmatched": _dedupe(unmatched), "checked": len(article_values)}
 
 
+def _company_claim_check(article: Any, config: dict) -> list[str]:
+    """Sentences with a number and a performance term but no attribution.
+
+    Deterministic and model-independent: a numeric performance or marketing
+    claim must carry an attribution cue naming a source in the same sentence
+    ("Epic says", "according to Digital Foundry", "in a blog post"), or the
+    sentence is unsupported with the reason "unattributed performance claim".
+    A sentence with no number, or no performance/marketing term, is not a claim
+    and is left alone, so plain facts (dates, prices, version numbers, counts)
+    never trip this rule.
+    """
+    terms = tuple(config.get("company_claim_terms") or DEFAULT_COMPANY_CLAIM_TERMS)
+    if not terms:
+        return []
+    term_re = re.compile(
+        r"\b(?:"
+        + "|".join(re.escape(term) for term in sorted(terms, key=len, reverse=True))
+        + r")\b",
+        re.I,
+    )
+    _front, body = _split_front_matter(_as_text(article))
+    flagged: list[str] = []
+    for line in body.splitlines():
+        line = re.sub(r"^\s*#{1,6}\s*", "", line).strip()
+        if not line:
+            continue
+        for sentence in _SENTENCE_SPLIT_RE.split(line):
+            sentence = sentence.strip()
+            if not sentence or not re.search(r"\d", sentence) or not term_re.search(sentence):
+                continue
+            if _CLAIM_CUE_RE.search(sentence) or _CLAIM_LEAD_RE.search(sentence):
+                continue
+            flagged.append(sentence)
+    return flagged
+
+
 # --- stage -------------------------------------------------------------------
 
 
@@ -942,6 +1017,7 @@ def verify(
     )
 
     code_result = code_check(article, sheet, config)
+    company_claim_issues = _company_claim_check(article, config)
     duplicate_sources = find_sources_heading(article)
 
     unsupported = _dedupe(
@@ -952,8 +1028,14 @@ def verify(
         + list(model_result["costs_described_as_received"])
         + list(model_result["invented_labels"])
         + list(model_result["category_claims"])
+        + list(company_claim_issues)
     )
-    passed = bool(model_result["ok"] and code_result["ok"] and duplicate_sources is None)
+    passed = bool(
+        model_result["ok"]
+        and code_result["ok"]
+        and duplicate_sources is None
+        and not company_claim_issues
+    )
     if model_result["error"] is not None:
         # The model could not produce a usable verdict at all: truncated,
         # empty, non-JSON, schema-invalid, or missing/unknown fact ids.
@@ -1030,6 +1112,7 @@ def _as_text(value: Any) -> str:
 
 
 __all__ = [
+    "DEFAULT_COMPANY_CLAIM_TERMS",
     "DEFAULT_REPORT_DIR",
     "VERIFIER_SCHEMA",
     "VerifyReport",

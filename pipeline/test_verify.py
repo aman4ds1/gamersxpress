@@ -1134,3 +1134,75 @@ def test_missing_match_is_verifier_output_invalid(tmp_path):
     assert report.passed is False
     assert report.failure_reason == "verifier_output_invalid"
     assert "missing required key 'match'" in report.error
+
+
+# --- company performance claims (deterministic) ------------------------------
+
+
+def _performance_sheet(value):
+    return sheet(claim(value=value))
+
+
+def test_unattributed_performance_claim_is_unsupported(tmp_path):
+    sentence = "The launcher starts 46 percent faster than Steam."
+    payload = model(
+        clauses=[{"clause": sentence, "fact_ids": ["F1"], "match": "exact", "difference": ""}]
+    )
+    report = verify_module.verify(
+        f"## Performance\n{sentence}\n",
+        _performance_sheet("46 percent faster than Steam"),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert sentence in report.unsupported
+
+
+def test_attributed_performance_claim_passes(tmp_path):
+    sentence = "Epic says the launcher starts 46 percent faster than Steam."
+    payload = model(
+        clauses=[{"clause": sentence, "fact_ids": ["F1"], "match": "exact", "difference": ""}]
+    )
+    report = verify_module.verify(
+        f"## Performance\n{sentence}\n",
+        _performance_sheet(sentence),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is True
+    assert report.unsupported == []
+
+
+def test_company_claim_check_accepts_lead_and_verb_attributions():
+    cfg = config()
+    assert verify_module._company_claim_check(
+        "According to Digital Foundry, the game runs 30 percent faster.", cfg
+    ) == []
+    assert verify_module._company_claim_check(
+        "Digital Foundry measured 12 percent higher frame rates.", cfg
+    ) == []
+    assert verify_module._company_claim_check(
+        "The game runs 30 percent faster.", cfg
+    ) == ["The game runs 30 percent faster."]
+
+
+def test_plain_numbers_are_not_company_claims(tmp_path):
+    sentence = "The game costs $30 and launches on 2 November 2026."
+    payload = model(
+        clauses=[{"clause": sentence, "fact_ids": ["F1"], "match": "exact", "difference": ""}]
+    )
+    report = verify_module.verify(
+        f"## Release\n{sentence}\n",
+        _performance_sheet(sentence),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is True
+    assert report.unsupported == []

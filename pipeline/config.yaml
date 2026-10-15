@@ -197,6 +197,12 @@ cluster:
 facts:
   max_claims_per_source: 15
   allow_single_origin_attributed: false
+  # First-party confirmation (PLAN.md pipeline stage 6): a story whose headline
+  # claim is an organization's own announcement may be confirmed without a
+  # tier-1 source when at least this many independent sources (distinct owners)
+  # each attribute the claim to that organization in their own text. Set to a
+  # higher number to demand more independent first-party coverage.
+  min_first_party_sources: 2
   # Explicit adverbs to treat as lead words (names like Holly, Kelly, Molly must not be dropped).
   adverb_lead_words:
     - reportedly
@@ -433,6 +439,31 @@ verify:
     - tomorrow
     - recently
     - soon
+  # Company performance/marketing terms (pipeline/verify.py). A sentence that
+  # contains BOTH a number or percentage AND one of these terms is a performance
+  # or marketing claim, and must carry an attribution cue in the same sentence;
+  # otherwise it is unsupported with the reason "unattributed performance
+  # claim". Plain facts such as dates, prices, version numbers and counts do not
+  # trigger this rule (they have no term from this list).
+  company_claim_terms:
+    - faster
+    - slower
+    - better
+    - smoother
+    - more efficient
+    - up to
+    - times faster
+    - percent faster
+    - record
+    - fastest
+    - best
+    - most
+    - improves
+    - improvement
+    - boosts
+    - reduces
+    - higher
+    - lower
 
 # Single source of truth for content length limits: the SEO stage
 # (pipeline/seo.py), the publish gates (pipeline/gates.py) and the Node site
@@ -561,7 +592,12 @@ score:
   # keyed by their member-URL hash, and skipped for the same membership until
   # the failed cooldown lapses.
   max_candidates_per_run: 5
-  model_call_budget: 12
+  model_call_budget: 15
+  # Cost control (pipeline/facts.py): extract claims from at most this many
+  # sources per candidate, chosen by tier first, then one per distinct owner,
+  # then by text length. A candidate with more sources is capped so a single
+  # story can never spend the whole model-call budget.
+  max_sources_per_candidate: 3
   # News value: a headline that matches one of news_verbs (as a whole word or
   # phrase) earns news_bonus extra points. A borderline single-source story is
   # then pushed over min_score, while a plain single story without a news signal

@@ -554,6 +554,11 @@ def run(
         budget = int(
             score_section.get("model_call_budget", score_stage.DEFAULT_MODEL_CALL_BUDGET)
         )
+        max_sources_per_candidate = int(
+            score_section.get(
+                "max_sources_per_candidate", facts_stage.DEFAULT_MAX_SOURCES_PER_CANDIDATE
+            )
+        )
         weights = score_section.get("weights")
         # Build the candidate list with score.pick_candidates(): it ranks the
         # clusters once, then walks the ranked list, keeping the highest eligible
@@ -705,6 +710,8 @@ def run(
                         gathered, id=cluster_id, output_dir=paths.facts_dir,
                         generate=generate, run_state=run_state, now=now,
                         title=candidate.get("title"), entities=candidate.get("entities"),
+                        max_sources=max_sources_per_candidate,
+                        model_call_budget=budget,
                     )
             except facts_stage.UnconfirmedStory:
                 cluster.record_unconfirmed(failed, cluster_id, now=now)

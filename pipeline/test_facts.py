@@ -201,6 +201,142 @@ def test_origins_count_when_source_url_differs_only_by_casing_or_slash():
     assert result["confirmed"] is True
 
 
+# --- first-party announcements -----------------------------------------------
+
+
+def _first_party_sources():
+    return [
+        source(
+            link="https://a.example/1", name="Alpha", owner="co-a",
+            text="Epic Games announced in a blog post that the game is coming to Linux.",
+        ),
+        source(
+            link="https://b.example/2", name="Beta", owner="co-b",
+            text="Epic Games confirmed in a blog post that the game is coming to Linux.",
+        ),
+    ]
+
+
+def test_first_party_announcement_confirms_with_two_independent_sources():
+    sources = _first_party_sources()
+    claims = [
+        claim(claim="The game is coming to Linux", origin="Epic Games", source_url="https://a.example/1"),
+        claim(claim="The game is coming to Linux", origin="Epic Games", source_url="https://b.example/2"),
+    ]
+    resolved = facts.resolve_claim_origins(claims, sources, entities=["Epic"])
+    result = facts.confirmation_from_sources(sources, claims=resolved, entities=["Epic"])
+    assert result["confirmed"] is True
+    assert result["rule"] == "first-party"
+    assert result["first_party_organizations"] == ["epic games"]
+    assert result["first_party_sources"] == 2
+
+
+def test_first_party_announcement_needs_two_independent_sources():
+    sources = [
+        source(
+            link="https://a.example/1", name="Alpha", owner="co-a",
+            text="Epic Games announced in a blog post that the game is coming to Linux.",
+        )
+    ]
+    claims = [
+        claim(claim="The game is coming to Linux", origin="Epic Games", source_url="https://a.example/1")
+    ]
+    resolved = facts.resolve_claim_origins(claims, sources, entities=["Epic"])
+    result = facts.confirmation_from_sources(sources, claims=resolved, entities=["Epic"])
+    assert result["confirmed"] is False
+    assert result["rule"] == "unconfirmed"
+    assert result["first_party_sources"] == 1
+
+
+def test_outlet_reporting_about_a_company_is_not_first_party():
+    sources = [
+        source(
+            link="https://a.example/1", name="GamesBeat", owner="co-a",
+            text="Epic Games announced in a blog post that the game is coming to Linux.",
+        ),
+        source(
+            link="https://b.example/2", name="GamesBeat", owner="co-b",
+            text="Epic Games announced in a blog post that the game is coming to Linux.",
+        ),
+    ]
+    claims = [
+        claim(claim="The game is coming to Linux", origin="GamesBeat", source_url="https://a.example/1"),
+        claim(claim="The game is coming to Linux", origin="GamesBeat", source_url="https://b.example/2"),
+    ]
+    result = facts.confirmation_from_sources(sources, claims=claims, entities=["Epic"])
+    assert result["rule"] != "first-party"
+    assert result["confirmed"] is False
+
+
+def test_inverted_headline_attributes_an_organization():
+    text = "Fortnite is coming to Linux, confirms Epic Games."
+    src = source(link="https://a.example/1", name="Alpha", text=text)
+    claims = [
+        claim(claim="Fortnite is coming to Linux", origin="Epic Games", source_url="https://a.example/1")
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src], entities=["Fortnite"])
+    assert resolved[0]["origin"] == "epic games"
+
+
+def test_organizations_are_not_rejected_as_products():
+    text = "Epic Games announced that Fortnite is coming to Linux."
+    src = source(link="https://a.example/1", name="Alpha", text=text)
+    entities = ["Epic", "Fortnite", "Easy Anti-Cheat"]
+    claims = [
+        claim(claim="A", origin="Epic Games", source_url="https://a.example/1"),
+        claim(claim="B", origin="Fortnite", source_url="https://a.example/1"),
+        claim(claim="C", origin="Easy Anti-Cheat", source_url="https://a.example/1"),
+    ]
+    resolved = facts.resolve_claim_origins(claims, [src], entities=entities)
+    assert resolved[0]["origin"] == "epic games", "an organization is never a product"
+    assert resolved[1]["origin"] == facts.UNSTATED_ORIGIN, "a game title is still not an origin"
+    assert resolved[2]["origin"] == facts.UNSTATED_ORIGIN
+
+
+def test_organization_recognition_rules():
+    assert facts._is_organization("Epic Games") is True
+    assert facts._is_organization("Some New Studio") is True
+    assert facts._is_organization("sources") is False
+    text = "Dan Houser says the game is coming."
+    assert facts._is_organization("Dan Houser", text, {"claim": "The game is coming", "value": "coming"}) is False
+
+
+# --- source cap and model-call budget ----------------------------------------
+
+
+def test_select_sources_prefers_tier_then_distinct_owners():
+    sources = [
+        source(link="https://a/1", name="A", tier=2, owner="co-a", text="aaaa"),
+        source(link="https://b/2", name="B", tier=2, owner="co-b", text="bbbbbb"),
+        source(link="https://c/3", name="C", tier=1, owner="co-c", text="cc"),
+        source(link="https://d/4", name="D", tier=2, owner="co-a", text="dddddddd"),
+    ]
+    chosen = facts._select_sources(sources, 3)
+    assert [s["link"] for s in chosen] == ["https://b/2", "https://c/3", "https://d/4"]
+    assert [s["link"] for s in facts._select_sources(sources, 4)] == [s["link"] for s in sources]
+
+
+def test_facts_stops_at_model_call_budget(tmp_path):
+    sources = [
+        source(link="https://a/1", name="A", tier=1, owner="co-a", text="Sony said the first fact."),
+        source(link="https://b/2", name="B", tier=1, owner="co-b", text="Microsoft said the second fact."),
+    ]
+    generate, calls = per_source_generate(
+        [{"claims": [claim(claim="First", origin="sony", source_url="https://a/1")]}]
+    )
+    run_state = RunState()
+    result = facts.facts(
+        gathered(sources=sources),
+        output_dir=tmp_path,
+        now=NOW,
+        generate=generate,
+        run_state=run_state,
+        model_call_budget=1,
+    )
+    assert calls == ["fast"], "the budget is checked before each source, so the second is skipped"
+    assert result["id"] == "story-1"
+
+
 def test_resolve_claim_origins_checks_text_across_url_variants(caplog):
     caplog.set_level(logging.WARNING)
     sources = [source(link="https://o1.example/report", tier=1, text="Alinea Analytics estimates 168,000 sales.")]

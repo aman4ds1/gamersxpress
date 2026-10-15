@@ -121,6 +121,12 @@ MAX_FIELD_CHARS = 300
 # many claims, so it cannot crowd out the story's other sources. Overridable per
 # story via `facts.max_claims_per_source` in config.yaml.
 MAX_CLAIMS_PER_SOURCE = 15
+# Cost control: extraction runs once per source, so a candidate with many
+# sources could spend the whole model-call budget on one story. At most this
+# many sources per candidate are extracted, chosen by tier first, then one per
+# distinct owner, then by text length. Overridable via
+# `score.max_sources_per_candidate` in config.yaml.
+DEFAULT_MAX_SOURCES_PER_CANDIDATE = 3
 # A source that carries more text than this yet produces fewer than
 # WARN_MIN_CLAIMS claims is logged with a warning, because that strong of a gap
 # usually means the extractor skipped most of what the source says.
@@ -168,6 +174,13 @@ DEFAULT_ALLOW_SINGLE_ORIGIN_ATTRIBUTED = False
 #: Analytics"). A missing or malformed file is treated as an empty map.
 DEFAULT_ORIGIN_ALIASES_PATH = PROJECT_ROOT / "data" / "origins.json"
 
+#: Allowlist of well-known video game organizations (publishers, studios,
+#: platform holders, chip makers) from ``data/orgs.json``. Used to keep a
+#: company from being mistaken for a product/title and to recognise a
+#: first-party announcement. Optional: a missing file yields an empty allowlist
+#: and the corporate-suffix and announcement-subject rules still apply.
+DEFAULT_ORGS_PATH = PROJECT_ROOT / "data" / "orgs.json"
+
 #: Leading words stripped from an origin before matching, so an article or a
 #: role ("the analyst Alinea Analytics") does not split one origin into two.
 _ORIGIN_TITLE_WORDS = frozenset({"the", "a", "an", "analyst", "analysts"})
@@ -175,6 +188,16 @@ _ORIGIN_TITLE_WORDS = frozenset({"the", "a", "an", "analyst", "analysts"})
 #: Claim kinds whose origins may count toward confirmation. A rumor, an opinion
 #: or a statement never confirms a story, however many outlets repeat it.
 CONFIRMING_KINDS = ("confirmed", "reported", "estimate")
+
+#: Claim kinds a first-party announcement may rest on. Broader than
+#: :data:`CONFIRMING_KINDS`: a company's own statement about its plan counts as
+#: first party, while a rumor or an opinion never does.
+FIRST_PARTY_KINDS = ("confirmed", "statement", "reported")
+
+#: How many independent sources (distinct owners) must each attribute the
+#: central claim to an organization before the first-party rule confirms it.
+#: Overridable via `facts.min_first_party_sources` in config.yaml.
+DEFAULT_MIN_FIRST_PARTY_SOURCES = 2
 
 logger = logging.getLogger("gamersxpress.pipeline.facts")
 
@@ -1084,6 +1107,51 @@ def load_origin_aliases(path: str | Path | None = None) -> dict[str, str]:
     return aliases
 
 
+_ORGANIZATIONS_CACHE: tuple[tuple[int, int] | None, frozenset[str]] | None = None
+
+
+def load_organizations(path: str | Path | None = None) -> frozenset[str]:
+    """Known organization match keys from ``data/orgs.json``.
+
+    The file is ``{"organizations": [...]}`` where each entry is either a name
+    string or ``{"canonical": ..., "aliases": [...]}``. Keys are stored under
+    :func:`_origin_key`, so casing, possessives and punctuation never matter.
+    Cached by file mtime/size; a missing or malformed file yields an empty set
+    so extraction still runs.
+    """
+    global _ORGANIZATIONS_CACHE
+    path = Path(path) if path else DEFAULT_ORGS_PATH
+    try:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        _ORGANIZATIONS_CACHE = (None, frozenset())
+        return frozenset()
+    if _ORGANIZATIONS_CACHE is not None and _ORGANIZATIONS_CACHE[0] == stamp:
+        return _ORGANIZATIONS_CACHE[1]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _ORGANIZATIONS_CACHE = (stamp, frozenset())
+        return frozenset()
+    raw = data.get("organizations") if isinstance(data, dict) else data
+    keys: set[str] = set()
+    if isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, str):
+                key = _origin_key(entry)
+                if key:
+                    keys.add(key)
+            elif isinstance(entry, dict):
+                for name in [entry.get("canonical"), *(entry.get("aliases") or [])]:
+                    key = _origin_key(name)
+                    if key:
+                        keys.add(key)
+    frozen = frozenset(keys)
+    _ORGANIZATIONS_CACHE = (stamp, frozen)
+    return frozen
+
+
 def canonicalize_origin(origin: object, aliases: dict[str, str] | None = None) -> str:
     """Resolve one origin string to its canonical name.
 
@@ -1181,6 +1249,22 @@ _SUBJECT_CUE_RE = re.compile(
     rf"\b(?P<origin>{_NAME_CHUNK})(?:\s*,[^,.\n]{{0,40}},)?"
     rf"\s+(?:(?:has|have|had|is|was|were|will)\s+)?(?P<verb>{_ATTRIBUTION_VERB_RE})\b",
     re.I,
+)
+#: A capitalized name chunk (up to four words). Unlike :data:`_NAME_CHUNK` the
+#: first word must be capitalized, for the inverted headline form where the
+#: organization follows the verb ("..., confirms Epic Games").
+_CAP_NAME_CHUNK = (
+    r"[A-Z][\w'’&\-]*(?:\s+(?!has\b|have\b|had\b|is\b|was\b|were\b|will\b)"
+    r"[A-Za-z][\w'’&\-]*){0,3}"
+)
+_ANNOUNCEMENT_VERB_RE = "|".join(
+    sorted(set(_ATTRIBUTION_ANNOUNCEMENT_VERBS), key=len, reverse=True)
+)
+#: Inverted headline attribution: the organization follows an announcement verb
+#: ("Fortnite is coming to Linux, confirms Epic Games"). Only announcement verbs
+#: qualify, so "said Dan Houser" stays a speech cue handled by the speech path.
+_POST_VERB_CUE_RE = re.compile(
+    rf"(?:,\s*|\s+)(?i:(?P<verb>{_ANNOUNCEMENT_VERB_RE}))\s+(?P<origin>{_CAP_NAME_CHUNK})\b"
 )
 
 
@@ -1332,6 +1416,28 @@ def _speech_subjects(text: str, claim: dict) -> list[str]:
     return [occurrence["origin"] for occurrence in occurrences if occurrence["kind"] == "speech"]
 
 
+def _announcement_subjects(text: str, claim: dict) -> list[str]:
+    """Origins that are the subject of an announcement verb in the claim's window.
+
+    "Epic Games announced ...", "Nintendo confirmed ...": the subject puts the
+    news out, which is what makes it an organization (and a first party).
+    """
+    occurrences, _ = _cue_occurrences(text, claim)
+    return [
+        occurrence["origin"] for occurrence in occurrences if occurrence["kind"] == "announcement"
+    ]
+
+
+def _inverted_origins(text: str, claim: dict) -> list[str]:
+    """Origins named *after* an announcement verb ("..., confirms Epic Games")."""
+    window, _ = _claim_attribution_window(text, claim)
+    origins: list[str] = []
+    for _pi, _si, sent in window:
+        for match in _POST_VERB_CUE_RE.finditer(sent):
+            origins.append(match.group("origin").strip())
+    return origins
+
+
 def _origins_overlap(left: set[str], right: set[str]) -> bool:
     """True when two origin-name sets name the same source (containment allowed)."""
     for a in left:
@@ -1363,6 +1469,9 @@ def _origin_attributed(origin: object, text: str, claim: dict, aliases: dict[str
     winner = _attribution_winner(text, claim, aliases)
     if winner and _origins_overlap(names, _origin_names(winner, aliases)):
         return True
+    for inverted in _inverted_origins(text, claim):
+        if _origins_overlap(names, _origin_names(inverted, aliases)):
+            return True
     target = cluster.normalize_title(text)
     for name in names:
         escaped = re.escape(name)
@@ -1395,6 +1504,138 @@ def _is_product_origin(value: object, entities: list[str] | None) -> bool:
     return False
 
 
+#: Corporate suffixes: a name whose last word is one of these is an organization
+#: even when it is not in ``data/orgs.json`` ("Some New Studio", "Foo Games").
+_CORPORATE_SUFFIXES = frozenset({
+    "games", "studios", "studio", "interactive", "entertainment", "software",
+    "labs", "inc", "inc.", "ltd", "ltd.", "corp", "corp.", "corporation",
+    "publishing",
+})
+
+
+def _matches_organization(value: object, organizations: frozenset[str]) -> bool:
+    """True when ``value`` names an organization in the allowlist (containment allowed)."""
+    key = _origin_key(value)
+    if not key:
+        return False
+    for org in organizations:
+        if key == org or _contains_name(key, org) or _contains_name(org, key):
+            return True
+    return False
+
+
+def _has_corporate_suffix(value: object) -> bool:
+    """True when the last word of ``value`` is a corporate suffix ("... Studios")."""
+    words = _origin_key(value).split()
+    if not words:
+        return False
+    return words[-1] in _CORPORATE_SUFFIXES
+
+
+def _is_organization(
+    value: object,
+    text: str = "",
+    claim: dict | None = None,
+    aliases: dict[str, str] | None = None,
+    entities: list[str] | None = None,
+    organizations: frozenset[str] | None = None,
+) -> bool:
+    """True when ``value`` names an organization, not a product or title.
+
+    An organization is a name in the allowlist, a name with a corporate suffix,
+    or the grammatical subject of an announcement verb. When ``entities`` are
+    given, a name that is a canonical product/title entity is not an
+    organization -- unless the allowlist or suffix marks it as one -- so a game
+    title the extractor treats as a speaker is still rejected.
+    """
+    if not _origin_key(value):
+        return False
+    orgs = load_organizations() if organizations is None else organizations
+    if _matches_organization(value, orgs) or _has_corporate_suffix(value):
+        return True
+    if entities is not None and _is_product_origin(value, entities):
+        return False
+    if text and claim is not None:
+        subjects = _announcement_subjects(text, claim)
+        if subjects and _token_matches_any(
+            value, subjects, aliases if aliases is not None else load_origin_aliases()
+        ):
+            return True
+    return False
+
+
+def _is_first_party_origin(
+    origin: object,
+    text: str,
+    claim: dict,
+    aliases: dict[str, str],
+    entities: list[str] | None,
+    organizations: frozenset[str],
+) -> bool:
+    """True when the source attributes the claim to an organization as its owner.
+
+    First party means the organization itself put the news out: the source names
+    it as the subject of an announcement verb ("Epic Games announced ...") and
+    attributes the claim to it ("according to Epic Games").
+    """
+    if not _is_organization(origin, text, claim, aliases, entities, organizations):
+        return False
+    return _origin_attributed(origin, text, claim, aliases)
+
+
+def _min_first_party_sources() -> int:
+    """How many independent sources the first-party rule requires (configurable)."""
+    value = load_config().get("facts", {}).get("min_first_party_sources")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return DEFAULT_MIN_FIRST_PARTY_SOURCES
+    return max(1, int(value))
+
+
+def _first_party_origins(
+    claims: list[dict],
+    by_url: dict[str, dict],
+    aliases: dict[str, str],
+    entities: list[str] | None,
+) -> tuple[list[str], dict[str, str], set[str]]:
+    """First-party organizations among ``claims``, with their source owners.
+
+    Returns ``(organizations, source_org, owners)``: the canonical organization
+    names seen in :data:`FIRST_PARTY_KINDS` claims, the organization each source
+    attributed its claim to, and the set of distinct owners backing them. A
+    source must have its own text carrying the attribution, and an outlet that
+    is merely reporting about someone else never counts.
+    """
+    organizations = load_organizations()
+    orgs_seen: list[str] = []
+    source_org: dict[str, str] = {}
+    owners: set[str] = set()
+    for claim in claims:
+        if claim.get("kind") not in FIRST_PARTY_KINDS:
+            continue
+        url_key = _source_url_key(claim.get("source_url"))
+        source = by_url.get(url_key) or {}
+        text = str(source.get("text") or "")
+        if not text:
+            continue
+        for token in str(claim.get("origin") or "").split(";"):
+            token = token.strip()
+            if not token or _origin_key(token) == UNSTATED_ORIGIN:
+                continue
+            if _is_publication(token, source):
+                continue
+            if not _is_first_party_origin(token, text, claim, aliases, entities, organizations):
+                continue
+            canonical = canonicalize_origin(token, aliases)
+            if canonical == UNSTATED_ORIGIN:
+                continue
+            if canonical not in orgs_seen:
+                orgs_seen.append(canonical)
+            source_org[url_key] = canonical
+            owner = _origin_key(source.get("owner")) or url_key
+            owners.add(owner)
+    return sorted(orgs_seen), source_org, owners
+
+
 def _source_url_key(url: object) -> str:
     """Match key for a source URL: scheme/host lowercased, ``www.`` and fragment
     dropped, trailing slash ignored.
@@ -1414,6 +1655,49 @@ def _sources_by_url(sources: list[dict]) -> dict[str, dict]:
         if key:
             by_url[key] = source
     return by_url
+
+
+def _select_sources(sources: list[dict], max_sources: int | None) -> list[dict]:
+    """The sources to extract from, capped and reduced to distinct owners.
+
+    A candidate with many sources is capped so one story cannot spend the whole
+    model-call budget. Sources are ranked by tier (tier-1 first), a single best
+    source per distinct owner is taken, and any remaining slots go to the
+    longest texts. The chosen sources are returned in their original order, so
+    extraction and every downstream positional assumption stay stable.
+    """
+    if max_sources is None or max_sources <= 0 or len(sources) <= max_sources:
+        return list(sources)
+
+    def _tier(source: dict) -> int:
+        try:
+            return int(source.get("tier") or 99)
+        except (TypeError, ValueError):
+            return 99
+
+    def _rank(pair: tuple[int, dict]) -> tuple[int, int, int]:
+        index, source = pair
+        return (_tier(source), -len(str(source.get("text") or "")), index)
+
+    ordered = sorted(enumerate(sources), key=_rank)
+    chosen: list[int] = []
+    seen_owners: set[str] = set()
+    for index, source in ordered:
+        owner = _origin_key(source.get("owner")) or _source_url_key(source.get("link"))
+        if owner in seen_owners:
+            continue
+        seen_owners.add(owner)
+        chosen.append(index)
+        if len(chosen) >= max_sources:
+            break
+    if len(chosen) < max_sources:
+        for index, _source in ordered:
+            if index in chosen:
+                continue
+            chosen.append(index)
+            if len(chosen) >= max_sources:
+                break
+    return [sources[index] for index in sorted(chosen)]
 
 
 def resolve_claim_origins(
@@ -1485,6 +1769,7 @@ def resolve_claim_origins(
                 _is_product_origin(token, entities)
                 and token_key not in speaker_org_keys
                 and not speech_person
+                and not _is_organization(token, text, claim, aliases, entities)
             ):
                 reason = "product or title"
             elif not _origin_in_text(token, text, aliases):
@@ -1523,6 +1808,7 @@ def resolve_claim_origins(
             affiliation
             and _is_product_origin(affiliation, entities)
             and _origin_key(affiliation) != byline_org_key
+            and not _is_organization(affiliation, text, claim, aliases, entities)
         ):
             # A game title can never be the organization a person speaks for.
             affiliation = ""
@@ -1868,16 +2154,19 @@ def confirmation_from_sources(
     merged: dict | None = None,
     allow_single_origin_attributed: bool = False,
     aliases: dict[str, str] | None = None,
+    entities: list[str] | None = None,
 ) -> dict:
     """Assess the confirmation rule against the cluster's sources and claims.
 
     Confirmed when at least one tier-1 source states a passed claim, OR the
     passed claims carry at least two independent attributed origins (outlets
     repeating the same origin count as one, and two origins from the same single
-    article never count as two). Origins are canonicalized through ``aliases``
-    (:func:`load_origin_aliases`), so different spellings of one name collapse,
-    and only claims of kind confirmed/reported/estimate count: a rumor, an
-    opinion or a statement never confirms. When ``allow_single_origin_attributed``
+    article never count as two), OR the headline claim is an organization's own
+    announcement independently attributed by enough sources (the "first-party"
+    rule; see :func:`_first_party_origins`). Origins are canonicalized through
+    ``aliases`` (:func:`load_origin_aliases`), so different spellings of one name
+    collapse, and only claims of kind confirmed/reported/estimate count: a rumor,
+    an opinion or a statement never confirms. When ``allow_single_origin_attributed``
     is set, a single attributed (named, non-"unstated") origin also confirms.
     Tier 3 never counts. ``claims`` are the pre-merge claims of the story's
     central fact (``source_url`` singular, or ``source_urls`` on merged claims);
@@ -1888,6 +2177,7 @@ def confirmation_from_sources(
     only if its own value carries every specific of the merged value, so a tier-1
     source never confirms wording that only another source stated.
     """
+    aliases = load_origin_aliases() if aliases is None else aliases
     by_url = _sources_by_url(sources)
     origins = _confirmation_origins(claims, by_url, aliases=aliases)
     if claims is not None:
@@ -1903,10 +2193,17 @@ def confirmation_from_sources(
             1 for source in sources
             if source["tier"] == 3 and _source_url_key(source.get("link")) in claim_urls
         )
+        first_party_orgs, _source_org, first_party_owners = _first_party_origins(
+            claims, by_url, aliases, entities
+        )
     else:
         tier1 = sum(1 for source in sources if source["tier"] == 1)
         tier3 = sum(1 for source in sources if source["tier"] == 3)
+        first_party_orgs, first_party_owners = [], set()
     single_origin_attributed = len(origins) == 1
+    first_party = (
+        claims is not None and len(first_party_owners) >= _min_first_party_sources()
+    )
     if merged is not None and str(merged.get("kind") or "") == "opinion":
         # A candidate whose central fact is a judgement is never confirmable:
         # an opinion can be repeated by every outlet and still be no fact.
@@ -1917,6 +2214,13 @@ def confirmation_from_sources(
     elif len(origins) >= 2:
         confirmed, rule = True, "two-independent-origins"
         reason = "two independent named origins support the headline claim"
+    elif first_party:
+        confirmed, rule = True, "first-party"
+        organization = ", ".join(first_party_orgs) or "an organization"
+        reason = (
+            f"{len(first_party_owners)} independent sources attribute the "
+            f"headline claim to {organization}"
+        )
     elif allow_single_origin_attributed and single_origin_attributed:
         confirmed, rule = True, "single-origin-attributed"
         reason = (
@@ -1930,6 +2234,8 @@ def confirmation_from_sources(
         "tier1_sources": tier1,
         "tier3_sources": tier3,
         "origins": origins,
+        "first_party_organizations": first_party_orgs,
+        "first_party_sources": len(first_party_owners),
         "single_origin_attributed": single_origin_attributed,
         "rule": rule,
         "confirmed": confirmed,
@@ -2457,6 +2763,8 @@ def facts(
     run_state: RunState | None = None,
     max_claims_per_source: int | None = None,
     allow_single_origin_attributed: bool | None = None,
+    max_sources: int | None = None,
+    model_call_budget: int | None = None,
     **kwargs: Any,
 ) -> dict:
     """Extract claims from gathered text, enforce confirmation, save the sheet.
@@ -2466,13 +2774,20 @@ def facts(
     with no tier-1 source is not rejected before the model runs: a single source
     can still carry two independent origins. Only the claim that restates the
     seed headline (``title``) is confirmed; other claims' origins never count.
+
+    Extraction runs once per source, so ``max_sources`` caps how many sources a
+    single candidate may use (chosen by tier, then one per distinct owner, then
+    by text length); ``model_call_budget`` stops extraction before it would
+    exceed the run's model-call budget. Both default to ``score`` settings in
+    config.yaml.
     """
     output_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
     name = re.sub(r"[^0-9A-Za-z._-]", "-", str(id or gathered.get("id") or "unnamed"))
     now = now or dt.datetime.now(dt.timezone.utc)
     sources = gathered.get("sources") or []
 
-    config_facts = load_config().get("facts") or {}
+    config = load_config()
+    config_facts = config.get("facts") or {}
     config_max = int(config_facts.get("max_claims_per_source", MAX_CLAIMS_PER_SOURCE))
     max_claims = max_claims_per_source if max_claims_per_source is not None else config_max
     if allow_single_origin_attributed is None:
@@ -2483,12 +2798,21 @@ def facts(
         )
     else:
         allow_single = bool(allow_single_origin_attributed)
+    if max_sources is None:
+        config_score = config.get("score") or {}
+        try:
+            max_sources = int(
+                config_score.get("max_sources_per_candidate", DEFAULT_MAX_SOURCES_PER_CANDIDATE)
+            )
+        except (TypeError, ValueError):
+            max_sources = DEFAULT_MAX_SOURCES_PER_CANDIDATE
 
     aliases = load_origin_aliases()
     fingerprint = cluster.stage_fingerprint(
         name, "facts", PROMPT_VERSION, SYSTEM_INSTRUCTION, CLAIM_SCHEMA,
         _extraction_chain(), MAX_SOURCE_CHARS, MAX_FIELD_CHARS, max_claims,
         allow_single, HEDGE_WORDS, sorted(aliases.items()), _relative_time_words(),
+        max_sources,
     )
     path = output_dir / f"{name}.json"
     if cluster.stored_fingerprint(path) == fingerprint:
@@ -2498,11 +2822,21 @@ def facts(
 
     extracted: list[dict] = []
     generation = None
-    for source in sources:
+    for source in _select_sources(sources, max_sources):
         text = str(source.get("text") or "")
         if not text.strip():
             logger.info("story %s: source %s has no text; nothing to extract", name, source.get("link"))
             continue
+        if (
+            run_state is not None
+            and model_call_budget is not None
+            and run_state.calls >= model_call_budget
+        ):
+            logger.warning(
+                "story %s: model-call budget of %d reached; skipping remaining sources",
+                name, model_call_budget,
+            )
+            break
         generation = extract_claims(
             name, source, max_claims=max_claims, generate=generate, run_state=run_state, **kwargs
         )
@@ -2612,6 +2946,7 @@ def facts(
         merged=central,
         allow_single_origin_attributed=allow_single,
         aliases=aliases,
+        entities=canonical,
     )
     # A tier-1 source that only mentions the topic in passing does not confirm
     # the story: it is the headline's fact the story must establish, not any
@@ -2688,7 +3023,9 @@ __all__ = [
     "CLAIM_SCHEMA",
     "CONFIRMING_KINDS",
     "DEFAULT_ORIGIN_ALIASES_PATH",
+    "DEFAULT_ORGS_PATH",
     "DEFAULT_RELATIVE_TIME_WORDS",
+    "FIRST_PARTY_KINDS",
     "HEDGE_WORDS",
     "KIND_STRENGTH",
     "MAX_FIELD_CHARS",
@@ -2709,6 +3046,7 @@ __all__ = [
     "ground_claims_details",
     "grounding_failure",
     "load_origin_aliases",
+    "load_organizations",
     "merge_claims",
     "primary_entities",
     "resolve_claim_origins",
