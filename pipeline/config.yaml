@@ -203,6 +203,12 @@ facts:
   # each attribute the claim to that organization in their own text. Set to a
   # higher number to demand more independent first-party coverage.
   min_first_party_sources: 2
+  # Corroboration of the central fact (PLAN.md pipeline stage 6): another source's
+  # claim counts as restating the central fact when the Jaccard overlap of their
+  # content words (claim text plus value) reaches this fraction, no figures or
+  # dates contradict, and it names a primary entity. Raise it to demand closer
+  # wording; lower it to accept looser paraphrases.
+  corroboration_overlap: 0.5
   # Explicit adverbs to treat as lead words (names like Holly, Kelly, Molly must not be dropped).
   adverb_lead_words:
     - reportedly
@@ -439,31 +445,30 @@ verify:
     - tomorrow
     - recently
     - soon
-  # Company performance/marketing terms (pipeline/verify.py). A sentence that
-  # contains BOTH a number or percentage AND one of these terms is a performance
-  # or marketing claim, and must carry an attribution cue in the same sentence;
-  # otherwise it is unsupported with the reason "unattributed performance
-  # claim". Plain facts such as dates, prices, version numbers and counts do not
-  # trigger this rule (they have no term from this list).
+  # Comparison terms for the numeric performance/marketing rule (verify.py). A
+  # sentence is a performance claim only when a number or percentage sits within
+  # three tokens of one of these terms, or when one of them is followed by
+  # "than" and the sentence has a number ("46 percent faster than Steam", "20
+  # percent smaller than before"). Such a sentence must carry an attribution cue
+  # in the same sentence, or it is unsupported with the reason "unattributed
+  # performance claim". Bare qualifiers ("up to", "most", "best", "record") no
+  # longer trigger the rule, so plain facts such as dates, prices, version
+  # numbers and counts are never flagged.
   company_claim_terms:
     - faster
     - slower
-    - better
     - smoother
+    - higher
+    - lower
+    - smaller
+    - larger
     - more efficient
-    - up to
-    - times faster
-    - percent faster
-    - record
-    - fastest
-    - best
-    - most
     - improves
     - improvement
     - boosts
     - reduces
-    - higher
-    - lower
+    - increase
+    - decrease
 
 # Single source of truth for content length limits: the SEO stage
 # (pipeline/seo.py), the publish gates (pipeline/gates.py) and the Node site

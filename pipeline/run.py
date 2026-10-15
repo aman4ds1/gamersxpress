@@ -713,7 +713,25 @@ def run(
                         max_sources=max_sources_per_candidate,
                         model_call_budget=budget,
                     )
-            except facts_stage.UnconfirmedStory:
+            except facts_stage.UnconfirmedStory as exc:
+                if getattr(exc, "budget_truncated", False):
+                    # The run's model-call budget, not the story, cut extraction
+                    # short: the verdict is an artifact of the budget. Report the
+                    # candidate as incomplete but do NOT remember it as failed or
+                    # touch the breaker, so the same cluster is eligible again on
+                    # the next run. The budget is spent, so the search stops.
+                    candidates_report.append(
+                        _candidate_entry(
+                            candidate, confirmed=False,
+                            reason="model budget spent mid-extraction", outcome="incomplete",
+                        )
+                    )
+                    logger.warning(
+                        "candidate %s incomplete: model budget spent mid-extraction", cluster_id
+                    )
+                    gathered = None
+                    facts = None
+                    break
                 cluster.record_unconfirmed(failed, cluster_id, now=now)
                 cluster.save_failed(failed, paths.failed)
                 candidates_report.append(

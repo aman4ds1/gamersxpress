@@ -1,10 +1,10 @@
 {
   "organizations": [
-    "Epic Games",
-    "Rockstar Games",
-    "Take-Two Interactive",
+    {"canonical": "Epic Games", "aliases": ["Epic"]},
+    {"canonical": "Rockstar Games", "aliases": ["Rockstar"]},
+    {"canonical": "Take-Two Interactive", "aliases": ["Take-Two"]},
     "2K",
-    "Microsoft",
+    {"canonical": "Microsoft", "aliases": ["Xbox Game Studios"]},
     "Xbox",
     "Sony",
     "PlayStation",

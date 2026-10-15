@@ -1206,3 +1206,58 @@ def test_plain_numbers_are_not_company_claims(tmp_path):
     )
     assert report.passed is True
     assert report.unsupported == []
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "The launcher starts 46 percent faster than Steam.",
+        "The patch is 12 GB, up to 20 percent smaller than before.",
+        "Frame rates are 12 percent higher.",
+        "The mode runs at 2x the frame rate.",
+    ],
+)
+def test_number_near_a_comparison_term_is_flagged(sentence):
+    cfg = config()
+    assert verify_module._company_claim_check(f"## Performance\n{sentence}\n", cfg) == [sentence]
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Epic says the launcher starts 46 percent faster than Steam.",
+        "Tom's Hardware measured 12 percent higher frame rates.",
+    ],
+)
+def test_attributed_numeric_performance_claims_pass(sentence):
+    cfg = config()
+    assert verify_module._company_claim_check(f"## Performance\n{sentence}\n", cfg) == []
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Prices start at $30, up to $100 for the Ultimate Edition.",
+        "The game has more than 500 achievements, the most in the series.",
+        "A record 131,388 players were online.",
+        "Tickets cost up to $200.",
+        "The best-selling entry sold 5 million copies.",
+        "The PC version arrives in the first quarter of 2027.",
+        "Steam recorded a peak of 131,388 concurrent players, according to SteamDB.",
+    ],
+)
+def test_bare_numbers_and_qualifiers_are_not_performance_claims(sentence):
+    cfg = config()
+    assert verify_module._company_claim_check(f"## Notes\n{sentence}\n", cfg) == []
+
+
+def test_number_far_from_a_comparison_term_is_not_flagged():
+    cfg = config()
+    sentence = "The update improves stability and, three paragraphs later, adds 12 missions."
+    assert verify_module._company_claim_check(f"## Patch\n{sentence}\n", cfg) == []
+
+
+def test_comparison_than_with_a_number_is_flagged():
+    cfg = config()
+    sentence = "The new build is smaller than the previous release by some margin, at 12 GB."
+    assert verify_module._company_claim_check(f"## Build\n{sentence}\n", cfg) == [sentence]

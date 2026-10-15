@@ -2013,7 +2013,7 @@ def test_an_announcement_verb_keeps_an_organization_as_its_origin():
         )
     ]
     resolved = facts.resolve_claim_origins(claims, [src])
-    assert resolved[0]["origin"] == "rockstar"
+    assert resolved[0]["origin"] == "rockstar games"
 
 
 # --- coherence with a person in the seed headline ----------------------------
@@ -2321,3 +2321,251 @@ def test_outlet_and_company_names_are_not_anonymous(origin):
 def test_descriptor_only_phrases_are_anonymous(origin):
     # Every token is in the vocabulary, so the phrase names no real source.
     assert facts._is_anonymous_origin(origin, facts.load_origin_aliases()) is True
+
+
+# --- canonical organization names and aliases (stage 6) ----------------------
+
+
+def test_canonicalize_origin_resolves_organization_aliases():
+    assert facts.canonicalize_origin("Epic") == "epic games"
+    assert facts.canonicalize_origin("Rockstar") == "rockstar games"
+    assert facts.canonicalize_origin("Take-Two") == "take-two interactive"
+    assert facts.canonicalize_origin("Xbox Game Studios") == "microsoft"
+    # The canonical name itself is unchanged, and origins.json aliases still win.
+    assert facts.canonicalize_origin("Epic Games") == "epic games"
+    assert facts.canonicalize_origin("Alinea") == "alinea analytics"
+
+
+def test_organization_aliases_are_loaded_from_orgs_json():
+    aliases = facts.load_organization_aliases()
+    assert aliases["epic"] == "epic games"
+    assert aliases["rockstar"] == "rockstar games"
+    assert facts.load_origin_aliases()["epic"] == "epic games"
+
+
+def test_contained_origins_keep_a_known_organization_name():
+    # A known organization is never dropped for a shorter, unknown form.
+    assert facts._collapse_contained_origins({"embark", "embark studios"}) == ["embark studios"]
+    # Non-organizations keep the shorter, more general name as before.
+    assert facts._collapse_contained_origins({"alinea analytics", "alinea analytics ltd"}) == [
+        "alinea analytics"
+    ]
+
+
+# --- corroboration of the central fact (stage 6) -----------------------------
+
+
+LINUX_FACT = "Fortnite is coming to Linux once Epic improves Easy Anti-Cheat"
+
+
+def test_corroboration_accepts_restatements_of_the_central_fact():
+    central = claim(claim="Fortnite is coming to Linux", value=LINUX_FACT)
+    epic = claim(claim="Epic Games confirms Fortnite for Linux", value=LINUX_FACT)
+    plans = claim(
+        claim="Fortnite will come to Linux once Epic improves Easy Anti-Cheat",
+        value=LINUX_FACT,
+    )
+    assert facts.corroboration_score(epic, central, entities=["Fortnite"]) > 0
+    assert facts.corroboration_score(plans, central, entities=["Fortnite"]) > 0
+
+
+def test_corroboration_rejects_a_different_fact():
+    central = claim(claim="Fortnite is coming to Linux", value=LINUX_FACT)
+    skin = claim(claim="Fortnite gets a new winter skin", value="a new winter skin")
+    assert facts.corroboration_score(skin, central, entities=["Fortnite"]) == 0.0
+
+
+def test_corroboration_rejects_conflicting_figures():
+    lobby = claim(claim="The mode supports a large lobby", value="the mode supports 20 players")
+    other = claim(claim="The mode supports a large lobby", value="the mode supports 10 players")
+    assert facts._overlap_score(other, lobby) >= facts.DEFAULT_CORROBORATION_OVERLAP
+    assert facts.corroboration_score(other, lobby) == 0.0
+
+
+def test_corroboration_requires_a_primary_entity():
+    central = claim(
+        claim="The game is coming to a new platform",
+        value="the game arrives on a new platform",
+    )
+    report = claim(
+        claim="A report confirms the release",
+        value="the game arrives on a new platform",
+    )
+    assert facts.corroboration_score(report, central) > 0
+    assert facts.corroboration_score(report, central, entities=["Fortnite"]) == 0.0
+
+
+def test_corroborating_claims_count_toward_two_independent_origins():
+    sources = [
+        source(link="https://a.example/1", text="Sony said the thing."),
+        source(link="https://b.example/2", name="Beta", owner="co-b", text="Microsoft said the thing."),
+    ]
+    central = claim(claim="The thing", origin="sony", source_url="https://a.example/1")
+    alone = facts.confirmation_from_sources(sources, claims=[central])
+    assert alone["confirmed"] is False
+    assert alone["origins"] == ["sony"]
+
+    together = facts.confirmation_from_sources(
+        sources,
+        claims=[central],
+        corroborating=[claim(claim="The thing", origin="microsoft", source_url="https://b.example/2")],
+    )
+    assert together["origins"] == ["microsoft", "sony"]
+    assert together["confirmed"] is True
+    assert together["rule"] == "two-independent-origins"
+
+
+def test_corroborating_sources_satisfy_the_first_party_rule():
+    sources = [
+        source(link="https://a.example/1", text="Epic Games announced Fortnite is coming to Linux."),
+        source(
+            link="https://b.example/2", name="Beta", owner="co-b",
+            text="Epic Games said Fortnite is coming to Linux.",
+        ),
+        source(
+            link="https://c.example/3", name="Gamma", owner="co-c",
+            text="Epic Games confirmed Fortnite is coming to Linux.",
+        ),
+    ]
+    central = claim(
+        claim="Fortnite is coming to Linux", value=LINUX_FACT,
+        origin="epic games", kind="confirmed", source_url="https://a.example/1",
+    )
+    others = [
+        claim(
+            claim="Fortnite is coming to Linux", value=LINUX_FACT, origin="epic games",
+            kind="reported", source_url="https://b.example/2",
+        ),
+        claim(
+            claim="Fortnite is coming to Linux", value=LINUX_FACT, origin="epic games",
+            kind="reported", source_url="https://c.example/3",
+        ),
+    ]
+    without = facts.confirmation_from_sources(sources, claims=[central], entities=["Fortnite"])
+    assert without["confirmed"] is False
+
+    with_others = facts.confirmation_from_sources(
+        sources, claims=[central], entities=["Fortnite"], corroborating=others
+    )
+    assert with_others["confirmed"] is True
+    assert with_others["rule"] == "first-party"
+    assert with_others["first_party_sources"] == 3
+
+
+def test_corroboration_never_counts_toward_tier1():
+    sources = [source(link="https://a.example/1", text="The claim.")]
+    central = claim(claim="The claim", source_url="https://a.example/1", origin="sony")
+    result = facts.confirmation_from_sources(
+        sources,
+        claims=[central],
+        corroborating=[claim(claim="The claim", source_url="https://b.example/2", origin="microsoft")],
+    )
+    # The corroborating source is not in the central claim's own source list, so
+    # it can never make the tier-1 count non-zero.
+    assert result["tier1_sources"] == 0
+
+
+# --- unconfirmed sheet diagnostics (stage 6) ---------------------------------
+
+
+def test_claims_by_source_groups_and_shapes():
+    claims = [
+        claim(claim="One", kind="confirmed", origin="sony", source_url="https://a.example/1"),
+        claim(claim="Two", kind="reported", origin="microsoft", source_url="https://a.example/1"),
+        claim(claim="Three", kind="statement", origin="sony", source_url="https://b.example/2"),
+    ]
+    by_source = facts._claims_by_source(claims)
+    assert [entry["source_url"] for entry in by_source] == [
+        "https://a.example/1",
+        "https://b.example/2",
+    ]
+    assert [entry["claim"] for entry in by_source[0]["claims"]] == ["One", "Two"]
+    assert by_source[0]["claims"][0] == {"claim": "One", "kind": "confirmed", "origin": "sony"}
+
+
+def test_corroboration_diagnostics_reports_best_overlap_per_other_source():
+    central = {
+        "claim": "Fortnite is coming to Linux",
+        "value": LINUX_FACT,
+        "source_urls": ["https://a.example/1"],
+    }
+    claims = [
+        claim(claim="Fortnite is coming to Linux", value=LINUX_FACT, source_url="https://a.example/1"),
+        claim(
+            claim="Epic Games confirms Fortnite for Linux", value=LINUX_FACT,
+            source_url="https://b.example/2",
+        ),
+        claim(claim="Fortnite gets a new winter skin", value="new winter skin", source_url="https://c.example/3"),
+    ]
+    diagnostics = facts._corroboration_diagnostics(claims, central, entities=["Fortnite"])
+    by_url = {entry["source_url"]: entry for entry in diagnostics}
+    assert "https://a.example/1" not in by_url, "the central claim's own source is skipped"
+    assert by_url["https://b.example/2"]["matched_claim"] == "Epic Games confirms Fortnite for Linux"
+    assert by_url["https://b.example/2"]["score"] >= facts.DEFAULT_CORROBORATION_OVERLAP
+    assert by_url["https://c.example/3"]["matched_claim"] is None
+
+
+def test_unconfirmed_sheet_carries_diagnostics_and_corroborated_versions(tmp_path):
+    central = {
+        "claim": "Fortnite is coming to Linux", "value": LINUX_FACT,
+        "source_urls": ["https://a.example/1"], "central": True,
+        "versions": [{"source_url": "https://a.example/1", "value": LINUX_FACT}],
+    }
+    kept = [
+        claim(claim="Fortnite is coming to Linux", value=LINUX_FACT, source_url="https://a.example/1"),
+        claim(claim="Epic Games confirms Fortnite for Linux", value=LINUX_FACT, source_url="https://b.example/2"),
+    ]
+    path = facts._write_unconfirmed_sheet(
+        tmp_path, "sheet-1", NOW, {"confirmed": False, "origins": []}, central, kept, [central],
+        [], [], primary=["Fortnite"], canonical=["Fortnite"],
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert [entry["source_url"] for entry in payload["claims_by_source"]] == [
+        "https://a.example/1",
+        "https://b.example/2",
+    ]
+    assert payload["corroboration"] == [
+        {
+            "source_url": "https://b.example/2",
+            "score": payload["corroboration"][0]["score"],
+            "matched_claim": "Epic Games confirms Fortnite for Linux",
+        }
+    ]
+    assert payload["corroboration"][0]["score"] >= facts.DEFAULT_CORROBORATION_OVERLAP
+
+
+def test_facts_records_a_corroborated_version_and_diagnostics(tmp_path):
+    a_text = "Fortnite is coming to Linux once Epic improves Easy Anti-Cheat."
+    b_text = "Fortnite will come to Linux once Epic improves Easy Anti-Cheat."
+    sources = [
+        source(link="https://a.example/1", text=a_text),
+        source(link="https://b.example/2", name="Beta", owner="co-b", text=b_text),
+    ]
+    payloads = [
+        {"claims": [claim(claim="Fortnite is coming to Linux", value=a_text, origin="unstated", source_url="https://a.example/1")]},
+        {"claims": [claim(claim="Fortnite will come to Linux once Epic improves Easy Anti-Cheat", value=b_text, origin="unstated", source_url="https://b.example/2")]},
+    ]
+    generate, _calls = per_source_generate(payloads)
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("corr-1", sources), id="corr-1",
+            title="Fortnite is coming to Linux", entities=["Fortnite"],
+            output_dir=tmp_path, now=NOW, generate=generate,
+        )
+    sheet = json.loads((tmp_path / "unconfirmed" / "corr-1.json").read_text(encoding="utf-8"))
+    central = sheet["central_claim"]
+    assert central["source_urls"] == ["https://a.example/1"]
+    corroborated = [v for v in central["versions"] if v.get("corroborated")]
+    assert [v["source_url"] for v in corroborated] == ["https://b.example/2"]
+    # The corroborated version keeps the other source's own value and kind.
+    b_claim = next(c for c in sheet["claims"] if c["source_urls"] == ["https://b.example/2"])
+    assert corroborated[0]["value"] == b_claim["value"]
+    assert corroborated[0]["kind"] == b_claim["kind"]
+    # The corroborating claim is still its own merged entry, not folded into the
+    # central claim's wording.
+    assert len(sheet["claims"]) == 2
+    by_url = {entry["source_url"]: entry for entry in sheet["corroboration"]}
+    assert by_url["https://b.example/2"]["matched_claim"] == (
+        "Fortnite will come to Linux once Epic improves Easy Anti-Cheat"
+    )
+    assert by_url["https://b.example/2"]["score"] >= facts.DEFAULT_CORROBORATION_OVERLAP

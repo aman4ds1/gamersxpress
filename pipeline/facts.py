@@ -194,6 +194,12 @@ CONFIRMING_KINDS = ("confirmed", "reported", "estimate")
 #: first party, while a rumor or an opinion never does.
 FIRST_PARTY_KINDS = ("confirmed", "statement", "reported")
 
+#: Claim kinds that may corroborate the central fact of another source. A rumor
+#: or an opinion never corroborates; whether a corroborating version actually
+#: counts toward confirmation still depends on :data:`CONFIRMING_KINDS` and
+#: :data:`FIRST_PARTY_KINDS`.
+CORROBORATING_KINDS = ("confirmed", "reported", "statement", "estimate")
+
 #: How many independent sources (distinct owners) must each attribute the
 #: central claim to an organization before the first-party rule confirms it.
 #: Overridable via `facts.min_first_party_sources` in config.yaml.
@@ -364,7 +370,18 @@ class FactsError(Exception):
 
 
 class UnconfirmedStory(Exception):
-    """Not enough independent sources; the story must not be published."""
+    """Not enough independent sources; the story must not be published.
+
+    ``budget_truncated`` marks the special case where the run's model-call
+    budget stopped extraction before every selected source was read, so the
+    verdict is an artifact of the budget, not of the story's coverage. The run
+    reports such a candidate as incomplete without remembering it as a failed
+    story, so the same cluster is eligible again on the next run.
+    """
+
+    def __init__(self, *args: object, budget_truncated: bool = False) -> None:
+        super().__init__(*args)
+        self.budget_truncated = bool(budget_truncated)
 
 
 def build_prompt(
@@ -1104,6 +1121,45 @@ def load_origin_aliases(path: str | Path | None = None) -> dict[str, str]:
         name = _origin_display(canonical)
         if key and name:
             aliases[key] = name
+    # Organization short forms ("Epic") resolve to the canonical name declared in
+    # data/orgs.json ("Epic Games"), so the sheet, the confirmation block and the
+    # writer never see the short form. Explicit origins.json aliases win.
+    for key, name in load_organization_aliases().items():
+        aliases.setdefault(key, name)
+    return aliases
+
+
+def load_organization_aliases(path: str | Path | None = None) -> dict[str, str]:
+    """Alias -> canonical organization name map from ``data/orgs.json``.
+
+    Only entries that declare both a canonical name and aliases contribute;
+    a plain string entry has no short form. Alias keys and values follow the
+    same :func:`_origin_key` / :func:`_origin_display` normalization as
+    :func:`load_origin_aliases`, so casing, possessives and punctuation never
+    matter. A missing or malformed file yields ``{}``.
+    """
+    path = Path(path) if path else DEFAULT_ORGS_PATH
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    raw = data.get("organizations") if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        return {}
+    aliases: dict[str, str] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        canonical = entry.get("canonical")
+        if not isinstance(canonical, str):
+            continue
+        name = _origin_display(canonical)
+        if not name:
+            continue
+        for alias in entry.get("aliases") or []:
+            key = _origin_key(alias)
+            if key:
+                aliases[key] = name
     return aliases
 
 
@@ -1596,6 +1652,8 @@ def _first_party_origins(
     by_url: dict[str, dict],
     aliases: dict[str, str],
     entities: list[str] | None,
+    *,
+    corroborating: list[dict] | None = None,
 ) -> tuple[list[str], dict[str, str], set[str]]:
     """First-party organizations among ``claims``, with their source owners.
 
@@ -1603,13 +1661,15 @@ def _first_party_origins(
     names seen in :data:`FIRST_PARTY_KINDS` claims, the organization each source
     attributed its claim to, and the set of distinct owners backing them. A
     source must have its own text carrying the attribution, and an outlet that
-    is merely reporting about someone else never counts.
+    is merely reporting about someone else never counts. ``corroborating`` names
+    other sources' claims that corroborate the central fact; they count as those
+    sources stating the central fact, using their own origin and kind.
     """
     organizations = load_organizations()
     orgs_seen: list[str] = []
     source_org: dict[str, str] = {}
     owners: set[str] = set()
-    for claim in claims:
+    for claim in [*(claims or []), *(corroborating or [])]:
         if claim.get("kind") not in FIRST_PARTY_KINDS:
             continue
         url_key = _source_url_key(claim.get("source_url"))
@@ -2081,15 +2141,26 @@ def _collapse_contained_origins(names: set[str]) -> list[str]:
     """Drop any origin whose match key contains another origin's from the set.
 
     "alinea analytics ltd" contains "alinea analytics", so only the shorter,
-    more general name is kept; two spellings of one origin thus count once.
+    more general name is kept; two spellings of one origin thus count once. A
+    known organization (from ``data/orgs.json``) is never dropped in favour of a
+    shorter form that is not itself a known organization, so "embark studios"
+    wins over a stray "embark".
     """
+    organizations = load_organizations()
     ordered = sorted(names, key=lambda name: (len(name.split()), len(name), name))
     kept: list[str] = []
     for name in ordered:
         key = _origin_key(name)
-        if any(_contains_name(key, _origin_key(other)) for other in kept):
-            continue
-        kept.append(name)
+        replaced = False
+        for index, other in enumerate(kept):
+            if not _contains_name(key, _origin_key(other)):
+                continue
+            if key in organizations and _origin_key(other) not in organizations:
+                kept[index] = name
+            replaced = True
+            break
+        if not replaced:
+            kept.append(name)
     return sorted(kept)
 
 
@@ -2110,6 +2181,7 @@ def _confirmation_origins(
     by_url: dict[str, dict],
     *,
     aliases: dict[str, str] | None = None,
+    corroborating: list[dict] | None = None,
 ) -> list[str]:
     """Distinct attributed origins among the claims, tier- and kind-filtered.
 
@@ -2122,11 +2194,13 @@ def _confirmation_origins(
     counts as two independent origins: whatever canonicals a single source
     states, it contributes a single name (the longest of them), and when one
     canonical origin is contained in another they are treated as one, keeping the
-    shorter name.
+    shorter name. ``corroborating`` names other sources' claims that corroborate
+    the central fact; they count as those sources stating it, each using its own
+    origin, subject to the same tier and kind filters.
     """
     aliases = load_origin_aliases() if aliases is None else aliases
     per_source: dict[str, set[str]] = {}
-    for claim in claims or []:
+    for claim in [*(claims or []), *(corroborating or [])]:
         if claim.get("kind") not in CONFIRMING_KINDS:
             continue
         source = by_url.get(_claim_source_url_key(claim))
@@ -2155,6 +2229,7 @@ def confirmation_from_sources(
     allow_single_origin_attributed: bool = False,
     aliases: dict[str, str] | None = None,
     entities: list[str] | None = None,
+    corroborating: list[dict] | None = None,
 ) -> dict:
     """Assess the confirmation rule against the cluster's sources and claims.
 
@@ -2176,10 +2251,16 @@ def confirmation_from_sources(
     ``merged`` is the merged central claim: when given, a tier-1 source counts
     only if its own value carries every specific of the merged value, so a tier-1
     source never confirms wording that only another source stated.
+
+    ``corroborating`` names other sources' claims that corroborate the central
+    fact: they count toward the two-origins rule and the first-party rule, each
+    using its own origin and kind, but never toward the tier-1 or tier-3 counts.
     """
     aliases = load_origin_aliases() if aliases is None else aliases
     by_url = _sources_by_url(sources)
-    origins = _confirmation_origins(claims, by_url, aliases=aliases)
+    origins = _confirmation_origins(
+        claims, by_url, aliases=aliases, corroborating=corroborating
+    )
     if claims is not None:
         claim_urls = {_claim_source_url_key(claim) for claim in claims}
         tier1 = 0
@@ -2194,7 +2275,7 @@ def confirmation_from_sources(
             if source["tier"] == 3 and _source_url_key(source.get("link")) in claim_urls
         )
         first_party_orgs, _source_org, first_party_owners = _first_party_origins(
-            claims, by_url, aliases, entities
+            claims, by_url, aliases, entities, corroborating=corroborating
         )
     else:
         tier1 = sum(1 for source in sources if source["tier"] == 1)
@@ -2345,6 +2426,128 @@ def central_claim(claims: list[dict], *, title: str = "") -> Optional[dict]:
         if score > 0 and key > best_key:
             best, best_key = claim, key
     return best
+
+
+#: How much of the shared wording two claims must share -- the Jaccard overlap
+#: over the content words of their text plus value -- before the one counts as
+#: corroborating the other's fact. Overridable through
+#: ``facts.corroboration_overlap`` in config.yaml.
+DEFAULT_CORROBORATION_OVERLAP = 0.5
+
+
+def _corroboration_overlap() -> float:
+    """The configured Jaccard threshold for corroborating the central fact."""
+    config = load_config().get("facts") or {}
+    try:
+        value = float(config.get("corroboration_overlap", DEFAULT_CORROBORATION_OVERLAP))
+    except (TypeError, ValueError):
+        value = DEFAULT_CORROBORATION_OVERLAP
+    return min(max(value, 0.0), 1.0)
+
+
+def _corroboration_words(claim: dict) -> set[str]:
+    """Content words of a claim's text and value for corroboration overlap.
+
+    Lowercased, diacritics folded and stop words dropped; plain word forms (no
+    stemming) so the Jaccard overlap reflects wording the two claims literally
+    share.
+    """
+    text = f"{claim.get('claim', '')} {claim.get('value', '')}"
+    folded = cluster.strip_diacritics(str(text or "")).lower()
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", folded)
+        if token not in _STOP_WORDS
+    }
+
+
+def _claim_hard_tokens(claim: dict) -> tuple[set[str], set[str]]:
+    """The figures and month names a claim's value states."""
+    numbers: set[str] = set()
+    months: set[str] = set()
+    for token in re.findall(r"[a-z0-9]+", str(claim.get("value") or "").lower()):
+        if token in _MONTHS:
+            months.add(token)
+            continue
+        digits = re.match(r"^\d+", token)
+        if digits:
+            numbers.add(digits.group(0))
+    return numbers, months
+
+
+def _claims_conflict(a: dict, b: dict) -> bool:
+    """True when two claims state figures or dates that contradict each other."""
+    a_numbers, a_months = _claim_hard_tokens(a)
+    b_numbers, b_months = _claim_hard_tokens(b)
+    if a_numbers and b_numbers and not (a_numbers & b_numbers):
+        return True
+    if a_months and b_months and not (a_months & b_months):
+        return True
+    return False
+
+
+def _overlap_score(candidate: dict, central: dict) -> float:
+    """Raw Jaccard overlap of two claims' content words, or ``0.0`` when empty."""
+    candidate_words = _corroboration_words(candidate)
+    central_words = _corroboration_words(central)
+    union = candidate_words | central_words
+    if not union:
+        return 0.0
+    return len(candidate_words & central_words) / len(union)
+
+
+def corroboration_score(
+    candidate: dict, central: dict, *, entities: list[str] | None = None
+) -> float:
+    """The overlap by which ``candidate`` corroborates ``central``, or ``0.0``.
+
+    The score is the Jaccard overlap of the two claims' content words (claim
+    text plus value). It counts only when it reaches ``facts.corroboration_overlap``,
+    the two claims state no contradicting figures or dates, and the candidate
+    names at least one of the story's primary entities.
+    """
+    score = _overlap_score(candidate, central)
+    if score < _corroboration_overlap():
+        return 0.0
+    if _claims_conflict(candidate, central):
+        return 0.0
+    if entities:
+        text = f"{candidate.get('claim', '')} {candidate.get('value', '')}"
+        if not any(_claim_names_entity(text, entity) for entity in entities):
+            return 0.0
+    return score
+
+
+def corroborating_claims(
+    claims: list[dict],
+    central: dict,
+    *,
+    exclude: Iterable[dict] | None = None,
+    entities: list[str] | None = None,
+) -> list[tuple[float, dict]]:
+    """The best corroborating claim per other source, with its overlap score.
+
+    ``claims`` are the story's extracted claims; ``exclude`` names the central
+    fact's own claims (already represented in its versions). For every other
+    source the single best-matching claim that reaches the corroboration
+    threshold is returned as ``(score, claim)``, sorted by source URL for stable
+    output.
+    """
+    excluded_ids = {id(claim) for claim in (exclude or [])}
+    best_by_source: dict[str, tuple[float, dict]] = {}
+    for claim in claims or []:
+        if id(claim) in excluded_ids:
+            continue
+        if claim.get("kind") not in CORROBORATING_KINDS:
+            continue
+        score = corroboration_score(claim, central, entities=entities)
+        if score <= 0.0:
+            continue
+        url_key = _claim_source_url_key(claim)
+        current = best_by_source.get(url_key)
+        if current is None or score > current[0]:
+            best_by_source[url_key] = (score, claim)
+    return [best_by_source[key] for key in sorted(best_by_source)]
 
 
 def _preferred_central_index(
@@ -2688,6 +2891,82 @@ def _confirmation_reason(confirmation: dict) -> str:
     return "no tier-1 source and fewer than two independent named origins"
 
 
+#: How many claims of one source an unconfirmed sheet's diagnostics keep.
+MAX_DIAGNOSTIC_CLAIMS_PER_SOURCE = 20
+
+
+def _claims_by_source(claims: list[dict]) -> list[dict]:
+    """Per-source claim labels for the unconfirmed sheet's diagnostics.
+
+    The story's extracted claims are grouped by source URL (sorted), keeping each
+    claim's text, kind and origin, capped at
+    :data:`MAX_DIAGNOSTIC_CLAIMS_PER_SOURCE` per source. Claim text and labels
+    only -- never the source body.
+    """
+    by_url: dict[str, list[dict]] = {}
+    for claim in claims or []:
+        key = _source_url_key(claim.get("source_url"))
+        if key:
+            by_url.setdefault(key, []).append(claim)
+    diagnostics: list[dict] = []
+    for key in sorted(by_url):
+        entries = by_url[key]
+        diagnostics.append(
+            {
+                "source_url": entries[0].get("source_url"),
+                "claims": [
+                    {
+                        "claim": claim.get("claim"),
+                        "kind": claim.get("kind"),
+                        "origin": claim.get("origin"),
+                    }
+                    for claim in entries[:MAX_DIAGNOSTIC_CLAIMS_PER_SOURCE]
+                ],
+            }
+        )
+    return diagnostics
+
+
+def _corroboration_diagnostics(
+    claims: list[dict],
+    central: Optional[dict],
+    *,
+    entities: list[str] | None = None,
+) -> list[dict]:
+    """Per non-central source: its best central-fact overlap and matched claim.
+
+    The sources that already state the central fact are skipped. For every other
+    source, the claim with the highest raw overlap against the central claim is
+    reported with that score; ``matched_claim`` is its claim text when the
+    source's claim actually corroborates the central fact (reaches the
+    threshold, states no contradicting figures or dates and names an entity),
+    else ``null``. Empty when there is no central claim.
+    """
+    if central is None:
+        return []
+    central_urls = {
+        _source_url_key(url) for url in (central.get("source_urls") or [central.get("source_url")])
+    }
+    best: dict[str, tuple[float, bool, dict]] = {}
+    for claim in claims or []:
+        key = _source_url_key(claim.get("source_url"))
+        if not key or key in central_urls:
+            continue
+        score = _overlap_score(claim, central)
+        qualifies = corroboration_score(claim, central, entities=entities) > 0.0
+        current = best.get(key)
+        if current is None or score > current[0]:
+            best[key] = (score, qualifies, claim)
+    return [
+        {
+            "source_url": best[key][2].get("source_url"),
+            "score": round(best[key][0], 4),
+            "matched_claim": best[key][2].get("claim") if best[key][1] else None,
+        }
+        for key in sorted(best)
+    ]
+
+
 def _write_unconfirmed_sheet(
     output_dir: Path,
     name: str,
@@ -2727,6 +3006,11 @@ def _write_unconfirmed_sheet(
         "origins": list(confirmation.get("origins") or []),
         "sources": sheet_sources,
         "claims": claims,
+        # Diagnostics: which source stated what, and how close each came to
+        # corroborating the central fact. Present only in unconfirmed sheets
+        # (the writer never sees these keys).
+        "claims_by_source": _claims_by_source(kept),
+        "corroboration": _corroboration_diagnostics(kept, central, entities=canonical),
         "grounding": [
             {"claim": entry["claim"].get("claim"), "reason": entry["reason"]}
             for entry in (grounding_details or [])
@@ -2820,9 +3104,14 @@ def facts(
         logger.info("facts reused cached sheet %s (fingerprint match)", path)
         return payload
 
+    selected_sources = _select_sources(sources, max_sources)
     extracted: list[dict] = []
     generation = None
-    for source in _select_sources(sources, max_sources):
+    # True when the model-call budget stopped extraction before every selected
+    # source was read, so a later "unconfirmed" verdict reflects the budget
+    # rather than the story's coverage.
+    budget_truncated = False
+    for position, source in enumerate(selected_sources):
         text = str(source.get("text") or "")
         if not text.strip():
             logger.info("story %s: source %s has no text; nothing to extract", name, source.get("link"))
@@ -2832,6 +3121,7 @@ def facts(
             and model_call_budget is not None
             and run_state.calls >= model_call_budget
         ):
+            budget_truncated = position < len(selected_sources)
             logger.warning(
                 "story %s: model-call budget of %d reached; skipping remaining sources",
                 name, model_call_budget,
@@ -2936,10 +3226,39 @@ def facts(
             name, title,
         )
 
+    # Other sources whose own wording restates the central fact corroborate it:
+    # their claim is recorded as a corroborated version of the central claim
+    # (keeping its own value, origin and kind) and counts as that source stating
+    # the central fact. Corroboration is additive -- the claim stays its own
+    # merged entry in ``claims``. A claim contradicting the central fact's
+    # figures or dates, or reaching too little shared wording, never corroborates.
+    corroborating = (
+        corroborating_claims(
+            kept,
+            central,
+            exclude=central_group,
+            entities=canonical,
+        )
+        if central is not None
+        else []
+    )
+    if corroborating:
+        central.setdefault("versions", []).extend(
+            {
+                "source_url": claim.get("source_url"),
+                "value": str(claim.get("value")),
+                "origin": str(claim.get("origin") or UNSTATED_ORIGIN),
+                "kind": str(claim.get("kind")),
+                "corroborated": True,
+            }
+            for _score, claim in corroborating
+        )
+
     # Confirmation uses the pre-merge claims of the central fact only: it is
     # about who produced that claim, so three outlets repeating one origin still
     # collapse to one origin, two origins from the same article never count as
-    # two, and other claims' origins never count.
+    # two, and other claims' origins never count. Corroborating claims are the
+    # exception: they explicitly restate the central fact, so their origins count.
     confirmation = confirmation_from_sources(
         sources,
         claims=central_group if central_group is not None else kept,
@@ -2947,6 +3266,7 @@ def facts(
         allow_single_origin_attributed=allow_single,
         aliases=aliases,
         entities=canonical,
+        corroborating=[claim for _score, claim in corroborating],
     )
     # A tier-1 source that only mentions the topic in passing does not confirm
     # the story: it is the headline's fact the story must establish, not any
@@ -2981,7 +3301,7 @@ def facts(
             primary=primary, canonical=canonical, grounding_details=ungrounded_details,
             origin_downgrades=origin_downgrades,
         )
-        raise UnconfirmedStory(message)
+        raise UnconfirmedStory(message, budget_truncated=budget_truncated)
 
     payload = {
         "id": name,

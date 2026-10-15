@@ -120,17 +120,30 @@ DEFAULT_RELATIVE_TIME_WORDS: tuple[str, ...] = (
     "tomorrow", "recently", "soon",
 )
 
-#: Performance/marketing terms that, beside a number, make a sentence a
-#: company's own performance or marketing claim. Such a sentence must carry an
+#: Comparison terms for the numeric performance/marketing rule. A sentence is a
+#: performance or marketing claim only when a number sits within three tokens of
+#: one of these terms, or when one of them is followed by "than" and the sentence
+#: has a number ("46 percent faster than Steam"). Such a sentence must carry an
 #: attribution cue naming a source in the same sentence, or it is unsupported
 #: ("unattributed performance claim"). Overridable via
-#: ``verify.company_claim_terms`` in config.yaml. Plain facts (dates, prices,
-#: version numbers, counts) have no term from this list and are not affected.
+#: ``verify.company_claim_terms`` in config.yaml. Bare qualifiers ("up to",
+#: "most", "best", "record") are deliberately absent, so plain facts (dates,
+#: prices, version numbers, counts) are never flagged.
 DEFAULT_COMPANY_CLAIM_TERMS: tuple[str, ...] = (
-    "faster", "slower", "better", "smoother", "more efficient", "up to",
-    "times faster", "percent faster", "record", "fastest", "best", "most",
-    "improves", "improvement", "boosts", "reduces", "higher", "lower",
+    "faster", "slower", "smoother", "higher", "lower", "smaller", "larger",
+    "more efficient", "improves", "improvement", "boosts", "reduces",
+    "increase", "decrease",
 )
+
+#: A bare multiplier counts as a numeric performance claim on its own
+#: ("2x the frame rate", "3 times the load speed"). "times" is only a multiplier
+#: when a number precedes it, so an outlet name ("The New York Times") never
+#: matches.
+_MULTIPLIER_RE = re.compile(r"\b\d[\d.,]*(?:\s*[x\u00d7]|\s+times)\b", re.I)
+
+#: Tokens within this many positions of a comparison term count as numeric
+#: performance claims.
+_COMPANY_CLAIM_DISTANCE = 3
 
 #: Verbs that attribute a claim when the sentence also names a source before
 #: them ("Epic says", "Digital Foundry measured").
@@ -934,26 +947,52 @@ def code_check(article: Any, facts: dict, config: dict) -> dict:
     return {"ok": not unmatched, "unmatched": _dedupe(unmatched), "checked": len(article_values)}
 
 
+def _numeric_performance_claim(sentence: str, term_spans: list[tuple[str, ...]]) -> bool:
+    """True when ``sentence`` states a numeric performance/marketing claim.
+
+    A claim is a number within :data:`_COMPANY_CLAIM_DISTANCE` tokens of a
+    comparison term ("12 percent higher", "20 percent smaller than before"), one
+    of those terms followed by "than" with a number anywhere ("46 percent faster
+    than Steam"), or a bare multiplier ("2x", "3 times"). A sentence with no
+    number, or with no such term near a number, is left alone.
+    """
+    tokens = re.findall(r"[a-z0-9]+", sentence.lower())
+    if not any(any(char.isdigit() for char in token) for token in tokens):
+        return False
+    if _MULTIPLIER_RE.search(sentence):
+        return True
+    number_at = [
+        index for index, token in enumerate(tokens) if any(char.isdigit() for char in token)
+    ]
+    for span in term_spans:
+        words = " ".join(span)
+        if re.search(rf"\b{re.escape(words)}\s+than\b", sentence.lower()):
+            return True
+        width = len(span)
+        for start in range(len(tokens) - width + 1):
+            if tuple(tokens[start : start + width]) != span:
+                continue
+            low, high = start - _COMPANY_CLAIM_DISTANCE, start + width - 1 + _COMPANY_CLAIM_DISTANCE
+            if any(low <= index <= high for index in number_at):
+                return True
+    return False
+
+
 def _company_claim_check(article: Any, config: dict) -> list[str]:
-    """Sentences with a number and a performance term but no attribution.
+    """Sentences with a number near a comparison term but no attribution.
 
     Deterministic and model-independent: a numeric performance or marketing
     claim must carry an attribution cue naming a source in the same sentence
     ("Epic says", "according to Digital Foundry", "in a blog post"), or the
-    sentence is unsupported with the reason "unattributed performance claim".
-    A sentence with no number, or no performance/marketing term, is not a claim
-    and is left alone, so plain facts (dates, prices, version numbers, counts)
-    never trip this rule.
+    sentence is unsupported with the reason "unattributed performance claim". A
+    number must sit within three tokens of a comparison term (or the term must
+    read "… than" with a number present): a bare qualifier, date, price, version
+    number or count is not a performance claim and is left alone.
     """
     terms = tuple(config.get("company_claim_terms") or DEFAULT_COMPANY_CLAIM_TERMS)
     if not terms:
         return []
-    term_re = re.compile(
-        r"\b(?:"
-        + "|".join(re.escape(term) for term in sorted(terms, key=len, reverse=True))
-        + r")\b",
-        re.I,
-    )
+    term_spans = [tuple(str(term).lower().split()) for term in terms if str(term).strip()]
     _front, body = _split_front_matter(_as_text(article))
     flagged: list[str] = []
     for line in body.splitlines():
@@ -962,7 +1001,9 @@ def _company_claim_check(article: Any, config: dict) -> list[str]:
             continue
         for sentence in _SENTENCE_SPLIT_RE.split(line):
             sentence = sentence.strip()
-            if not sentence or not re.search(r"\d", sentence) or not term_re.search(sentence):
+            if not sentence or not re.search(r"\d", sentence):
+                continue
+            if not _numeric_performance_claim(sentence, term_spans):
                 continue
             if _CLAIM_CUE_RE.search(sentence) or _CLAIM_LEAD_RE.search(sentence):
                 continue

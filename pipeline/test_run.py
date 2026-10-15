@@ -1033,3 +1033,94 @@ def test_post_gather_redirect_to_unconfigured_domain_cannot_confirm(tmp_path):
     report = latest_candidates_report(paths)
     assert report["candidates"][0]["reason"] == "insufficient sources"
     assert report["candidates"][0]["outcome"] == "not ready"
+
+
+# --- model budget stopped mid-extraction --------------------------------------
+
+
+def budget_config(tmp_path, budget):
+    source_config = Path(run_module.__file__).resolve().parent / "config.yaml"
+    config = yaml.safe_load(source_config.read_text(encoding="utf-8"))
+    config.setdefault("score", {})["model_call_budget"] = budget
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return config_path
+
+
+def unconfirmed_records(paths):
+    if not paths.failed.exists():
+        return {}
+    return json.loads(paths.failed.read_text(encoding="utf-8")).get("unconfirmed", {})
+
+
+def test_budget_truncated_unconfirmed_is_incomplete_and_not_remembered(tmp_path):
+    paths = make_paths(tmp_path)
+    config_path = budget_config(tmp_path, 1)
+    items = [
+        item("Halo returns to Xbox Game Pass", "https://h.example/1", owner="owner-h1", age_hours=1),
+        item("A new Titanfall game campaign is in development", "https://t.example/1", owner="owner-t1", age_hours=2),
+        item("Halo returns to Xbox Game Pass", "https://h.example/2", owner="owner-h2", age_hours=1),
+        item("A new Titanfall game campaign is in development", "https://t.example/2", owner="owner-t2", age_hours=2),
+    ]
+    calls = {"gather": 0}
+
+    def gather_fn(chosen, *, output_dir=None, id=None):
+        calls["gather"] += 1
+        return dryrun.sample_gathered(id, NOW)
+
+    def budget_truncated(gathered, *, id=None, output_dir=None, generate=None,
+                         run_state=None, now=None, title=None, entities=None, **kwargs):
+        generation = providers.Generation("fast", "mock", "mock-fast", "google", "{}")
+        (run_state or providers.RunState()).record(generation)
+        raise run_module.facts_stage.UnconfirmedStory(
+            f"budget: {title}", budget_truncated=True
+        )
+
+    first = run_with_items(
+        tmp_path, items, config_path=config_path,
+        gather_fn=gather_fn, facts_fn=budget_truncated,
+    )
+    assert first.status == "nothing"
+    assert first.exit_code == 0
+    assert calls["gather"] == 1, "the search stops once the budget is spent"
+    # A budget-truncated candidate is NOT remembered as a failed/unconfirmed
+    # story, and never touches the breaker.
+    assert unconfirmed_records(paths) == {}
+    if paths.breaker.exists():
+        assert json.loads(paths.breaker.read_text(encoding="utf-8"))["consecutive_failures"] == 0
+    report = latest_candidates_report(paths)
+    assert report["candidates"][0]["outcome"] == "incomplete"
+    assert report["candidates"][0]["reason"] == "model budget spent mid-extraction"
+    assert report["candidates"][0]["confirmed"] is False
+
+    # Because it was never remembered, the unchanged cluster is eligible again
+    # on the next run (and is gathered once more).
+    calls["gather"] = 0
+    second = run_with_items(
+        tmp_path, items, now=NOW + dt.timedelta(hours=1), config_path=config_path,
+        gather_fn=gather_fn, facts_fn=budget_truncated,
+    )
+    assert second.status == "nothing"
+    assert calls["gather"] == 1, "an incomplete cluster must be tried again next run"
+
+
+def test_plain_unconfirmed_is_still_remembered(tmp_path):
+    paths = make_paths(tmp_path)
+    items = [
+        item("Nintendo Switch 2 passes 20 million sold", "https://n.example/1", owner="owner-n1"),
+        item("Nintendo Switch 2 passes 20 million sold", "https://n.example/2", owner="owner-n2"),
+    ]
+
+    def always_unconfirmed(gathered, *, id=None, output_dir=None, generate=None,
+                           run_state=None, now=None, title=None, entities=None, **kwargs):
+        raise run_module.facts_stage.UnconfirmedStory(f"not confirmed: {title}")
+
+    result = run_with_items(tmp_path, items, facts_fn=always_unconfirmed)
+    assert result.status == "nothing"
+    cluster_id = run_module.cluster.cluster_id_for_urls(
+        ["https://n.example/1", "https://n.example/2"]
+    )
+    assert cluster_id in unconfirmed_records(paths)
+    report = latest_candidates_report(paths)
+    assert report["candidates"][0]["outcome"] == "dropped"
+    assert report["candidates"][0]["reason"] == "unconfirmed"
