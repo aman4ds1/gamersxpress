@@ -37,7 +37,7 @@
     "Insomniac Games",
     "Guerrilla Games",
     "Respawn Entertainment",
-    "Remedy Entertainment",
+    {"canonical": "Remedy Entertainment", "aliases": ["Remedy"]},
     "Crytek",
     "Devolver Digital",
     "Paradox Interactive",

@@ -3353,13 +3353,22 @@ def acme_scenario(count=3, owners=None, text=ACME_TEXT):
     return sources, payloads
 
 
-def ev_claim(url, *, speaker="Acme Games", speaker_type="organization", kind="confirmed", ok=True):
+def ev_claim(
+    url,
+    *,
+    speaker="Acme Games",
+    speaker_type="organization",
+    kind="confirmed",
+    ok=True,
+    affiliation="",
+):
     return {
         "source_url": url,
         "speaker": speaker,
         "speaker_type": speaker_type,
         "kind": kind,
         "origin": speaker,
+        "affiliation": affiliation,
         "evidence": {"ok": ok},
     }
 
@@ -3520,6 +3529,83 @@ def test_evidence_confirmation_two_independent_origins():
     result = facts.evidence_confirmation(claims, by_url, aliases={})
     assert result["confirmed"] is True
     assert result["rule"] == "two-independent-origins"
+
+
+def test_evidence_confirmation_collapses_one_org_spelled_two_ways_by_alias():
+    # "Remedy" is an alias of "Remedy Entertainment" (data/orgs.json), so the two
+    # spellings are one speaker and confirm through first-party, not
+    # two-independent-origins.
+    by_url = by_url_map(("https://a/1", "co-a"), ("https://b/1", "co-b"))
+    claims = [
+        ev_claim("https://a/1", speaker="Remedy", speaker_type="organization"),
+        ev_claim("https://b/1", speaker="Remedy Entertainment", speaker_type="organization"),
+    ]
+    result = facts.evidence_confirmation(claims, by_url)
+    assert result["confirmed"] is True
+    assert result["rule"] == "first-party"
+    assert result["first_party_organizations"] == ["remedy entertainment"]
+    assert result["first_party_sources"] == 2
+    assert result["origins"] == ["remedy entertainment"]
+
+
+def test_evidence_confirmation_collapses_contained_names_not_in_the_files():
+    # Neither name is in data/orgs.json or data/origins.json; the whole-word
+    # containment rule still makes them one identity.
+    by_url = by_url_map(("https://a/1", "co-a"), ("https://b/1", "co-b"))
+    claims = [
+        ev_claim("https://a/1", speaker="Acme", speaker_type="organization"),
+        ev_claim("https://b/1", speaker="Acme Games", speaker_type="organization"),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["confirmed"] is True
+    assert result["rule"] == "first-party"
+    assert result["first_party_organizations"] == ["acme"]
+
+
+def test_evidence_confirmation_keeps_distinct_organizations_distinct():
+    by_url = by_url_map(("https://a/1", "co-a"), ("https://b/1", "co-b"))
+    claims = [
+        ev_claim("https://a/1", speaker="Acme Games", speaker_type="organization"),
+        ev_claim("https://b/1", speaker="Beta Corp", speaker_type="organization"),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["confirmed"] is True
+    assert result["rule"] == "two-independent-origins"
+    assert result["origins"] == ["acme games", "beta corp"]
+
+
+def test_evidence_confirmation_folds_a_person_into_their_employer_only_with_affiliation():
+    by_url = by_url_map(("https://a/1", "co-a"), ("https://b/1", "co-b"))
+    with_affiliation = [
+        ev_claim(
+            "https://a/1", speaker="Jane Coder", speaker_type="person",
+            kind="reported", affiliation="Acme Games",
+        ),
+        ev_claim("https://b/1", speaker="Acme Games", speaker_type="organization"),
+    ]
+    folded = facts.evidence_confirmation(with_affiliation, by_url, aliases={})
+    assert folded["origins"] == ["acme games"]
+    assert folded["confirmed"] is False
+
+    without_affiliation = [
+        ev_claim("https://a/1", speaker="Jane Coder", speaker_type="person", kind="reported"),
+        ev_claim("https://b/1", speaker="Acme Games", speaker_type="organization"),
+    ]
+    distinct = facts.evidence_confirmation(without_affiliation, by_url, aliases={})
+    assert distinct["origins"] == ["acme games", "jane coder"]
+    assert distinct["confirmed"] is True
+    assert distinct["rule"] == "two-independent-origins"
+
+
+def test_evidence_confirmation_two_spellings_from_one_owner_count_once():
+    by_url = by_url_map(("https://a/1", "co-a"), ("https://b/1", "co-a"))
+    claims = [
+        ev_claim("https://a/1", speaker="Remedy", speaker_type="organization"),
+        ev_claim("https://b/1", speaker="Remedy Entertainment", speaker_type="organization"),
+    ]
+    result = facts.evidence_confirmation(claims, by_url)
+    assert result["confirmed"] is False
+    assert result["origins"] == ["remedy entertainment"]
 
 
 def test_evidence_confirmation_tier1_short_circuits():

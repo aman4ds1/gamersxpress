@@ -3253,6 +3253,48 @@ def _collapse_contained_origins(names: set[str]) -> list[str]:
     return sorted(kept)
 
 
+def _collapse_origin_identities(names: set[str]) -> dict[str, str]:
+    """Map every canonical name to the single identity it collapses to.
+
+    Applies the same containment rule as :func:`_collapse_contained_origins` --
+    two spellings of one name where one is a whole-word part of the other count
+    once, and a known organization (``data/orgs.json``) is never dropped in
+    favour of a shorter form that is not itself a known organization -- but
+    returns the full mapping instead of a list, so a caller can group counts by
+    the representative. A name with no counterpart maps to itself.
+    """
+    organizations = load_organizations()
+    ordered = sorted(names, key=lambda name: (len(name.split()), len(name), name))
+    kept: list[str] = []
+    for name in ordered:
+        key = _origin_key(name)
+        replaced = False
+        for index, other in enumerate(kept):
+            if not _contains_name(key, _origin_key(other)):
+                continue
+            if key in organizations and _origin_key(other) not in organizations:
+                kept[index] = name
+            replaced = True
+            break
+        if not replaced:
+            kept.append(name)
+    identities: dict[str, str] = {}
+    for name in names:
+        key = _origin_key(name)
+        representative = name
+        for candidate in kept:
+            candidate_key = _origin_key(candidate)
+            if (
+                candidate_key == key
+                or _contains_name(key, candidate_key)
+                or _contains_name(candidate_key, key)
+            ):
+                representative = candidate
+                break
+        identities[name] = representative
+    return identities
+
+
 def _claim_source_url_key(claim: dict) -> str:
     """Match key for the source that states a claim.
 
@@ -3908,21 +3950,29 @@ def evidence_confirmation(
 ) -> dict:
     """Confirm the central fact from verified evidence over the central group.
 
+    Every speaker is first resolved to a single canonical identity: through the
+    alias and organization files (``data/origins.json``, ``data/orgs.json``),
+    then -- for names in neither -- by collapsing names where one is a
+    whole-word part of the other, so one organization spelled two ways
+    ("remedy", "remedy entertainment") counts as one speaker. A claim whose
+    affiliation names an organization counts as that organization, so a person
+    and the employer the evidence states are one identity. Two distinct persons
+    or organizations with different names stay distinct.
+
     Rules in order: a tier-1 source states the headline claim (unchanged, passed
     in as ``tier1_confirms``); first-party, when ``min_first_party`` distinct
     owners each carry a claim in the group whose stored evidence passed, whose
-    ``speaker_type`` is organization, whose speaker canonicalizes to the same
+    ``speaker_type`` is organization, whose canonical identity is the same
     organization and whose kind may be first party; two-independent-origins,
-    when at least two distinct named speakers back the group from at least two
-    distinct owners. Only claims whose stored evidence ``ok`` is true count, so
-    an anonymous speaker, a product, the outlet citing itself or an unverified
-    quote never confirms anything. Owners count once.
+    when at least two distinct canonical speakers back the group from at least
+    two distinct owners. Only claims whose stored evidence ``ok`` is true count,
+    so an anonymous speaker, a product, the outlet citing itself or an
+    unverified quote never confirms anything. Owners count once.
     """
     aliases = load_origin_aliases() if aliases is None else aliases
     if min_first_party is None:
         min_first_party = _min_first_party_sources()
-    org_owners: dict[str, set[str]] = {}
-    speaker_owners: dict[str, set[str]] = {}
+    resolved: list[tuple[str, str, str, str]] = []
     verified = 0
     for claim in claims or []:
         evidence = claim.get("evidence")
@@ -3940,14 +3990,43 @@ def evidence_confirmation(
         if _is_publication(speaker, source):
             continue
         owner = _claim_owner(claim, by_url)
-        canonical = canonicalize_origin(speaker, aliases)
+        # A stated affiliation names the organization a speaker works for, so
+        # the person and that organization are one identity -- but only when the
+        # evidence states the affiliation.
+        identity_source = speaker
+        affiliation = str(claim.get("affiliation") or "").strip()
+        if affiliation and affiliation.lower() != UNSTATED_ORIGIN:
+            canonical_affiliation = canonicalize_origin(affiliation, aliases)
+            if (
+                canonical_affiliation
+                and canonical_affiliation != UNSTATED_ORIGIN
+                and not _is_anonymous_origin(canonical_affiliation, aliases)
+            ):
+                identity_source = canonical_affiliation
+        canonical = canonicalize_origin(identity_source, aliases)
         if canonical == UNSTATED_ORIGIN:
             continue
-        speaker_type = str(claim.get("speaker_type") or "none")
-        if speaker_type == "organization" and claim.get("kind") in FIRST_PARTY_KINDS:
-            org_owners.setdefault(canonical, set()).add(owner)
+        resolved.append(
+            (
+                canonical,
+                owner,
+                str(claim.get("speaker_type") or "none"),
+                str(claim.get("kind") or ""),
+            )
+        )
+
+    # One organization spelled two ways is one speaker: collapse every canonical
+    # name to a single identity before any rule counts it.
+    identities = _collapse_origin_identities({canonical for canonical, *_ in resolved})
+
+    org_owners: dict[str, set[str]] = {}
+    speaker_owners: dict[str, set[str]] = {}
+    for canonical, owner, speaker_type, kind in resolved:
+        identity = identities.get(canonical, canonical)
+        if speaker_type == "organization" and kind in FIRST_PARTY_KINDS:
+            org_owners.setdefault(identity, set()).add(owner)
         if speaker_type in ("person", "organization", "outlet"):
-            speaker_owners.setdefault(canonical, set()).add(owner)
+            speaker_owners.setdefault(identity, set()).add(owner)
 
     first_party_orgs = sorted(
         org for org, owners in org_owners.items() if len(owners) >= min_first_party
