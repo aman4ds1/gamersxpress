@@ -348,6 +348,138 @@ def test_repair_accepts_an_explicit_prompt_and_skips_build():
     assert seen["prompt"] == "EXPLICIT"
 
 
+# --- repair validation --------------------------------------------------------
+
+
+REPAIR_FRONT = (
+    "---\n"
+    "title: Synthetic title for the repair validation tests\n"
+    "description: A synthetic description written only for the repair tests here.\n"
+    "---\n"
+)
+OVERVIEW_SENTENCE = "The glasses ship in two colors worldwide."
+UNATTRIBUTED_SENTENCE = "The card ships with a two-year warranty worldwide."
+ATTRIBUTED_SENTENCE = "Acme states that the glasses use a 240 Hz display panel."
+UNATTRIBUTED_REPLACEMENT = "The glasses use a 240 Hz display panel worldwide."
+ATTRIBUTED_REPLACEMENT = "Acme says the glasses render at 240 Hz refresh rate worldwide."
+
+
+def repair_article(*sentences):
+    """A synthetic draft: front matter, one heading and one line per sentence."""
+    return REPAIR_FRONT + "## Overview\n\n" + "\n".join(sentences)
+
+
+def test_validate_repair_accepts_an_unchanged_draft():
+    draft = repair_article(ATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    assert write_module.validate_repair(draft, draft, ["a clause not in the text"]) == []
+
+
+def test_validate_repair_accepts_deleting_a_flagged_sentence():
+    original = repair_article(UNATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(OVERVIEW_SENTENCE)
+    assert write_module.validate_repair(original, repaired, [UNATTRIBUTED_SENTENCE]) == []
+
+
+def test_validate_repair_accepts_deleting_an_attributed_flagged_sentence():
+    original = repair_article(ATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(OVERVIEW_SENTENCE)
+    assert write_module.validate_repair(original, repaired, [ATTRIBUTED_SENTENCE]) == []
+
+
+def test_validate_repair_accepts_a_replacement_that_keeps_the_attribution():
+    original = repair_article(ATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(ATTRIBUTED_REPLACEMENT, OVERVIEW_SENTENCE)
+    assert write_module.validate_repair(original, repaired, [ATTRIBUTED_SENTENCE]) == []
+
+
+def test_validate_repair_rejects_a_replacement_that_drops_the_attribution():
+    original = repair_article(ATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(UNATTRIBUTED_REPLACEMENT, OVERVIEW_SENTENCE)
+    problems = write_module.validate_repair(original, repaired, [ATTRIBUTED_SENTENCE])
+    assert any("drops the attribution to acme" in problem for problem in problems), problems
+
+
+def test_validate_repair_rejects_a_fragment_left_by_a_replacement():
+    original = repair_article(UNATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article("The two-year warranty.", OVERVIEW_SENTENCE)
+    problems = write_module.validate_repair(original, repaired, [UNATTRIBUTED_SENTENCE])
+    assert any("fewer than 6 words" in problem for problem in problems), problems
+
+
+def test_validate_repair_rejects_truncating_an_unflagged_sentence():
+    original = repair_article(UNATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(UNATTRIBUTED_SENTENCE, "The glasses ship in two colors.")
+    problems = write_module.validate_repair(original, repaired, [UNATTRIBUTED_SENTENCE])
+    assert any("unflagged sentence was changed or dropped" in problem for problem in problems), problems
+
+
+def test_validate_repair_rejects_any_wording_change_to_an_unflagged_sentence():
+    original = repair_article(UNATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(UNATTRIBUTED_SENTENCE, "The glasses ship in three colors worldwide.")
+    problems = write_module.validate_repair(original, repaired, [UNATTRIBUTED_SENTENCE])
+    assert any("unflagged sentence was changed or dropped" in problem for problem in problems), problems
+
+
+def test_validate_repair_rejects_a_changed_front_matter_field():
+    original = repair_article(OVERVIEW_SENTENCE)
+    repaired = original.replace("title: Synthetic title for the repair validation tests",
+                                "title: A rewritten title")
+    problems = write_module.validate_repair(original, repaired, ["absent clause"])
+    assert any("unflagged sentence was changed or dropped" in problem for problem in problems), problems
+
+
+def test_validate_repair_rejects_an_appended_facts_sheet_block():
+    original = repair_article(OVERVIEW_SENTENCE)
+    repaired = original + "\n\n## Facts sheet\n\nF1: 'A game was announced'\n"
+    problems = write_module.validate_repair(original, repaired, ["absent clause"])
+    assert any("leaks pipeline detail" in problem for problem in problems), problems
+    assert any("heading or list item" in problem for problem in problems), problems
+
+
+def test_validate_repair_rejects_a_facts_sheet_json_key():
+    original = repair_article(OVERVIEW_SENTENCE)
+    repaired = original + '\n\nA sheet row reads "source_urls": ["https://a.example/1"] here.\n'
+    problems = write_module.validate_repair(original, repaired, ["absent clause"])
+    assert any("JSON key" in problem for problem in problems), problems
+
+
+def test_validate_repair_rejects_a_word_count_beyond_the_margin():
+    original = repair_article(UNATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    additions = (
+        "Acme explained that the shipping window covers every region where the glasses "
+        "are sold, that the packaging includes a cleaning cloth, and that the charging "
+        "cable ships inside the box with the headset.",
+        "The company also said the accessory lineup arrives later this year with a travel "
+        "case, a replacement strap, a lens cloth, and a printed manual written in six "
+        "separate languages worldwide.",
+    )
+    repaired = repair_article(UNATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE, *additions)
+    assert (
+        len(repaired.split()) - len(original.split())
+    ) > write_module.REPAIR_MAX_NET_ADDED_WORDS
+    problems = write_module.validate_repair(original, repaired, [UNATTRIBUTED_SENTENCE])
+    assert any("grows the article" in problem for problem in problems), problems
+
+
+def test_validate_repair_ignores_attribution_rules_for_plain_sentences():
+    original = repair_article(UNATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(
+        "The card ships with a two-year warranty worldwide.",
+        OVERVIEW_SENTENCE,
+        "The warranty covers repairs at service centers in nine countries worldwide.",
+    )
+    assert write_module.validate_repair(original, repaired, [UNATTRIBUTED_SENTENCE]) == []
+
+
+def test_build_repair_prompt_shows_the_verifier_reason_for_each_clause():
+    prompt = write_module.build_repair_prompt(
+        "## Body\nAn unsupported sentence.",
+        [{"clause": "An unsupported sentence", "reason": "the sheet does not state a ship date"}],
+        facts_sheet(),
+    )
+    assert "- An unsupported sentence (flagged because: the sheet does not state a ship date)" in prompt
+
+
 # --- compact writer view ------------------------------------------------------
 
 

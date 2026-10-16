@@ -144,6 +144,41 @@ def test_heading_skip_fails():
     assert not run(article).passed
 
 
+def test_leak_check_reads_the_body_only():
+    article, _ = make_article()
+    assert "facts sheet" in article, "the fixture description mentions the facts sheet"
+    result = run(article)
+    assert result.checks["leak"]["failures"] == []
+    assert result.passed, result.failures
+
+
+def test_facts_sheet_block_in_the_body_fails():
+    body = "## Overview\n\n" + filler() + "\n\n## Facts sheet\n\nF1: 'A game was announced'\n"
+    article, _ = make_article(body=body)
+    result = run(article)
+    assert not result.passed
+    failures = result.checks["leak"]["failures"]
+    assert any("facts-sheet heading" in failure for failure in failures), failures
+    assert any("numbered fact line" in failure for failure in failures), failures
+    assert any("leaks pipeline detail" in failure for failure in result.failures)
+
+
+def test_facts_sheet_json_key_in_the_body_fails():
+    body = "## Overview\n\n" + filler() + '\n\nA sheet row reads "source_urls": ["https://a.example/1"] here.\n'
+    article, _ = make_article(body=body)
+    result = run(article)
+    assert not result.passed
+    assert any("JSON key" in failure for failure in result.checks["leak"]["failures"])
+
+
+def test_raw_json_block_in_the_body_fails():
+    body = '## Overview\n\n' + filler() + '\n\n```json\n{"kind": "confirmed"}\n```\n'
+    article, _ = make_article(body=body)
+    result = run(article)
+    assert not result.passed
+    assert any("raw JSON block" in failure for failure in result.checks["leak"]["failures"])
+
+
 def test_source_url_not_in_facts_fails():
     article, _ = make_article(
         front_overrides={"sources": [

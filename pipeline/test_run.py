@@ -755,6 +755,32 @@ def test_verifier_output_invalid_does_not_trigger_a_repair(tmp_path):
     assert verify_report_file(paths, result)["repair"] is None
 
 
+def test_a_repair_that_leaks_the_facts_sheet_is_rejected(tmp_path):
+    paths = make_paths(tmp_path)
+    original = dryrun.sample_body() + f"\n\n{UNSUPPORTED}\n"
+    # The "repair" deletes the flagged sentence but echoes the prompt's facts
+    # sheet back into the body, so it is rejected without a second verify call.
+    repaired = dryrun.sample_body() + "\n\n## Facts sheet\n\nF1: 'Nvidia confirmed the launch window'\n"
+    calls = repair_calls()
+    generate = repair_generate([original, repaired], [verdict_json(UNSUPPORTED), verdict_json()], calls)
+
+    result = run_module.run(paths=paths, now=NOW, env={}, dry_run=True, generate=generate,
+                            link_checker=lambda url: 200, site_checks=STUB_CHECKS)
+
+    assert result.status == "failed"
+    assert result.exit_code == 3
+    assert calls["writer"] == 2
+    assert calls["verifier"] == 1, "a rejected repair is never re-verified"
+    assert any("repair rejected" in failure for failure in result.report["failures"])
+
+    drafts = paths.drafts_dir / result.report["slug"]
+    assert (drafts / "article.md").read_text(encoding="utf-8") == original, "the original draft is kept"
+    assert (drafts / "repaired.md").read_text(encoding="utf-8") == repaired, "the rejected repair is kept"
+
+    breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
+    assert breaker["consecutive_failures"] == 1, "a rejected repair still counts one failed attempt"
+
+
 # --- readiness gate (enough contributing sources and usable claims) ----------
 
 

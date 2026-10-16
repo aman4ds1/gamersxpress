@@ -11,6 +11,9 @@ block. The gates are:
 * **Structure**: at least ``content_limits.min_words`` words, at most one H1, no
   skipped heading levels, and no body ``Sources`` section (the page renders
   sources from front matter).
+* **Leaks**: no pipeline detail in the body: the repair prompt's facts-sheet
+  heading, numbered fact ids (``F1:``), facts-sheet JSON keys or a raw JSON
+  block (see :data:`LEAK_PATTERNS`).
 * **Sources**: every source URL is http(s), distinct, present in the facts
   sheet, and rendered by the news page template.
 * **Text overlap**: the article must not lift n-grams from the gathered source
@@ -68,6 +71,32 @@ _FENCE_BLOCK_RE = re.compile(r"^\s*```[^\n]*\n.*?^\s*```", re.M | re.DOTALL)
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
 _HREF_RE = re.compile(r"\]\(([^)]+)\)")
 _SOURCES_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+sources\s*$", re.IGNORECASE | re.MULTILINE)
+
+#: Pipeline detail that must never reach reader text. The repair prompt shows
+#: the writer a numbered facts sheet (F1, F2, ...) and a JSON-ish sheet; a model
+#: sometimes echoes that block back into the article. None of it is article
+#: prose, so any hit fails the gate. Patterns are searched in the body only.
+LEAK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("a facts-sheet heading", re.compile(r"(?im)^\s{0,3}#{1,6}\s+facts\b")),
+    ("the phrase 'facts sheet'", re.compile(r"(?i)\bfacts\s+sheet\b")),
+    ("a numbered fact line (F1:)", re.compile(r"(?m)^\s*F\d+\s*:")),
+    (
+        "a facts-sheet JSON key",
+        re.compile(r"(?i)\b(?:source_urls|kind|origin|confidence)\b[\"']?\s*:"),
+    ),
+    ("a raw JSON block", re.compile(r"(?ms)^\s*```(?:json)?\s*\n\s*[\{\[]")),
+)
+
+
+def find_leaks(body: str) -> list[str]:
+    """Reasons for pipeline detail (facts sheet, fact ids, JSON) found in ``body``."""
+    reasons: list[str] = []
+    for label, pattern in LEAK_PATTERNS:
+        match = pattern.search(body or "")
+        if match:
+            snippet = " ".join(match.group(0).split())[:80]
+            reasons.append(f"body leaks pipeline detail ({label}): {snippet!r}")
+    return reasons
 
 # Fallback content limits used only when ``content_limits`` is missing from
 # config.yaml. config.yaml is the single source of truth, shared with the SEO
@@ -607,6 +636,11 @@ def run_gates(
         structure_failures.append("body must not repeat a Sources section; the page renders front-matter sources")
     record("structure", structure_failures, details={"words": words, "headings": len(headings), "h1": h1})
 
+    # 2a. leak guard: the repair prompt's facts sheet (heading, F1 ids, JSON
+    # keys, raw JSON) must never appear in the body.
+    leak_failures = find_leaks(body)
+    record("leak", leak_failures)
+
     # 3. sources
     sources_failures: list[str] = []
     urls = [str(source.get("url") or "") for source in sources if isinstance(source, dict)]
@@ -813,8 +847,10 @@ __all__ = [
     "DEFAULT_GATES",
     "DEFAULT_RULES",
     "GateResult",
+    "LEAK_PATTERNS",
     "default_link_checker",
     "default_site_checks",
+    "find_leaks",
     "load_content_limits",
     "load_content_rules",
     "load_existing_articles",

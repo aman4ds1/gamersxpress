@@ -859,39 +859,67 @@ def run(
         # full re-verification. A verifier_output_invalid verdict (no usable
         # verdict) is never repaired, and no article is ever repaired twice.
         # Timed as its own "repair" stage so verifier latency stays visible.
+        # The repair is also validated against the draft it came from: one that
+        # changed an unflagged sentence, left a fragment or echoed the prompt's
+        # facts sheet is rejected below without a second verification call, with
+        # the original draft kept and the same failure as a failed re-verify.
+        repair_problems: list[str] = []
         if verify_report.failure_reason == "article_rejected" and verify_report.unsupported:
             changed_clauses = list(verify_report.unsupported)
+            sentence_reasons = {
+                str(sentence.get("clause") or ""): str(sentence.get("difference") or "").strip()
+                for sentence in verify_report.model_sentences or []
+                if isinstance(sentence, dict)
+            }
+            flagged_clauses = [
+                {
+                    "clause": clause,
+                    "reason": sentence_reasons.get(clause) or "flagged as unsupported by the facts",
+                }
+                for clause in changed_clauses
+            ]
             with timings.stage("repair"):
                 repaired = repair_fn(
-                    draft, changed_clauses, facts, run_state=run_state, generate=generate,
+                    draft, flagged_clauses, facts, run_state=run_state, generate=generate,
                 )
                 publish_stage.save_repair(
                     draft, repaired.value, slug=provisional_slug, drafts_dir=paths.drafts_dir,
                     changed_clauses=changed_clauses,
                 )
-            draft = repaired.value
-            with timings.stage("verify"):
-                verify_report = verify_fn(
-                    draft, facts, run_state=run_state, generate=generate,
-                    report_dir=paths.reports_dir, id=cluster_id,
-                    repair={
-                        "attempted": True,
-                        "changed_clauses": changed_clauses,
-                        "original_chars": len(writer.value),
-                        "repaired_chars": len(repaired.value),
-                    },
+                repair_problems = write_stage.validate_repair(
+                    draft, repaired.value, changed_clauses
                 )
+            if repair_problems:
+                logger.warning(
+                    "repair rejected (the original draft is kept): %s",
+                    "; ".join(repair_problems),
+                )
+            else:
+                draft = repaired.value
+                with timings.stage("verify"):
+                    verify_report = verify_fn(
+                        draft, facts, run_state=run_state, generate=generate,
+                        report_dir=paths.reports_dir, id=cluster_id,
+                        repair={
+                            "attempted": True,
+                            "changed_clauses": changed_clauses,
+                            "original_chars": len(writer.value),
+                            "repaired_chars": len(repaired.value),
+                        },
+                    )
 
         if not verify_report.passed:
             reason = verify_report.failure_reason or "unknown"
             _record_attempt(reason)
+            failures = list(verify_report.unsupported) + list(verify_report.unmatched_numbers)
+            failures.extend(f"repair rejected: {problem}" for problem in repair_problems)
             return _fail(
                 self_finish=finish, breaker=breaker, paths=paths, threshold=threshold, now=now,
                 status="failed", exit_code=EXIT_FAIL,
                 error=f"verification failed ({reason})",
                 slug=provisional_slug, cluster_id=cluster_id, chosen=chosen,
                 article=draft, cover_path=None,
-                failures=list(verify_report.unsupported) + list(verify_report.unmatched_numbers) or ["verify failed"],
+                failures=failures or ["verify failed"],
             )
 
         with timings.stage("seo"):
