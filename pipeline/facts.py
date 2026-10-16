@@ -267,6 +267,18 @@ CORROBORATING_KINDS = ("confirmed", "reported", "statement", "estimate")
 #: Overridable via `facts.min_first_party_sources` in config.yaml.
 DEFAULT_MIN_FIRST_PARTY_SOURCES = 2
 
+#: How a story's central fact is confirmed. ``legacy`` is the origin/tier/
+#: first-party rule; ``shadow`` lets the legacy verdict decide while computing
+#: and storing the evidence verdict beside it; ``evidence`` lets the evidence
+#: verdict decide. Overridable via `facts.confirmation_mode` in config.yaml.
+CONFIRMATION_MODES = ("legacy", "shadow", "evidence")
+DEFAULT_CONFIRMATION_MODE = "shadow"
+
+#: Longest claim label the grouping prompt sends per claim. The grouper only
+#: needs enough of the label to tell two facts apart, so a sheet-sized label is
+#: clipped rather than sent whole.
+GROUPING_LABEL_CHARS = 240
+
 logger = logging.getLogger("gamersxpress.pipeline.facts")
 
 #: Default vocabulary for the closed anonymous-descriptor rule (facts.py). A cue
@@ -401,6 +413,29 @@ CLAIM_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+
+#: What the grouping call returns: each group names the ids of the claims that
+#: state one fact. Every property is strict (Groq/OpenAI reject a json_schema
+#: unless every object lists all its properties and forbids extras).
+GROUPING_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "groups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["ids"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["groups"],
+    "additionalProperties": False,
+}
+
 SYSTEM_INSTRUCTION = (
     "You are a news-room fact extractor, working one article at a time. From "
     "the single article text below, extract every distinct fact about the "
@@ -485,6 +520,25 @@ SYSTEM_INSTRUCTION = (
 )
 
 
+#: The grouping call's instruction. It sees only claim ids, source ids and
+#: labels -- never a source body -- and returns groups of ids that state one
+#: fact, so the code can confirm a story from independent sources that agree.
+GROUPING_INSTRUCTION = (
+    "You are a news-room fact grouper. You are given a list of extracted claims "
+    "from several outlets covering one story. Each line names the claim id, the "
+    "id of the source it came from and its label.\n"
+    "Group together only the claims that state the SAME fact: the same "
+    "happening, the same subject and the same specifics. Never merge two "
+    "different facts, even when they are about the same game or company: a "
+    "sales milestone and a round of layoffs are different facts, and a launch "
+    "date and a price are different facts.\n"
+    "Return every group as {\"ids\": [claim id, ...]}. Put each claim id in at "
+    "most one group. Leave a claim out of every group when no other claim states "
+    "the same fact. A fact that only one source states forms no group.\n"
+    "Return JSON: {\"groups\": [{\"ids\": [\"<id>\", \"<id>\"]}]}."
+)
+
+
 def _extraction_chain() -> list[dict]:
     """The enabled 'fast' role entries from config.yaml: they pick the extractor.
 
@@ -556,6 +610,37 @@ def _truncate(text: str, limit: int = MAX_SOURCE_CHARS) -> str:
     return text[:limit].rstrip() + " [truncated]"
 
 
+def build_grouping_prompt(items: list[dict]) -> str:
+    """Build the grouping prompt from claim ids, source ids and labels only.
+
+    The grouper never sees a source body: it is given one line per claim with
+    the claim's id, the id of the source it came from and its clipped label, so
+    two outlets restating one fact can be grouped without another look at the
+    articles.
+    """
+    parts = [GROUPING_INSTRUCTION, "", "CLAIMS:"]
+    for item in items:
+        claim = item.get("claim") or {}
+        label = f"{claim.get('claim', '')} {claim.get('value', '')}"
+        parts.append(
+            f"- {item['id']} | {item['source_id']} | "
+            f"{_clip_field(label, GROUPING_LABEL_CHARS)}"
+        )
+    return "\n".join(parts)
+
+
+def parse_groups(value: Any) -> list[list[str]]:
+    """The id groups of a grouping response, or raise on a malformed shape."""
+    errors = schema_errors(value, GROUPING_SCHEMA)
+    if errors:
+        raise FactsError("; ".join(errors))
+    return [
+        [str(identifier) for identifier in group.get("ids") or []]
+        for group in value.get("groups") or []
+        if isinstance(group, dict)
+    ]
+
+
 def extract_claims(
     id: str,
     source: dict,
@@ -611,7 +696,7 @@ def _with_claim_defaults(data: Any) -> Any:
     return {**data, "claims": normalized}
 
 
-def validate_claims(data: Any) -> list[dict]:
+def validate_claims(data: Any, *, source_url: str | None = None) -> list[dict]:
     """Validate the model output against CLAIM_SCHEMA and return the claims.
 
     ``claim`` and ``value`` are clipped to :data:`MAX_FIELD_CHARS` so a facts
@@ -622,6 +707,11 @@ def validate_claims(data: Any) -> list[dict]:
     capped at ``reported`` because an unattributed claim is never confirmed and
     never an estimate (requirement: treat an unstated origin as at most
     reported).
+
+    ``source_url`` overrides every claim's ``source_url`` with the URL of the
+    extraction call that produced it: the model is asked to echo the source URL
+    but a misspelled or truncated one must never reach the sheet, so the code
+    sets it. Without an override the model's URL is kept and must be http(s).
 
     The evidence fields are kept verbatim but bounded: ``quote`` and
     ``attribution_quote`` are trimmed and clipped to
@@ -639,9 +729,10 @@ def validate_claims(data: Any) -> list[dict]:
     if errors:
         raise FactsError("; ".join(errors))
     claims = data["claims"]
+    override = str(source_url).strip() if source_url else None
     clipped: list[dict] = []
     for index, claim in enumerate(claims):
-        url = claim["source_url"]
+        url = override or claim["source_url"]
         if not re.match(r"^https?://", url):
             raise FactsError(f"claims[{index}].source_url must be an http(s) URL: {url!r}")
         origin = _normalize_origin(claim.get("origin"))
@@ -651,6 +742,7 @@ def validate_claims(data: Any) -> list[dict]:
         clipped.append(
             {
                 **claim,
+                "source_url": url,
                 "claim": _clip_field(claim["claim"]),
                 "value": _clip_field(claim["value"]),
                 "origin": origin,
@@ -2619,6 +2711,16 @@ def _min_first_party_sources() -> int:
     return max(1, int(value))
 
 
+def _confirmation_mode() -> str:
+    """The configured confirmation mode, defaulting to ``shadow`` when unknown."""
+    value = str(
+        (load_config().get("facts") or {}).get(
+            "confirmation_mode", DEFAULT_CONFIRMATION_MODE
+        )
+    ).strip().lower()
+    return value if value in CONFIRMATION_MODES else DEFAULT_CONFIRMATION_MODE
+
+
 def _first_party_origins(
     claims: list[dict],
     by_url: dict[str, dict],
@@ -3599,6 +3701,293 @@ def corroborating_claims(
     return [best_by_source[key] for key in sorted(best_by_source)]
 
 
+# --- model-assisted fact grouping and evidence confirmation ------------------
+
+
+def grouping_items(claims: list[dict], sources: list[dict]) -> list[dict]:
+    """One grouping item per claim: a stable id, its source id and the claim.
+
+    Claim ids are ``c<index>`` in the order of ``claims`` and source ids are
+    ``s<index>`` in the order of ``sources``; the grouper sees only these ids
+    and the (clipped) labels, never a source body.
+    """
+    source_ids = {
+        _source_url_key(source.get("link")): f"s{index}"
+        for index, source in enumerate(sources or [])
+    }
+    items: list[dict] = []
+    for index, claim in enumerate(claims or []):
+        url_key = _source_url_key(claim.get("source_url"))
+        items.append(
+            {
+                "id": f"c{index}",
+                "source_id": source_ids.get(url_key, url_key or f"s{index}"),
+                "claim": claim,
+            }
+        )
+    return items
+
+
+def _item_summary(item: dict) -> dict:
+    claim = item.get("claim") or {}
+    label = f"{claim.get('claim', '')} {claim.get('value', '')}".strip()
+    return {
+        "id": item["id"],
+        "source_id": item["source_id"],
+        "label": _clip_field(label, GROUPING_LABEL_CHARS),
+    }
+
+
+def _claim_owner(claim: dict, by_url: dict[str, dict]) -> str:
+    """The distinct owner behind a claim's source, falling back to its URL key."""
+    source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
+    return _origin_key(source.get("owner")) or _source_url_key(claim.get("source_url"))
+
+
+def _claim_primary_entities(claim: dict, entities: list[str] | None) -> set[str]:
+    """The story's primary entities a claim names in its text or value."""
+    text = f"{claim.get('claim', '')} {claim.get('value', '')}"
+    return {entity for entity in (entities or []) if _claim_names_entity(text, entity)}
+
+
+def group_reason(members: list[dict], entities: list[str] | None) -> str:
+    """Why a returned group is not an accepted cross-source restatement.
+
+    Empty string means the group passes every guard: at least two claims from
+    two different sources, a shared primary entity, no contradicting figures or
+    dates, and no rumor/opinion mixed with a confirmed claim.
+    """
+    if len(members) < 2:
+        return "fewer than two claims"
+    sources = {_source_url_key(claim.get("source_url")) for claim in members}
+    if len(sources) < 2:
+        return "all claims come from one source"
+    shared: set[str] | None = None
+    for claim in members:
+        named = _claim_primary_entities(claim, entities)
+        shared = named if shared is None else (shared & named)
+    if not shared:
+        return "the claims name no shared primary entity"
+    for index, first in enumerate(members):
+        for second in members[index + 1:]:
+            if _claims_conflict(first, second):
+                return "the claims state conflicting figures or dates"
+    kinds = {str(claim.get("kind")) for claim in members}
+    if kinds & {"rumor", "opinion"} and "confirmed" in kinds:
+        return "a rumor or opinion is grouped with a confirmed claim"
+    return ""
+
+
+def apply_group_guards(
+    groups: list[list[str]],
+    items: list[dict],
+    entities: list[str] | None,
+) -> tuple[list[dict], list[dict]]:
+    """Validate the model's id groups in code, returning (accepted, dropped).
+
+    Unknown ids are ignored, each id is kept in at most one group, and a group
+    that fails :func:`group_reason` is dropped with that reason.
+    """
+    item_by_id = {item["id"]: item for item in items}
+    used: set[str] = set()
+    accepted: list[dict] = []
+    dropped: list[dict] = []
+    for ids in groups or []:
+        known = [identifier for identifier in ids if identifier in item_by_id]
+        unique = [identifier for identifier in known if identifier not in used]
+        used.update(unique)
+        if len(unique) < 2:
+            if known:
+                dropped.append({"ids": known, "reason": "fewer than two usable claims"})
+            continue
+        members = [item_by_id[identifier]["claim"] for identifier in unique]
+        reason = group_reason(members, entities)
+        if reason:
+            dropped.append({"ids": unique, "reason": reason})
+            continue
+        accepted.append({"ids": unique, "claims": members})
+    return accepted, dropped
+
+
+def _empty_group_record() -> dict:
+    return {"groups": [], "dropped": [], "claims": [], "failed": None}
+
+
+def group_facts(
+    claims: list[dict],
+    sources: list[dict],
+    *,
+    generate: Callable[..., Generation],
+    run_state: RunState | None = None,
+    model_call_budget: int | None = None,
+    exclude_families: set[str] | None = None,
+    entities: list[str] | None = None,
+) -> dict:
+    """Group the claims with one model call, then validate the groups in code.
+
+    The call runs only when at least two distinct sources contributed a claim
+    and the model-call budget still allows it. The grouper's family is excluded
+    from the extractor's when possible, so a grouped fact is not merely the
+    extractor agreeing with itself. A model, transport or schema failure is
+    recorded and yields no accepted groups -- the candidate still continues.
+    """
+    items = grouping_items(claims, sources)
+    record = {
+        "groups": [],
+        "dropped": [],
+        "claims": [_item_summary(item) for item in items],
+        "failed": None,
+    }
+    if len({item["source_id"] for item in items}) < 2:
+        record["failed"] = "fewer than two sources contributed claims"
+        return record
+    if (
+        run_state is not None
+        and model_call_budget is not None
+        and run_state.calls >= model_call_budget
+    ):
+        record["failed"] = "model-call budget spent before grouping"
+        return record
+    try:
+        generation = generate(
+            "verifier",
+            build_grouping_prompt(items),
+            json_schema=GROUPING_SCHEMA,
+            run_state=run_state,
+            exclude_families=set(exclude_families or ()),
+        )
+    except Exception as exc:  # noqa: BLE001 - grouping is best-effort
+        record["failed"] = f"grouping call failed: {exc}"
+        logger.warning("story grouping call failed: %s", exc)
+        return record
+    try:
+        groups = parse_groups(generation.value)
+    except FactsError as exc:
+        record["failed"] = f"grouping response invalid: {exc}"
+        logger.warning("story grouping response invalid: %s", exc)
+        return record
+    record["groups"], record["dropped"] = apply_group_guards(groups, items, entities)
+    return record
+
+
+def fact_groups_sheet(record: dict) -> dict:
+    """The diagnostics-only sheet view of a grouping record (ids, no bodies)."""
+    return {
+        "accepted": [{"ids": list(group["ids"])} for group in record.get("groups") or []],
+        "dropped": [
+            {"ids": list(entry.get("ids") or []), "reason": entry.get("reason")}
+            for entry in record.get("dropped") or []
+        ],
+        "claims": list(record.get("claims") or []),
+        "failed": record.get("failed"),
+    }
+
+
+def evidence_central_claims(record: dict, central_group: list[dict] | None) -> list[dict]:
+    """The central fact's claims for evidence confirmation.
+
+    The accepted group that contains any claim of the central fact (the model's
+    answer) is used; when no accepted group does, the code's own central group
+    is used, so a story still gets an evidence verdict when grouping failed.
+    """
+    central_ids = {id(claim) for claim in (central_group or [])}
+    for group in record.get("groups") or []:
+        members = group.get("claims") or []
+        if any(id(claim) in central_ids for claim in members):
+            return list(members)
+    return list(central_group or [])
+
+
+def evidence_confirmation(
+    claims: list[dict],
+    by_url: dict[str, dict],
+    *,
+    tier1_confirms: bool = False,
+    aliases: dict[str, str] | None = None,
+    min_first_party: int | None = None,
+) -> dict:
+    """Confirm the central fact from verified evidence over the central group.
+
+    Rules in order: a tier-1 source states the headline claim (unchanged, passed
+    in as ``tier1_confirms``); first-party, when ``min_first_party`` distinct
+    owners each carry a claim in the group whose stored evidence passed, whose
+    ``speaker_type`` is organization, whose speaker canonicalizes to the same
+    organization and whose kind may be first party; two-independent-origins,
+    when at least two distinct named speakers back the group from at least two
+    distinct owners. Only claims whose stored evidence ``ok`` is true count, so
+    an anonymous speaker, a product, the outlet citing itself or an unverified
+    quote never confirms anything. Owners count once.
+    """
+    aliases = load_origin_aliases() if aliases is None else aliases
+    if min_first_party is None:
+        min_first_party = _min_first_party_sources()
+    org_owners: dict[str, set[str]] = {}
+    speaker_owners: dict[str, set[str]] = {}
+    verified = 0
+    for claim in claims or []:
+        evidence = claim.get("evidence")
+        if not isinstance(evidence, dict) or not evidence.get("ok"):
+            continue
+        verified += 1
+        speaker = claim.get("speaker") or claim.get("origin")
+        # An unnamed descriptor never names an origin, and an outlet citing
+        # itself never counts as an independent speaker -- the stored evidence
+        # already rejects both, but a claim is guarded here too so neither can
+        # slip in through a hand-built sheet.
+        if _is_anonymous_origin(speaker, aliases):
+            continue
+        source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
+        if _is_publication(speaker, source):
+            continue
+        owner = _claim_owner(claim, by_url)
+        canonical = canonicalize_origin(speaker, aliases)
+        if canonical == UNSTATED_ORIGIN:
+            continue
+        speaker_type = str(claim.get("speaker_type") or "none")
+        if speaker_type == "organization" and claim.get("kind") in FIRST_PARTY_KINDS:
+            org_owners.setdefault(canonical, set()).add(owner)
+        if speaker_type in ("person", "organization", "outlet"):
+            speaker_owners.setdefault(canonical, set()).add(owner)
+
+    first_party_orgs = sorted(
+        org for org, owners in org_owners.items() if len(owners) >= min_first_party
+    )
+    origins = sorted(speaker_owners)
+    speaker_owners_all = set().union(*speaker_owners.values()) if speaker_owners else set()
+    if tier1_confirms:
+        confirmed, rule = True, "tier1"
+        reason = "a tier-1 source states the headline claim"
+    elif first_party_orgs:
+        confirmed, rule = True, "first-party"
+        organization = ", ".join(first_party_orgs)
+        owners = set().union(*(org_owners[org] for org in first_party_orgs))
+        reason = (
+            f"{len(owners)} independent sources attribute the central fact to "
+            f"{organization} with verified evidence"
+        )
+    elif len(origins) >= 2 and len(speaker_owners_all) >= 2:
+        confirmed, rule = True, "two-independent-origins"
+        reason = "two independent named origins state the central fact"
+    else:
+        confirmed, rule = False, "unconfirmed"
+        reason = "the central fact is not backed by enough verified cross-source evidence"
+    return {
+        "tier1_sources": 1 if tier1_confirms else 0,
+        "tier3_sources": 0,
+        "origins": origins,
+        "first_party_organizations": first_party_orgs,
+        "first_party_sources": max(
+            (len(org_owners[org]) for org in first_party_orgs), default=0
+        ),
+        "single_origin_attributed": len(origins) == 1,
+        "verified_claims": verified,
+        "rule": rule,
+        "confirmed": confirmed,
+        "reason": reason,
+        "rule_source": "evidence",
+    }
+
+
 def _preferred_central_index(
     groups: list[list[dict]],
     sources: list[dict],
@@ -4113,6 +4502,9 @@ def _write_unconfirmed_sheet(
     date_anchors: list[dict] | None = None,
     attribution_traces: list[dict] | None = None,
     evidence: list[dict] | None = None,
+    fact_groups: dict | None = None,
+    confirmation_legacy: dict | None = None,
+    confirmation_evidence: dict | None = None,
 ) -> Optional[Path]:
     """Persist a rejected story's sheet under ``<output_dir>/unconfirmed/``.
 
@@ -4154,6 +4546,12 @@ def _write_unconfirmed_sheet(
             "dropped_claims": _coherence_dropped_details(dropped, primary),
         },
     }
+    if fact_groups is not None:
+        payload["fact_groups"] = fact_groups
+    if confirmation_legacy is not None:
+        payload["confirmation_legacy"] = confirmation_legacy
+    if confirmation_evidence is not None:
+        payload["confirmation_evidence"] = confirmation_evidence
     directory = Path(output_dir) / "unconfirmed"
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -4223,11 +4621,17 @@ def facts(
             max_sources = DEFAULT_MAX_SOURCES_PER_CANDIDATE
 
     aliases = load_origin_aliases()
+    confirmation_mode = _confirmation_mode()
+    min_first_party = _min_first_party_sources()
     fingerprint = cluster.stage_fingerprint(
         name, "facts", PROMPT_VERSION, SYSTEM_INSTRUCTION, CLAIM_SCHEMA,
         _extraction_chain(), MAX_SOURCE_CHARS, MAX_FIELD_CHARS, max_claims,
         allow_single, HEDGE_WORDS, sorted(aliases.items()), _relative_time_words(),
         max_sources,
+        # The grouping prompt/schema and the confirmation mode decide the sheet's
+        # grouping and verdict blocks, so a change in either re-extracts.
+        confirmation_mode, min_first_party,
+        GROUPING_INSTRUCTION, GROUPING_SCHEMA, GROUPING_LABEL_CHARS,
     )
     path = output_dir / f"{name}.json"
     if cluster.stored_fingerprint(path) == fingerprint:
@@ -4238,6 +4642,9 @@ def facts(
     selected_sources = _select_sources(sources, max_sources)
     extracted: list[dict] = []
     generation = None
+    # The families that served extraction, so the grouping call can prefer a
+    # different family (the grouper must not simply agree with the extractor).
+    extractor_families: set[str] = set()
     # True when the model-call budget stopped extraction before every selected
     # source was read, so a later "unconfirmed" verdict reflects the budget
     # rather than the story's coverage.
@@ -4261,7 +4668,11 @@ def facts(
         generation = extract_claims(
             name, source, max_claims=max_claims, generate=generate, run_state=run_state, **kwargs
         )
-        part = validate_claims(generation.value)
+        extractor_families.add(str(generation.family))
+        # The extraction call's own URL is authoritative: the model is asked to
+        # echo it, but a misspelled or truncated URL must never reach the sheet.
+        part = validate_claims(generation.value, source_url=source.get("link"))
+
         if len(part) > max_claims:
             logger.warning(
                 "story %s: source %s returned %d claim(s), keeping the first %d",
@@ -4379,6 +4790,23 @@ def facts(
             name, title,
         )
 
+    # One grouping call tells which outlets restated one fact. It runs in the
+    # shadow/evidence modes only (legacy decides from origins alone) and always
+    # after extraction, on the pre-merge claims, so each source's own claim stays
+    # its own member and counts its own owner. Failure here never fails the
+    # story: the record keeps the reason and every claim stands alone.
+    grouping: dict | None = None
+    if confirmation_mode != "legacy":
+        grouping = group_facts(
+            kept,
+            sources,
+            generate=generate,
+            run_state=run_state,
+            model_call_budget=model_call_budget,
+            exclude_families=extractor_families,
+            entities=canonical,
+        )
+
     # Other sources whose own wording restates the central fact corroborate it:
     # their claim is recorded as a corroborated version of the central claim
     # (keeping its own value, origin and kind) and counts as that source stating
@@ -4412,7 +4840,7 @@ def facts(
     # collapse to one origin, two origins from the same article never count as
     # two, and other claims' origins never count. Corroborating claims are the
     # exception: they explicitly restate the central fact, so their origins count.
-    confirmation = confirmation_from_sources(
+    legacy_confirmation = confirmation_from_sources(
         sources,
         claims=central_group if central_group is not None else kept,
         merged=central,
@@ -4425,12 +4853,51 @@ def facts(
     # the story: it is the headline's fact the story must establish, not any
     # tier-1 sentence. Two outlets' agreement never stands in for it.
     if tier1_present and title and preferred_central is None:
-        confirmation = dict(confirmation)
-        confirmation.update(
+        legacy_confirmation = dict(legacy_confirmation)
+        legacy_confirmation.update(
             confirmed=False,
             rule="unconfirmed",
             reason="tier-1 source does not state the headline claim",
         )
+    tier1_confirms = (
+        bool(legacy_confirmation["confirmed"])
+        and legacy_confirmation["rule"] == "tier1"
+    )
+
+    # The evidence verdict judges the same central fact from the evidence stored
+    # on the central group's claims: its verdict is what the sheet carries in the
+    # evidence mode, and is stored beside the legacy verdict in the shadow mode.
+    evidence_conf = None
+    if confirmation_mode != "legacy" and grouping is not None:
+        evidence_conf = evidence_confirmation(
+            evidence_central_claims(grouping, central_group),
+            sources_by_url,
+            tier1_confirms=tier1_confirms,
+            aliases=aliases,
+            min_first_party=min_first_party,
+        )
+
+    # legacy keeps deciding in legacy and shadow; evidence decides in evidence.
+    confirmation = evidence_conf if confirmation_mode == "evidence" else legacy_confirmation
+    confirmation_legacy = None
+    confirmation_evidence = None
+    if confirmation_mode == "shadow":
+        confirmation_legacy = legacy_confirmation
+        confirmation_evidence = evidence_conf
+        logger.info(
+            "story %s: confirmation legacy=%s(%s) evidence=%s(%s)%s",
+            name,
+            legacy_confirmation.get("rule"),
+            legacy_confirmation.get("confirmed"),
+            (evidence_conf or {}).get("rule"),
+            (evidence_conf or {}).get("confirmed"),
+            " DISAGREE"
+            if evidence_conf is not None
+            and evidence_conf.get("confirmed") != legacy_confirmation.get("confirmed")
+            else "",
+        )
+    fact_groups = fact_groups_sheet(grouping) if grouping is not None else None
+
     # Only sources that contributed at least one claim are listed in the sheet;
     # a source that yielded no claim is never cited by the article.
     claimed_urls = {_source_url_key(url) for claim in claims for url in claim["source_urls"]}
@@ -4454,6 +4921,9 @@ def facts(
             primary=primary, canonical=canonical, grounding_details=grounding_details,
             origin_downgrades=origin_downgrades, date_anchors=date_anchors,
             attribution_traces=attribution_traces, evidence=evidence_summary,
+            fact_groups=fact_groups,
+            confirmation_legacy=confirmation_legacy,
+            confirmation_evidence=confirmation_evidence,
         )
         raise UnconfirmedStory(message, budget_truncated=budget_truncated)
 
@@ -4482,6 +4952,12 @@ def facts(
         },
         "fingerprint": {"format": cluster.FINGERPRINT_FORMAT, "value": fingerprint},
     }
+    if fact_groups is not None:
+        payload["fact_groups"] = fact_groups
+    if confirmation_legacy is not None:
+        payload["confirmation_legacy"] = confirmation_legacy
+    if confirmation_evidence is not None:
+        payload["confirmation_evidence"] = confirmation_evidence
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{name}.json"
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -4496,10 +4972,15 @@ __all__ = [
     "ALLOWED_KINDS",
     "CLAIM_SCHEMA",
     "CONFIRMING_KINDS",
+    "CONFIRMATION_MODES",
+    "DEFAULT_CONFIRMATION_MODE",
     "DEFAULT_ORIGIN_ALIASES_PATH",
     "DEFAULT_ORGS_PATH",
     "DEFAULT_RELATIVE_TIME_WORDS",
     "FIRST_PARTY_KINDS",
+    "GROUPING_INSTRUCTION",
+    "GROUPING_LABEL_CHARS",
+    "GROUPING_SCHEMA",
     "HEDGE_WORDS",
     "KIND_STRENGTH",
     "MAX_ATTRIBUTION_QUOTE_CHARS",
@@ -4512,19 +4993,27 @@ __all__ = [
     "FactsError",
     "UnconfirmedStory",
     "absolutize_relative_time",
+    "apply_group_guards",
+    "build_grouping_prompt",
     "build_prompt",
     "canonicalize_origin",
     "central_claim",
     "coherence_check",
     "canonical_entities",
     "entity_aliases",
+    "evidence_confirmation",
     "extract_claims",
+    "fact_groups_sheet",
+    "group_facts",
+    "group_reason",
+    "grouping_items",
     "ground_claims",
     "ground_claims_details",
     "grounding_failure",
     "load_origin_aliases",
     "load_organizations",
     "merge_claims",
+    "parse_groups",
     "primary_entities",
     "resolve_claim_origins",
     "validate_claims",

@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 import dryrun
+import facts
 import providers
 import publish
 import run as run_module
@@ -87,6 +88,25 @@ def test_pass_scenario_completes_and_publishes(tmp_path):
     breaker = json.loads((state / "breaker.json").read_text(encoding="utf-8"))
     assert breaker["consecutive_failures"] == 0
     assert breaker["open"] is False
+
+
+@pytest.mark.parametrize("mode", facts.CONFIRMATION_MODES)
+@pytest.mark.parametrize(
+    "scenario,status,code",
+    [("pass", "completed", 0), ("fail-verify", "failed", 3), ("fail-gate", "failed", 3)],
+)
+def test_dry_run_scenarios_hold_in_every_confirmation_mode(monkeypatch, tmp_path, mode, scenario, status, code):
+    real = facts.load_config
+
+    def load(path=None):
+        config = real(path)
+        config.setdefault("facts", {})["confirmation_mode"] = mode
+        return config
+
+    monkeypatch.setattr(facts, "load_config", load)
+    result = run_once(tmp_path, dry_run=True, scenario=scenario)
+    assert result.status == status
+    assert result.exit_code == code
 
 
 def test_fail_verify_writes_draft_and_counts_failure(tmp_path):
@@ -629,6 +649,13 @@ def repair_generate(writer_outputs, verifier_outputs, calls):
     """Stub generate that returns the nth writer/verifier output, recording prompts."""
 
     def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        if role == "verifier" and "groups" in ((json_schema or {}).get("properties") or {}):
+            # The fact-grouping call is not the article verifier: answer it with
+            # no groups so it neither consumes a verifier output nor shifts calls.
+            generation = providers.Generation(role, "mock", "mock-group", "mistral", {"groups": []})
+            if run_state is not None:
+                run_state.record(generation)
+            return generation
         if role == "fast":
             properties = (json_schema or {}).get("properties", {})
             value = (
@@ -1287,8 +1314,10 @@ def test_a_verifier_transport_error_keeps_the_draft_and_skips(tmp_path):
     base = repair_generate([draft_text], [verdict_json()], calls)
 
     def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
-        if role == "verifier":
-            # Every provider in the verifier chain drops its connection.
+        if role == "verifier" and "groups" not in ((json_schema or {}).get("properties") or {}):
+            # Every provider in the verifier chain drops its connection. (The
+            # fact-grouping call shares the verifier role but is not the article
+            # verifier, so it is left to the base stub.)
             raise ConnectionResetError(10054, "forcibly closed by the remote host")
         return base(role, prompt, json_schema, run_state=run_state, **kwargs)
 

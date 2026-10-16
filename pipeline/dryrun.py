@@ -221,11 +221,25 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
 
 
 _URL_LINE_RE = re.compile(r"^URL:\s*(\S+)", re.MULTILINE)
+_GROUP_LINE_RE = re.compile(r"^- (\S+) \| (\S+) \| (.*)$", re.MULTILINE)
 
 
 def _prompt_source_url(prompt: str) -> str:
     match = _URL_LINE_RE.search(prompt or "")
     return match.group(1) if match else "https://a.example/1"
+
+
+def _grouping_json(prompt: str) -> dict:
+    """Deterministic grouping: pair the two sources' identical labels.
+
+    The sample story's two sources carry the same six claims, so grouping by
+    label pairs each fact across the sources; a group with one member is left
+    out (the real grouper only returns cross-source groups).
+    """
+    by_label: dict[str, list[str]] = {}
+    for match in _GROUP_LINE_RE.finditer(prompt or ""):
+        by_label.setdefault(match.group(3).strip(), []).append(match.group(1))
+    return {"groups": [{"ids": ids} for ids in by_label.values() if len(ids) >= 2]}
 
 
 def _seo_json() -> dict:
@@ -287,7 +301,13 @@ def make_generate(scenario: str = "pass") -> Callable[..., Generation]:
             body = sample_body(short=(scenario == "fail-gate"))
             generation = Generation("writer", "mock", "mock-writer", "google", body)
         elif role == "verifier":
-            generation = Generation("verifier", "mock", "mock-verifier", "mistral", _verifier_json(scenario))
+            properties = (json_schema or {}).get("properties", {})
+            if "groups" in properties:
+                generation = Generation(
+                    "verifier", "mock", "mock-verifier", "mistral", _grouping_json(prompt)
+                )
+            else:
+                generation = Generation("verifier", "mock", "mock-verifier", "mistral", _verifier_json(scenario))
         else:
             raise AssertionError(f"unexpected role in dry run: {role!r}")
         if run_state is not None:

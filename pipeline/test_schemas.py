@@ -18,6 +18,7 @@ from providers import GroqProvider
 
 SCHEMAS = {
     "CLAIM_SCHEMA": facts.CLAIM_SCHEMA,
+    "GROUPING_SCHEMA": facts.GROUPING_SCHEMA,
     "SEO_SCHEMA": seo.SEO_SCHEMA,
     "VERIFIER_SCHEMA": verify.VERIFIER_SCHEMA,
 }

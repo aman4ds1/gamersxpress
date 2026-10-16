@@ -203,6 +203,15 @@ facts:
   # each attribute the claim to that organization in their own text. Set to a
   # higher number to demand more independent first-party coverage.
   min_first_party_sources: 2
+  # How the central fact is confirmed (PLAN.md pipeline stage 6). "legacy" is
+  # the origin/tier/first-party rule only. "shadow" lets the legacy verdict
+  # decide but also computes the evidence verdict (claims grouped by a model
+  # call, then quoted verbatim against their own source) and stores both on
+  # every sheet, logging DISAGREE when they differ. "evidence" lets the evidence
+  # verdict decide. Defaults to shadow while the evidence rule is proved against
+  # production stories; the grouping call it adds counts toward
+  # score.model_call_budget.
+  confirmation_mode: shadow
   # Corroboration of the central fact (PLAN.md pipeline stage 6): another source's
   # claim counts as restating the central fact when the Jaccard overlap of their
   # content words (claim text plus value) reaches this fraction, no figures or
@@ -616,7 +625,9 @@ score:
   # the failed cooldown lapses.
   min_distinct_owners: 2
   max_candidates_per_run: 5
-  model_call_budget: 15
+  # One call per extracted source, plus one verification call per candidate with
+  # two or more contributing sources (the facts-stage grouping call).
+  model_call_budget: 20
   # Cost control (pipeline/facts.py): extract claims from at most this many
   # sources per candidate, chosen by tier first, then one per distinct owner,
   # then by text length. A candidate with more sources is capped so a single

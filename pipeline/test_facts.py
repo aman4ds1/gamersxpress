@@ -33,11 +33,17 @@ def claim(claim="Announcement happened", value="it happened", source_url="https:
     }
 
 
+def is_grouping_call(json_schema):
+    """True when a generate call is the fact-grouping call, not extraction."""
+    return isinstance(json_schema, dict) and "groups" in (json_schema.get("properties") or {})
+
+
 def make_generate(payload):
     def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        value = {"groups": []} if is_grouping_call(json_schema) else payload
         if run_state is not None:
-            run_state.record(Generation(role=role, provider="mock", model="m", family="f", value=payload))
-        return Generation(role=role, provider="mock", model="m", family="f", value=payload, fallbacks=[])
+            run_state.record(Generation(role=role, provider="mock", model="m", family="f", value=value))
+        return Generation(role=role, provider="mock", model="m", family="f", value=value, fallbacks=[])
 
     return generate
 
@@ -853,6 +859,11 @@ def per_source_generate(payloads):
     calls = []
 
     def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        if is_grouping_call(json_schema):
+            value = {"groups": []}
+            if run_state is not None:
+                run_state.record(Generation(role=role, provider="mock", model="m", family="f", value=value))
+            return Generation(role=role, provider="mock", model="m", family="f", value=value, fallbacks=[])
         calls.append(role)
         payload = payloads[len(calls) - 1]
         if run_state is not None:
@@ -3262,3 +3273,553 @@ def test_unconfirmed_sheet_carries_evidence_diagnostics(tmp_path):
     sheet = json.loads((tmp_path / "unconfirmed" / "ev-2.json").read_text(encoding="utf-8"))
     assert sheet["evidence"]
     assert sheet["claims"][0]["evidence"]
+
+
+# --- code-set source URLs, grouping guards and evidence confirmation --------- -
+
+
+def use_mode(monkeypatch, mode):
+    """Force ``facts`` to read ``facts.confirmation_mode`` as ``mode``."""
+    real = facts.load_config
+
+    def load(path=None):
+        config = real(path)
+        config.setdefault("facts", {})["confirmation_mode"] = mode
+        return config
+
+    monkeypatch.setattr(facts, "load_config", load)
+
+
+def grouping_generate(payloads, groups):
+    """A generate stub that replays extraction payloads and answers grouping.
+
+    ``groups`` is a list of id lists; each is wrapped as the ``{"ids": [...]}``
+    object the grouping schema requires.
+    """
+    calls: list[str] = []
+    extraction: list[int] = []
+    wrapped = [{"ids": list(ids)} for ids in groups]
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        if is_grouping_call(json_schema):
+            value = {"groups": wrapped}
+            calls.append("group")
+        else:
+            value = payloads[len(extraction)]
+            extraction.append(1)
+            calls.append(role)
+        if run_state is not None:
+            run_state.record(Generation(role=role, provider="mock", model="m", family="f", value=value))
+        return Generation(role=role, provider="mock", model="m", family="f", value=value, fallbacks=[])
+
+    return generate, calls
+
+
+ACME_TITLE = "Acme Arena is Acme Games' fastest-selling game"
+ACME_ENTITIES = ["Acme Arena", "Acme Games"]
+ACME_TEXT = (
+    "Acme Games announced Acme Arena is the fastest-selling game in its history. "
+    "Acme Games said the milestone came in its first week."
+)
+
+
+def acme_claim(url, **overrides):
+    payload = {
+        "claim": "Acme Arena is Acme Games' fastest-selling game",
+        "value": "fastest-selling game",
+        "source_url": url,
+        "confidence": 0.9,
+        "origin": "Acme Games",
+        "kind": "confirmed",
+        "affiliation": "",
+        "quote": "Acme Arena is the fastest-selling game",
+        "attribution_quote": "Acme Games announced",
+        "speaker": "Acme Games",
+        "speaker_type": "organization",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def acme_scenario(count=3, owners=None, text=ACME_TEXT):
+    owners = owners or [f"owner{index}" for index in range(count)]
+    sources, payloads = [], []
+    for index in range(count):
+        url = f"https://outlet{index}.example/acme"
+        sources.append(
+            source(link=url, name=f"Outlet {index}", owner=owners[index], tier=2, title=ACME_TITLE, text=text)
+        )
+        payloads.append({"claims": [acme_claim(url)]})
+    return sources, payloads
+
+
+def ev_claim(url, *, speaker="Acme Games", speaker_type="organization", kind="confirmed", ok=True):
+    return {
+        "source_url": url,
+        "speaker": speaker,
+        "speaker_type": speaker_type,
+        "kind": kind,
+        "origin": speaker,
+        "evidence": {"ok": ok},
+    }
+
+
+def by_url_map(*pairs):
+    return {facts._source_url_key(url): {"owner": owner} for url, owner in pairs}
+
+
+def test_validate_claims_overrides_a_misspelled_source_url():
+    claims = facts.validate_claims(
+        {"claims": [acme_claim("https://outlet0.example/acme/typo")]},
+        source_url="https://outlet0.example/acme",
+    )
+    assert claims[0]["source_url"] == "https://outlet0.example/acme"
+
+
+def test_facts_sets_every_claim_source_url_from_the_extraction_call(tmp_path):
+    src = source(link="https://a.example/real", tier=1, text="Acme Games said the game is out.")
+    payload = {
+        "claims": [
+            claim(
+                claim="The game is out", value="out",
+                source_url="https://a.example/reel",  # the model misspells the URL
+                origin="acme games", kind="reported",
+            )
+        ]
+    }
+    result = facts.facts(
+        gathered("u-1", [src]), id="u-1", title="The game is out",
+        output_dir=tmp_path, now=NOW, generate=make_generate(payload),
+    )
+    assert result["claims"][0]["source_urls"] == ["https://a.example/real"]
+
+
+def test_build_grouping_prompt_lists_ids_and_clips_labels():
+    items = [
+        {"id": "c0", "source_id": "s0", "claim": {"claim": "x" * 500, "value": "y"}},
+        {"id": "c1", "source_id": "s1", "claim": {"claim": "short", "value": "z"}},
+    ]
+    prompt = facts.build_grouping_prompt(items)
+    assert "- c0 | s0 | " in prompt
+    assert "- c1 | s1 | short z" in prompt
+    assert "x" * (facts.GROUPING_LABEL_CHARS + 1) not in prompt
+
+
+def test_parse_groups_rejects_a_malformed_response():
+    with pytest.raises(facts.FactsError):
+        facts.parse_groups({"nope": []})
+    with pytest.raises(facts.FactsError):
+        facts.parse_groups({"groups": [{"ids": "not-a-list"}]})
+
+
+def test_group_reason_drops_a_single_source_group():
+    a = acme_claim("https://a.example/1")
+    b = acme_claim("https://a.example/1")
+    assert "one source" in facts.group_reason([a, b], ACME_ENTITIES)
+
+
+def test_group_reason_drops_a_group_with_no_shared_entity():
+    a = acme_claim("https://a.example/1", claim="hmm", value="hmm")
+    b = acme_claim("https://b.example/1", claim="hmm", value="hmm")
+    assert "shared primary entity" in facts.group_reason([a, b], ACME_ENTITIES)
+
+
+def test_group_reason_drops_conflicting_figures():
+    a = acme_claim("https://a.example/1", claim="Acme Arena sold 2 million", value="2 million copies")
+    b = acme_claim("https://b.example/1", claim="Acme Arena sold 3 million", value="3 million copies")
+    assert "conflicting" in facts.group_reason([a, b], ["Acme Arena"])
+
+
+def test_group_reason_drops_a_rumor_mixed_with_a_confirmed_claim():
+    a = acme_claim("https://a.example/1")
+    b = acme_claim("https://b.example/1", kind="rumor")
+    assert "rumor or opinion" in facts.group_reason([a, b], ACME_ENTITIES)
+
+
+def test_apply_group_guards_ignores_unknown_ids_and_dedupes():
+    items = facts.grouping_items(
+        [acme_claim("https://a.example/1"), acme_claim("https://b.example/1")],
+        [source(link="https://a.example/1"), source(link="https://b.example/1", owner="co-b")],
+    )
+    accepted, dropped = facts.apply_group_guards(
+        [["c0", "c1", "zz"], ["c0", "c1"]], items, ACME_ENTITIES
+    )
+    assert [group["ids"] for group in accepted] == [["c0", "c1"]]
+    assert dropped == [{"ids": ["c0", "c1"], "reason": "fewer than two usable claims"}]
+
+
+def test_fact_groups_sheet_exposes_ids_and_reasons():
+    record = {
+        "groups": [{"ids": ["c0", "c1"], "claims": []}],
+        "dropped": [{"ids": ["c2", "c3"], "reason": "nope"}],
+        "claims": [{"id": "c0", "source_id": "s0", "label": "x"}],
+        "failed": None,
+    }
+    sheet = facts.fact_groups_sheet(record)
+    assert sheet["accepted"] == [{"ids": ["c0", "c1"]}]
+    assert sheet["dropped"] == [{"ids": ["c2", "c3"], "reason": "nope"}]
+    assert sheet["claims"] == [{"id": "c0", "source_id": "s0", "label": "x"}]
+    assert sheet["failed"] is None
+
+
+def test_evidence_confirmation_first_party_counts_distinct_owners_once():
+    by_url = by_url_map(
+        ("https://a/1", "co-a"), ("https://b/1", "co-b"), ("https://c/1", "co-b")
+    )
+    claims = [ev_claim("https://a/1"), ev_claim("https://b/1"), ev_claim("https://c/1")]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["confirmed"] is True
+    assert result["rule"] == "first-party"
+    assert result["first_party_organizations"] == ["acme games"]
+    assert result["first_party_sources"] == 2
+
+
+def test_evidence_confirmation_needs_enough_owners():
+    by_url = by_url_map(("https://a/1", "co-a"))
+    result = facts.evidence_confirmation([ev_claim("https://a/1")], by_url, aliases={})
+    assert result["confirmed"] is False
+    assert result["rule"] == "unconfirmed"
+
+
+def test_evidence_confirmation_ignores_failed_evidence():
+    by_url = by_url_map(("https://a/1", "co-a"), ("https://b/1", "co-b"))
+    claims = [ev_claim("https://a/1", ok=False), ev_claim("https://b/1", ok=True)]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["confirmed"] is False
+
+
+def test_evidence_confirmation_ignores_anonymous_speakers():
+    by_url = by_url_map(("https://a/1", "co-a"), ("https://b/1", "co-b"))
+    claims = [
+        ev_claim("https://a/1", speaker="people familiar with the matter", speaker_type="none"),
+        ev_claim("https://b/1", speaker="people familiar with the matter", speaker_type="none"),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["confirmed"] is False
+
+
+def test_evidence_confirmation_ignores_an_outlet_citing_itself():
+    by_url = {
+        facts._source_url_key("https://a/1"): {"owner": "co-a", "source_name": "Outlet One"},
+        facts._source_url_key("https://b/1"): {"owner": "co-b", "source_name": "Outlet Two"},
+    }
+    claims = [
+        ev_claim("https://a/1", speaker="Outlet One", speaker_type="outlet"),
+        ev_claim("https://b/1", speaker="Outlet Two", speaker_type="outlet"),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["confirmed"] is False
+
+
+def test_evidence_confirmation_two_independent_origins():
+    by_url = by_url_map(("https://a/1", "co-a"), ("https://b/1", "co-b"))
+    claims = [
+        ev_claim("https://a/1", speaker="Jane Coder", speaker_type="person", kind="reported"),
+        ev_claim("https://b/1", speaker="John Artist", speaker_type="person", kind="reported"),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["confirmed"] is True
+    assert result["rule"] == "two-independent-origins"
+
+
+def test_evidence_confirmation_tier1_short_circuits():
+    result = facts.evidence_confirmation([], {}, tier1_confirms=True, aliases={})
+    assert result["confirmed"] is True
+    assert result["rule"] == "tier1"
+
+
+def test_evidence_mode_lets_the_evidence_verdict_decide(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    text_a = "Jane Coder said Acme Arena is the fastest-selling game in its history."
+    text_b = "John Artist said Acme Arena is the fastest-selling game in its history."
+    sources = [
+        source(link="https://a.example/1", name="Alpha", owner="co-a", tier=2, title=ACME_TITLE, text=text_a),
+        source(link="https://b.example/2", name="Beta", owner="co-b", tier=2, title=ACME_TITLE, text=text_b),
+    ]
+    payloads = [
+        {"claims": [acme_claim("https://a.example/1", origin="unstated", kind="reported",
+                               speaker="Jane Coder", speaker_type="person",
+                               attribution_quote="Jane Coder said")]},
+        {"claims": [acme_claim("https://b.example/2", origin="unstated", kind="reported",
+                               speaker="John Artist", speaker_type="person",
+                               attribution_quote="John Artist said")]},
+    ]
+    generate, _calls = grouping_generate(payloads, [["c0", "c1"]])
+    result = facts.facts(
+        gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+    )
+    assert result["confirmation"]["rule"] == "two-independent-origins"
+    assert result["confirmation"]["rule_source"] == "evidence"
+    assert result["confirmation"]["confirmed"] is True
+
+
+def test_evidence_mode_confirms_a_first_party_restatement_across_sources(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(3)
+    generate, calls = grouping_generate(payloads, [["c0", "c1", "c2"]])
+    result = facts.facts(
+        gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+    )
+    assert result["confirmation"]["rule"] == "first-party"
+    assert result["confirmation"]["confirmed"] is True
+    assert result["confirmation"]["rule_source"] == "evidence"
+    assert result["confirmation"]["first_party_organizations"] == ["acme games"]
+    assert result["fact_groups"]["accepted"] == [{"ids": ["c0", "c1", "c2"]}]
+    assert calls == ["fast", "fast", "fast", "group"]
+
+
+def test_evidence_mode_needs_enough_verified_sources(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(3)
+    payloads[1] = {"claims": [acme_claim(sources[1]["link"], quote="a quote not in the text")]}
+    payloads[2] = {"claims": [acme_claim(sources[2]["link"], quote="another missing quote")]}
+    generate, _calls = grouping_generate(payloads, [["c0", "c1", "c2"]])
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+        )
+    sheet = json.loads((tmp_path / "unconfirmed" / "acme-1.json").read_text(encoding="utf-8"))
+    assert sheet["confirmation"]["rule"] == "unconfirmed"
+    assert sheet["confirmation"]["first_party_organizations"] == []
+
+
+def test_evidence_mode_counts_a_shared_owner_once(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(2, owners=["co-a", "co-a"])
+    generate, _calls = grouping_generate(payloads, [["c0", "c1"]])
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+        )
+
+
+def test_evidence_mode_ignores_a_different_fact_by_the_same_org(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(2)
+    payloads[1] = {
+        "claims": [
+            acme_claim(
+                sources[1]["link"],
+                claim="Acme Arena has been delayed",
+                value="delayed",
+                quote="the milestone came in its first week",
+                attribution_quote="Acme Games said",
+            )
+        ]
+    }
+    generate, _calls = grouping_generate(payloads, [])
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+        )
+
+
+def test_evidence_mode_rejects_a_leak_based_single_source(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    text = "A person familiar with the matter said Acme Arena is coming to Xbox."
+    src = source(link="https://a.example/1", name="Alpha", tier=2, title=ACME_TITLE, text=text)
+    payload = {
+        "claims": [
+            acme_claim(
+                "https://a.example/1", claim="Acme Arena is coming to Xbox",
+                value="coming to Xbox", kind="rumor", origin="unstated",
+                quote="Acme Arena is coming to Xbox",
+                attribution_quote="A person familiar with the matter said",
+                speaker="a person familiar with the matter", speaker_type="none",
+            )
+        ]
+    }
+    generate, _calls = grouping_generate([payload], [])
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-1", [src]), id="acme-1", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+        )
+
+
+def test_grouping_failure_records_the_reason_and_continues(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(2, owners=["co-a", "co-a"])
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        if is_grouping_call(json_schema):
+            raise RuntimeError("grouping transport down")
+        value = payloads.pop(0)
+        if run_state is not None:
+            run_state.record(Generation(role=role, provider="mock", model="m", family="f", value=value))
+        return Generation(role=role, provider="mock", model="m", family="f", value=value, fallbacks=[])
+
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+        )
+    sheet = json.loads((tmp_path / "unconfirmed" / "acme-1.json").read_text(encoding="utf-8"))
+    assert "grouping call failed" in sheet["fact_groups"]["failed"]
+    assert sheet["confirmation"]["confirmed"] is False
+
+
+def test_grouping_drops_a_group_with_conflicting_figures(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    text_a = "Acme Games said Acme Arena sold 2 million copies."
+    text_b = "Acme Games said Acme Arena sold 3 million copies."
+    sources = [
+        source(link="https://a.example/1", name="Alpha", owner="co-a", tier=2, title=ACME_TITLE, text=text_a),
+        source(link="https://b.example/2", name="Beta", owner="co-b", tier=2, title=ACME_TITLE, text=text_b),
+    ]
+    payloads = [
+        {"claims": [acme_claim("https://a.example/1", claim="Acme Arena sold 2 million copies",
+                               value="2 million copies", quote="Acme Arena sold 2 million copies")]},
+        {"claims": [acme_claim("https://b.example/2", claim="Acme Arena sold 3 million copies",
+                               value="3 million copies", quote="Acme Arena sold 3 million copies")]},
+    ]
+    generate, _calls = grouping_generate(payloads, [["c0", "c1"]])
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+        )
+    sheet = json.loads((tmp_path / "unconfirmed" / "acme-1.json").read_text(encoding="utf-8"))
+    assert sheet["fact_groups"]["accepted"] == []
+    assert any("conflicting" in entry["reason"] for entry in sheet["fact_groups"]["dropped"])
+
+
+def test_shadow_mode_stores_both_verdicts_and_logs_disagreement(monkeypatch, caplog, tmp_path):
+    caplog.set_level(logging.INFO)
+    use_mode(monkeypatch, "shadow")
+    sources, payloads = acme_scenario(2)
+    # No verbatim quote: legacy confirms from the origin, the evidence rule does
+    # not, so the two verdicts disagree.
+    for payload in payloads:
+        payload["claims"][0]["quote"] = ""
+        payload["claims"][0]["attribution_quote"] = ""
+    generate, _calls = grouping_generate(payloads, [])
+    result = facts.facts(
+        gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+    )
+    assert result["confirmation_legacy"]["confirmed"] is True
+    assert result["confirmation_evidence"]["confirmed"] is False
+    assert result["confirmation"]["confirmed"] is True, "shadow mode lets legacy decide"
+    assert any("DISAGREE" in record.message for record in caplog.records)
+
+
+def test_legacy_mode_does_not_run_grouping(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "legacy")
+    sources, payloads = acme_scenario(2)
+    generate, calls = grouping_generate(payloads, [["c0", "c1"]])
+    result = facts.facts(
+        gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+    )
+    assert calls == ["fast", "fast"]
+    assert "fact_groups" not in result
+
+
+def test_grouping_is_skipped_when_the_budget_is_spent(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(2)
+    for payload in payloads:
+        payload["claims"][0]["quote"] = ""
+        payload["claims"][0]["attribution_quote"] = ""
+    generate, calls = grouping_generate(payloads, [["c0", "c1"]])
+    run_state = RunState()
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+            run_state=run_state, model_call_budget=2,
+        )
+    assert calls == ["fast", "fast"]
+    assert run_state.calls == 2
+    sheet = json.loads((tmp_path / "unconfirmed" / "acme-1.json").read_text(encoding="utf-8"))
+    assert "budget" in sheet["fact_groups"]["failed"]
+
+
+def test_grouping_call_counts_toward_the_model_calls(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(3)
+    generate, calls = grouping_generate(payloads, [["c0", "c1", "c2"]])
+    run_state = RunState()
+    result = facts.facts(
+        gathered("acme-1", sources), id="acme-1", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+        run_state=run_state, model_call_budget=4,
+    )
+    assert calls == ["fast", "fast", "fast", "group"]
+    assert run_state.calls == 4
+    assert result["confirmation"]["confirmed"] is True
+
+
+@pytest.mark.parametrize("mode", facts.CONFIRMATION_MODES)
+def test_arc_raiders_fixture_stays_unconfirmed_in_every_mode(monkeypatch, tmp_path, mode):
+    use_mode(monkeypatch, mode)
+    fixture, data, generate = load_arc_fixture()
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            data, id=fixture["id"], title=ARC_TITLE, output_dir=tmp_path, now=NOW,
+            generate=generate,
+        )
+
+
+@pytest.mark.parametrize("mode", facts.CONFIRMATION_MODES)
+def test_dmz_feature_bullets_survive_every_mode(monkeypatch, tmp_path, mode):
+    use_mode(monkeypatch, mode)
+    src = source(
+        link="https://blog.playstation.com/dmz", name="PlayStation Blog", owner="sony",
+        tier=1, text=DMZ_FEATURE_BULLETS,
+    )
+    payload = {
+        "claims": [
+            claim(claim="DMZ has base stations that capture territory", value="base stations", source_url="https://blog.playstation.com/dmz"),
+            claim(claim="DMZ offers three deployment options", value="on foot, by vehicle, or from the air", source_url="https://blog.playstation.com/dmz"),
+            claim(claim="DMZ Cash buys deployables", value="in-game DMZ Cash", source_url="https://blog.playstation.com/dmz"),
+        ]
+    }
+    result = facts.facts(
+        gathered("dmz-1", [src]), id="dmz-1", output_dir=tmp_path, now=NOW,
+        generate=make_generate(payload),
+    )
+    assert [c["claim"] for c in result["claims"]] == [
+        "DMZ has base stations that capture territory",
+        "DMZ offers three deployment options",
+        "DMZ Cash buys deployables",
+    ]
+    assert result["confirmation"]["confirmed"] is True
+
+
+@pytest.mark.parametrize("mode", facts.CONFIRMATION_MODES)
+def test_tokon_tier1_story_confirms_in_every_mode(monkeypatch, tmp_path, mode):
+    use_mode(monkeypatch, mode)
+    ps_blog = source(
+        link=TOKON_PS_URL, name="PlayStation Blog", owner="sony", tier=1, title=TOKON_TITLE,
+        text=(
+            "Marvel Tōkon: Fighting Souls unveils its Year 1 DLC roster. "
+            "Phoenix Cyclops joins Marvel Tōkon: Fighting Souls on November 2. "
+            "The PlayStation Blog confirmed the roster."
+        ),
+    )
+    payload = {
+        "claims": [
+            claim(
+                claim="Phoenix Cyclops joins Marvel Tōkon: Fighting Souls on November 2",
+                value="Phoenix Cyclops joins on November 2",
+                source_url=TOKON_PS_URL, origin="PlayStation Blog", kind="confirmed",
+                quote="Phoenix Cyclops joins Marvel Tōkon: Fighting Souls on November 2",
+                attribution_quote="The PlayStation Blog confirmed",
+                speaker="PlayStation Blog", speaker_type="organization",
+            )
+        ]
+    }
+    result = facts.facts(
+        gathered("tokon-1", [ps_blog]), id="tokon-1", title=TOKON_TITLE,
+        entities=["Marvel Tōkon: Fighting Souls", "Phoenix Cyclops"],
+        output_dir=tmp_path, now=NOW, generate=make_generate(payload),
+    )
+    assert result["confirmation"]["confirmed"] is True
+

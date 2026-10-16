@@ -55,6 +55,18 @@ def test_make_generate_verifier_payload_is_schema_valid():
         assert json_schema.schema_errors(payload, verify.VERIFIER_SCHEMA) == [], scenario
 
 
+def test_make_generate_answers_the_grouping_schema():
+    generate = dryrun.make_generate("pass")
+    generation = generate(
+        "verifier",
+        "- c0 | s0 | Nvidia confirmed the window\n- c1 | s1 | Nvidia confirmed the window",
+        facts.GROUPING_SCHEMA,
+    )
+    assert json_schema.schema_errors(generation.value, facts.GROUPING_SCHEMA) == []
+    assert generation.value["groups"] == [{"ids": ["c0", "c1"]}]
+
+
+
 def test_unknown_scenario_raises():
     with pytest.raises(ValueError):
         dryrun.make_generate("nope")
