@@ -122,6 +122,7 @@ MAX_FIELD_CHARS = 300
 # it, and both are clipped so a sheet never carries a long slice of the article.
 MAX_QUOTE_CHARS = 300
 MAX_ATTRIBUTION_QUOTE_CHARS = 200
+EVIDENCE_FIELD_CHARS = 200
 # Extraction runs once per source; one long article may contribute at most this
 # many claims, so it cannot crowd out the story's other sources. Overridable per
 # story via `facts.max_claims_per_source` in config.yaml.
@@ -139,7 +140,7 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v9"
+PROMPT_VERSION = "facts-v10"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -464,7 +465,10 @@ SYSTEM_INSTRUCTION = (
     "ellipsis, and never fix its spelling, its quotation marks or its dashes. "
     "attribution_quote is the exact words in the text that attribute the fact to "
     "its speaker (for example 'according to Epic Games' or 'Epic Games said'), "
-    "copied the same way. When the article is a company's own press release or a "
+    "copied the same way. When a sentence names its source inside itself (for "
+    "example 'Rebel Wolves has confirmed that ...', 'Devs X claim to ...', "
+    "'according to Y'), copy that phrase as attribution_quote and set speaker to "
+    "the named source. When the article is a company's own press release or a "
     "post on a company's own site that states the fact in the company's own "
     "voice, set speaker to that company and speaker_type to 'organization' and "
     "use the headline or the sentence that names the company as the announcer "
@@ -3984,17 +3988,24 @@ def evidence_confirmation(
         # itself never counts as an independent speaker -- the stored evidence
         # already rejects both, but a claim is guarded here too so neither can
         # slip in through a hand-built sheet.
+        evidence = claim.get("evidence")
+        first_party = isinstance(evidence, dict) and evidence.get("attribution_mode") == "first_party_site"
         if _is_anonymous_origin(speaker, aliases):
             continue
         source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
-        if _is_publication(speaker, source):
+        if _is_publication(speaker, source) and not first_party:
             continue
         owner = _claim_owner(claim, by_url)
         # A stated affiliation names the organization a speaker works for, so
         # the person and that organization are one identity -- but only when the
-        # evidence states the affiliation.
+        # evidence states the affiliation. A first-party own-site speaker also
+        # resolves to the owner's canonical organization.
         identity_source = speaker
         affiliation = str(claim.get("affiliation") or "").strip()
+        if first_party and not affiliation:
+            owner = _claim_owner(claim, by_url)
+            if owner:
+                identity_source = owner
         if affiliation and affiliation.lower() != UNSTATED_ORIGIN:
             canonical_affiliation = canonicalize_origin(affiliation, aliases)
             if (
@@ -4496,6 +4507,10 @@ def _grounding_entry(entry: dict) -> dict:
     return row
 
 
+def _evidence_field(value: object, limit: int = EVIDENCE_FIELD_CHARS) -> str:
+    return str(value or "").strip()[:limit]
+
+
 def _evidence_for_claim(
     claim: dict,
     source: dict,
@@ -4514,7 +4529,14 @@ def _evidence_for_claim(
         source_tier=source.get("tier"),
         source_owner=source.get("owner"),
     )
-    return {"source_url": claim.get("source_url"), **result}
+    return {
+        "source_url": claim.get("source_url"),
+        "speaker": _evidence_field(claim.get("speaker")),
+        "speaker_type": _normalize_speaker_type(claim.get("speaker_type")),
+        "quote": _evidence_field(claim.get("quote")),
+        "attribution_quote": _evidence_field(claim.get("attribution_quote")),
+        **result,
+    }
 
 
 def _merge_evidence(group: list[dict]) -> list[dict]:

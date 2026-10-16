@@ -681,3 +681,23 @@ def test_distinct_owners_ignores_unfetchable_and_tier3_and_blank():
         {"tier": 1},
     ]
     assert cluster.distinct_owners(sources) == {"a"}
+def test_match_normalize_treats_apostrophes_consistently():
+    assert cluster.match_normalize("Assassin's") == cluster.match_normalize("assassin's")
+    assert cluster.match_normalize("Assassin's") == cluster.match_normalize("assassin's")
+    assert cluster.match_normalize("Garry's Mod") == cluster.match_normalize("garry mod")
+    assert cluster.match_normalize("Marvel's Spider-Man") == cluster.match_normalize("marvel spider man")
+
+
+def test_normalize_title_apostrophe_unchanged():
+    assert cluster.normalize_title("Assassin's Creed") == "assassin s creed"
+    assert cluster.normalize_title("Marvel's Spider-Man 2") == "marvel s spider man 2"
+    assert cluster.normalize_title("Garry's Mod") == "garry s mod"
+
+
+def test_contains_entity_handles_apostrophes():
+    assert cluster.contains_entity("Screenshots reveal cancelled Assassin's Creed Destiny game set in China", "assassin creed")
+    assert cluster.contains_entity("Screenshots reveal cancelled Assassin\u2019s Creed Destiny game set in China", "assassin creed")
+    assert cluster.contains_entity("Baldur's Gate 3 patch adds a new subclass", "baldur's gate 3")
+    assert cluster.contains_entity("Marvel's Spider-Man 2 update", "marvel's spider-man 2")
+    assert cluster.contains_entity("Garry's Mod update", "garry's mod")
+    assert not cluster.contains_entity("Horizon Forbidden West update", "assassin creed")

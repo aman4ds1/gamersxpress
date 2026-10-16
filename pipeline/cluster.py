@@ -163,6 +163,25 @@ _INCIDENTAL_ENTITIES = {
 }
 
 
+def match_normalize(text: str) -> str:
+    """Compare entity names with free text regardless of apostrophes/hyphens.
+
+    Lowercases and folds diacritics, turns curly apostrophes/dashes straight,
+    drops possessive "'s"/"s'" endings, removes any remaining apostrophe without
+    leaving a space, treats hyphens and other punctuation as separators, and
+    collapses whitespace. Unlike :func:`normalize_title`, an apostrophe never
+    splits a word ("Assassin's" -> "assassin", not "assassin s").
+    """
+    value = strip_diacritics(str(text or "")).lower()
+    value = value.replace("\u2019", "'").replace("\u02bc", "'").replace("\u2018", "'")
+    value = re.sub(r"'s\b", "", value)
+    value = re.sub(r"s'(?![a-z0-9])", "", value)
+    value = value.replace("'", "")
+    value = re.sub(r"[\u2010-\u2015-]", " ", value)
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
 def normalize_title(title: str) -> str:
     """Lowercase, fold accents, strip punctuation, collapse whitespace.
 
@@ -907,8 +926,8 @@ def story_type(title: str) -> str:
 
 def contains_entity(haystack: str, entity: str) -> bool:
     """True when normalized ``entity`` appears in normalized ``haystack`` on word boundaries."""
-    haystack = normalize_title(haystack)
-    entity = normalize_title(entity)
+    haystack = match_normalize(haystack)
+    entity = match_normalize(entity)
     if not haystack or not entity:
         return False
     return re.search(rf"\b{re.escape(entity)}\b", haystack) is not None
@@ -935,7 +954,7 @@ def shared_entities(a_title: str, b_title: str) -> set[str]:
 
 
 def similarity(a: str, b: str) -> float:
-    na, nb = normalize_title(a), normalize_title(b)
+    na, nb = match_normalize(a), match_normalize(b)
     if not na or not nb:
         return 0.0
     return SequenceMatcher(None, na, nb).ratio()

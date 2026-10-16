@@ -3909,3 +3909,255 @@ def test_tokon_tier1_story_confirms_in_every_mode(monkeypatch, tmp_path, mode):
     )
     assert result["confirmation"]["confirmed"] is True
 
+
+# --- apostrophe normalization in coherence, persisted evidence and first-party -
+
+
+CANCELLED_DESTINY_CLAIM = (
+    "Screenshots reveal cancelled Assassin{apostrophe}s Creed Destiny game set in China"
+)
+ASSASSIN_ENTITIES = ["assassin creed", "qin dynasty china"]
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019"])
+def test_coherence_keeps_the_cancelled_assassins_creed_claim(apostrophe):
+    claims = [
+        claim(
+            claim=CANCELLED_DESTINY_CLAIM.format(apostrophe=apostrophe),
+            value="cancelled game set in China",
+            source_url="https://a.example/1",
+        ),
+        claim(
+            claim="Mario Kart is getting a new cup",
+            value="Mario Kart",
+            source_url="https://a.example/1",
+        ),
+    ]
+    sources = [source(link="https://a.example/1", name="Alpha", title="", text="body text")]
+    kept, dropped, primary = facts.coherence_check(claims, sources, entities=ASSASSIN_ENTITIES)
+    assert [entry["claim"] for entry in kept] == [claims[0]["claim"]]
+    assert [entry["claim"] for entry in dropped] == ["Mario Kart is getting a new cup"]
+    assert "assassin creed" in primary
+
+
+def test_saved_evidence_entries_carry_speaker_and_quote_fields(tmp_path):
+    text = "Epic Games said Fortnite is coming to Linux. Epic Games will ship it soon."
+    sources = [source(link="https://a.example/1", tier=1, name="Alpha", text=text)]
+    payload = {
+        "claims": [
+            claim(
+                claim="Fortnite is coming to Linux",
+                value="coming to Linux",
+                origin="epic games",
+                source_url="https://a.example/1",
+                quote="Fortnite is coming to Linux",
+                attribution_quote="Epic Games said",
+                speaker="Epic Games",
+                speaker_type="organization",
+            )
+        ]
+    }
+    sheet = facts.facts(
+        gathered("ev-fields-1", sources),
+        id="ev-fields-1",
+        title="Fortnite is coming to Linux",
+        entities=["Fortnite"],
+        output_dir=tmp_path,
+        now=NOW,
+        generate=make_generate(payload),
+    )
+    entry = sheet["claims"][0]["evidence"][0]
+    assert entry["speaker"] == "Epic Games"
+    assert entry["speaker_type"] == "organization"
+    assert entry["quote"] == "Fortnite is coming to Linux"
+    assert entry["attribution_quote"] == "Epic Games said"
+
+
+def test_unconfirmed_evidence_carries_fields_and_truncates_a_long_quote(tmp_path):
+    quote = "a" * 300
+    sources = [source(link="https://a.example/1", tier=2, name="Alpha", text=quote + ".")]
+    payload = {
+        "claims": [
+            claim(
+                claim="Launch rumor",
+                value="a rumor",
+                kind="rumor",
+                origin="unstated",
+                source_url="https://a.example/1",
+                quote=quote,
+                attribution_quote="",
+                speaker="",
+                speaker_type="none",
+            )
+        ]
+    }
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("ev-fields-2", sources),
+            id="ev-fields-2",
+            title="Launch rumor",
+            entities=["Launch"],
+            output_dir=tmp_path,
+            now=NOW,
+            generate=make_generate(payload),
+        )
+    sheet = json.loads((tmp_path / "unconfirmed" / "ev-fields-2.json").read_text(encoding="utf-8"))
+    entry = sheet["claims"][0]["evidence"][0]
+    assert entry["speaker"] == ""
+    assert entry["speaker_type"] == "none"
+    assert entry["attribution_quote"] == ""
+    assert entry["quote"] == "a" * facts.EVIDENCE_FIELD_CHARS
+    assert len(entry["quote"]) == 200
+
+
+def first_party_claim(
+    url,
+    speaker,
+    *,
+    owner,
+    outlet,
+    quote,
+    speaker_type="organization",
+    kind="confirmed",
+    tier=1,
+):
+    evidence = facts.verify_evidence(
+        {
+            "quote": quote,
+            "attribution_quote": "",
+            "speaker": speaker,
+            "speaker_type": speaker_type,
+        },
+        quote + " More body text.",
+        source_outlet=outlet,
+        source_tier=tier,
+        source_owner=owner,
+    )
+    return {
+        "source_url": url,
+        "speaker": speaker,
+        "speaker_type": speaker_type,
+        "kind": kind,
+        "origin": speaker,
+        "affiliation": "",
+        "evidence": evidence,
+    }
+
+
+def test_evidence_confirmation_first_party_own_site_speakers_resolve_to_the_owner():
+    by_url = by_url_map(
+        ("https://news.xbox.com/1", "microsoft"),
+        ("https://news.xbox.com/2", "xbox"),
+    )
+    claims = [
+        first_party_claim(
+            "https://news.xbox.com/1", "Xbox Wire",
+            owner="microsoft", outlet="Xbox Wire",
+            quote="Cloud gaming arrives on more devices",
+        ),
+        first_party_claim(
+            "https://news.xbox.com/2", "Xbox",
+            owner="xbox", outlet="Xbox",
+            quote="Cloud gaming arrives on more devices",
+        ),
+    ]
+    for entry in claims:
+        assert entry["evidence"]["attribution_mode"] == "first_party_site"
+        assert entry["evidence"]["ok"] is True
+    result = facts.evidence_confirmation(claims, by_url)
+    assert result["confirmed"] is True
+    assert result["rule"] == "first-party"
+    assert result["first_party_organizations"] == ["microsoft"]
+    assert result["first_party_sources"] == 2
+    assert result["origins"] == ["microsoft"]
+
+
+def test_evidence_confirmation_playstation_blog_speaker_resolves_to_sony():
+    by_url = by_url_map(
+        ("https://blog.playstation.com/1", "sony"),
+        ("https://blog.playstation.com/2", "playstation"),
+    )
+    claims = [
+        first_party_claim(
+            "https://blog.playstation.com/1", "PlayStation Blog",
+            owner="sony", outlet="PlayStation Blog",
+            quote="The update arrives today",
+        ),
+        first_party_claim(
+            "https://blog.playstation.com/2", "PlayStation",
+            owner="playstation", outlet="PlayStation",
+            quote="The update arrives today",
+        ),
+    ]
+    for entry in claims:
+        assert entry["evidence"]["attribution_mode"] == "first_party_site"
+        assert entry["evidence"]["ok"] is True
+    result = facts.evidence_confirmation(claims, by_url)
+    assert result["confirmed"] is True
+    assert result["rule"] == "first-party"
+    assert result["first_party_organizations"] == ["sony"]
+    assert result["first_party_sources"] == 2
+    assert result["origins"] == ["sony"]
+
+
+def test_evidence_confirmation_own_site_claims_from_one_owner_count_once():
+    by_url = by_url_map(
+        ("https://news.xbox.com/1", "microsoft"),
+        ("https://news.xbox.com/2", "microsoft"),
+    )
+    claims = [
+        first_party_claim(
+            "https://news.xbox.com/1", "Xbox Wire",
+            owner="microsoft", outlet="Xbox Wire",
+            quote="Cloud gaming arrives on more devices",
+        ),
+        first_party_claim(
+            "https://news.xbox.com/2", "Xbox",
+            owner="microsoft", outlet="Xbox Wire",
+            quote="Cloud gaming arrives on more devices",
+        ),
+    ]
+    result = facts.evidence_confirmation(claims, by_url)
+    assert result["confirmed"] is False
+    assert result["first_party_sources"] == 0
+    assert result["origins"] == ["microsoft"]
+
+
+def test_evidence_confirmation_tier2_own_site_speaker_still_fails_as_self_reference():
+    by_url = by_url_map(
+        ("https://eurogamer.example/1", "eurogamer"),
+        ("https://b.example/2", "co-b"),
+    )
+    eurogamer = first_party_claim(
+        "https://eurogamer.example/1", "Eurogamer",
+        owner="eurogamer", outlet="Eurogamer",
+        quote="The game ships today", speaker_type="outlet", tier=2,
+    )
+    assert eurogamer["evidence"]["self_reference"] is True
+    assert eurogamer["evidence"]["ok"] is False
+    other = ev_claim("https://b.example/2", speaker="Acme Games", speaker_type="organization")
+    result = facts.evidence_confirmation([eurogamer, other], by_url, aliases={})
+    assert result["confirmed"] is False
+    assert result["origins"] == ["acme games"]
+
+
+def test_evidence_confirmation_tier1_unrelated_speaker_is_not_first_party():
+    by_url = by_url_map(("https://news.xbox.com/1", "microsoft"))
+    unrelated = first_party_claim(
+        "https://news.xbox.com/1", "Contoso Games",
+        owner="microsoft", outlet="Xbox Wire",
+        quote="A new game ships today",
+    )
+    assert unrelated["evidence"]["attribution_mode"] != "first_party_site"
+    assert unrelated["evidence"]["ok"] is False
+    result = facts.evidence_confirmation([unrelated], by_url, aliases={})
+    assert result["confirmed"] is False
+    assert result["first_party_organizations"] == []
+
+
+def test_extraction_prompt_states_the_in_sentence_attribution_rule():
+    assert facts.PROMPT_VERSION == "facts-v10"
+    instruction = facts.SYSTEM_INSTRUCTION
+    assert "Rebel Wolves has confirmed that" in instruction
+    assert "copy that phrase as attribution_quote and set speaker to the named source" in instruction
+
