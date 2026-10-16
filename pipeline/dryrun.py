@@ -249,6 +249,7 @@ def _verifier_json(scenario: str) -> str:
                 "clause": "Nvidia confirmed the launch window for its next graphics card line.",
                 "fact_ids": [] if failed else ["F1"],
                 "match": "none" if failed else "exact",
+                "exceeds_facts": failed,
                 "difference": "the sheet does not state a ship date" if failed else "",
             }
         ],

@@ -6,14 +6,21 @@ family guard from PLAN.md principle 4:
 1. **Model check.** The ``verifier`` role (a different model family than the
    writer) receives the article and the facts sheet (claims numbered F1, F2, ...)
    and must return JSON saying, for every factual clause, which sheet claim(s)
-   support it (``fact_ids``), how it matches (``match``: ``exact``,
-   ``paraphrase``, ``partial`` or ``none``) and, for a partial or absent match, a
-   short ``difference`` note. A clause is a pass only when its ``match`` is
-   ``exact`` or ``paraphrase``, it cites the supporting fact id(s) and its
-   ``difference`` is empty. A ``partial`` or ``none`` match, any non-empty
-   ``difference``, a clause resting on a ``statement`` fact whose speaker the
-   clause does not name, and a relative-time word outside a quoted name are all
-   unsupported. The same reply also lists any unsupported claim, any rumor
+   support it (``fact_ids``), whether it asserts anything the facts do not
+   (``exceeds_facts``), how it matches (``match``: ``exact``, ``paraphrase``,
+   ``partial`` or ``none`` -- informational) and, when it exceeds the facts, a
+   short ``difference`` note naming that excess. A clause is a pass only when
+   its ``match`` is not ``none``, its ``exceeds_facts`` is false, and it cites
+   the supporting fact id(s). ``match`` no longer decides alone: a ``partial``
+   match whose ``exceeds_facts`` is false merely states less than its fact and
+   passes (recorded in the report's ``notes`` so it stays visible), while
+   ``exceeds_facts`` true -- a dropped hedge, an added reason, number or label
+   -- is unsupported even on an ``exact`` match. A clause resting on a
+   ``statement`` fact whose speaker the clause does not name, and a
+   relative-time word outside a quoted name, are still unsupported. A verdict
+   written before ``exceeds_facts`` existed (a stored report) falls back to the
+   previous rule: ``exact`` or ``paraphrase`` with an empty ``difference``. The
+   same reply also lists any unsupported claim, any rumor
    stated as fact, any region-specific price or availability missing from the
    sheet, any cost described as something the player receives, any label the
    article invents, and any category claim the sheet does not state. Missing,
@@ -87,9 +94,10 @@ VERIFIER_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "enum": ["exact", "paraphrase", "partial", "none"],
                     },
+                    "exceeds_facts": {"type": "boolean"},
                     "difference": {"type": "string"},
                 },
-                "required": ["clause", "fact_ids", "match", "difference"],
+                "required": ["clause", "fact_ids", "match", "exceeds_facts", "difference"],
                 "additionalProperties": False,
             },
         },
@@ -181,33 +189,57 @@ SYSTEM_INSTRUCTION = (
     "be split so the unsupported clause is flagged on its own: \"deploy with "
     "vehicles or cash\" is two clauses, \"deploy with vehicles\" and \"deploy "
     "with cash\".\n"
-    "A clause is supported only when one fact, or a short list of facts that "
-    "each state a distinct part of it, states every element of the clause: who "
+    "A clause is supported when one fact, or a short list of facts that each "
+    "state a distinct part of it, states everything the clause asserts: who "
     "said or did it (the speaker, the outlet, or the fact's attribution), "
     "qualifier and hedge words (could, may, expected, first, only, full, "
     "reportedly), the time or date, numbers, and the relationship between the "
-    "ideas. If the clause changes any of these relative to the facts, it is "
-    "\"partial\" and unsupported, even when the meaning is close. \"Close "
-    "enough\" is not a pass: if you notice a difference, set match to "
-    "\"partial\" (or \"none\") and record it in \"difference\"; never note a "
-    "difference and then pass the clause.\n"
+    "ideas. Say what the clause does beyond its facts in \"exceeds_facts\" and "
+    "how close it is in \"match\" (informational only).\n"
+    "\"exceeds_facts\" is a required boolean. Set it true only when the clause "
+    "asserts something the cited facts do not assert, including dropping a "
+    "hedge, attribution, scope, condition or qualifier so that the clause "
+    "claims more certainty or breadth than the fact (for example dropping "
+    "\"reportedly\", \"up to\", \"estimated\", \"in the US only\" or "
+    "\"according to X\"), adding a reason, cause, benefit, contrast, comparison "
+    "or motive, adding a number, date, name or label, or merging facts into a "
+    "claim neither supports. A clause that states less than its fact, leaves "
+    "out detail, or paraphrases it faithfully has \"exceeds_facts\" false.\n"
+    "\"match\" is exactly one of \"exact\" (the fact states the clause word for "
+    "word), \"paraphrase\" (the fact states the same thing in different words, "
+    "keeping every element the clause asserts), \"partial\" (the clause is "
+    "supported only in part, that is some assertion in the clause is "
+    "unsupported) or \"none\" (no fact supports the clause). \"the clause omits "
+    "part of the fact\" is NOT partial: a clause that merely says less than its "
+    "fact is \"exact\" or \"paraphrase\" with \"exceeds_facts\" false. A clause "
+    "whose \"match\" is \"none\" is unsupported, and so is a clause whose "
+    "\"exceeds_facts\" is true, whatever its \"match\".\n"
+    "\"difference\" must describe what the CLAUSE asserts that the facts do not "
+    "(the dropped hedge, the changed number, the added reason). Leave it \"\" "
+    "when \"exceeds_facts\" is false, and never describe what the clause "
+    "omits.\n"
+    "Three short examples:\n"
+    "F1: \"The joystick sensors are magnetic TMR sensors, a design meant to "
+    "reduce drift.\" Clause \"The joystick sensors are magnetic TMR sensors\" "
+    "-> match \"paraphrase\", exceeds_facts false, difference \"\".\n"
+    "F2: \"Retailers reportedly began preparing internal listings.\" Clause "
+    "\"Retailers began preparing internal listings\" -> match \"paraphrase\", "
+    "exceeds_facts true, difference \"drops the hedge reportedly\".\n"
+    "F3: \"The update ships on November 2.\" Clause \"The update ships on "
+    "November 2 to fix the launch issues\" -> match \"partial\", exceeds_facts "
+    "true, difference \"adds a reason the facts do not state\".\n"
     "Reply with JSON only, no prose and no code fences, in exactly this shape:\n"
     '{"clauses":[{"clause":"...","fact_ids":["F1"],"match":"exact",'
-    '"difference":""}],"unsupported_claims":["..."],'
+    '"exceeds_facts":false,"difference":""}],"unsupported_claims":["..."],'
     '"rumors_stated_as_fact":["..."],"unsupported_regional":["..."],'
     '"costs_described_as_received":["..."],"invented_labels":["..."],'
     '"category_claims":["..."]}\n'
     "List every factual clause of the article in \"clauses\". Keep the "
     "\"clause\" text short. For each clause put the number(s) of the sheet "
     "fact(s) it rests on in \"fact_ids\" (always include the key; use [] when "
-    "no fact applies). Set \"match\" to exactly one of \"exact\" (the fact "
-    "states the clause word for word), \"paraphrase\" (the fact states the same "
-    "thing in different words, keeping every element), \"partial\" (the fact "
-    "states only part of it, or changes a speaker, qualifier, date, number or "
-    "relationship) or \"none\". A clause whose match is \"partial\" or \"none\" "
-    "is unsupported. In \"difference\" give a short note naming what is missing "
-    "or changed whenever \"match\" is \"partial\" or \"none\"; return \"\" when "
-    "\"match\" is \"exact\" or \"paraphrase\".\n"
+    "no fact applies; a clause that passes must cite at least one fact id, and "
+    "an id that is not in the sheet is a fabrication) and always include "
+    "\"exceeds_facts\" and \"difference\".\n"
     "When a cited fact's kind is \"statement\", the clause must name the same "
     "speaker as that fact, or attribute it with \"says\" or \"according to\" "
     "and that speaker; a clause that credits the statement to a group (\"the "
@@ -244,6 +276,7 @@ class VerifyReport:
     verifier_model: str | None
     unsupported: list[str] = field(default_factory=list)
     unmatched_numbers: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
     model_sentences: list[dict] = field(default_factory=list)
     writer_families: list[str] = field(default_factory=list)
     error: str | None = None
@@ -265,6 +298,7 @@ class VerifyReport:
             "verifier_model": self.verifier_model,
             "unsupported": self.unsupported,
             "unmatched_numbers": self.unmatched_numbers,
+            "notes": self.notes,
             "model_sentences": self.model_sentences,
             "error": self.error,
             "duplicate_sources": self.duplicate_sources,
@@ -352,10 +386,21 @@ def _fact_speakers(claim: dict, facts: dict) -> list[str]:
 
 
 def _clause_supported(item: dict) -> bool:
-    """A model clause passes only on an exact or paraphrase match with no difference."""
-    if item.get("match") not in ("exact", "paraphrase"):
+    """True when a model clause asserts nothing beyond the cited facts.
+
+    With the current verdict format the decision is ``match`` not ``none`` and
+    ``exceeds_facts`` false, so a ``partial`` match that only states less than
+    its fact passes. A verdict written before ``exceeds_facts`` existed (a
+    stored report) falls back to the previous rule: ``exact`` or ``paraphrase``
+    with an empty ``difference``.
+    """
+    if "exceeds_facts" not in item:
+        if item.get("match") not in ("exact", "paraphrase"):
+            return False
+        return not str(item.get("difference") or "").strip()
+    if str(item.get("match")) == "none":
         return False
-    return not str(item.get("difference") or "").strip()
+    return not item.get("exceeds_facts")
 
 
 def _statement_attribution_ok(item: dict, facts: dict, by_id: dict[str, dict]) -> bool:
@@ -427,31 +472,41 @@ def _extract_json(text: str) -> Any:
         raise
 
 
-def _with_clause_defaults(data: Any) -> Any:
-    """Return ``data`` with a missing ``fact_ids``/``difference`` filled by default.
+def _with_clause_defaults(data: Any, *, stored: bool = False) -> Any:
+    """Return ``data`` with missing per-clause keys filled.
 
-    The schema lists every property in ``required`` so strict JSON-schema
-    providers accept it, and the prompt asks for ``[]``/``""`` on clauses where
-    they do not apply. This keeps the reader tolerant of an output that omits
-    those keys. ``match`` is deliberately *not* defaulted: a missing ``match``
-    is a malformed verdict and must fail schema validation. Non-dict payloads are
-    returned untouched for :func:`schema_errors` to reject.
+    ``fact_ids`` and ``difference`` are always filled: the prompt asks for
+    ``[]``/``""`` on clauses where they do not apply, and those omissions do not
+    change whether a clause is supported.
+
+    ``exceeds_facts`` is filled **only when loading a stored report**
+    (``stored=True``). A live verifier reply must carry it: a clause that omits
+    ``exceeds_facts`` (or gives it a non-boolean) has not answered the question
+    that decides whether the clause passes, so it is left untouched for
+    :func:`schema_errors` to reject as ``verifier_output_invalid``. The same
+    clause read back from a stored report falls back to the previous rule in
+    :func:`_clause_supported`. ``match`` is deliberately *not* defaulted: a
+    missing ``match`` is always a malformed verdict. Non-dict payloads are
+    returned untouched.
     """
     if not isinstance(data, dict):
         return data
     clauses = data.get("clauses")
     if not isinstance(clauses, list):
         return data
-    normalized = [
-        {
+    normalized: list[Any] = []
+    for clause in clauses:
+        if not isinstance(clause, dict):
+            normalized.append(clause)
+            continue
+        filled = {
             **clause,
             "fact_ids": clause.get("fact_ids", []),
             "difference": clause.get("difference", ""),
         }
-        if isinstance(clause, dict)
-        else clause
-        for clause in clauses
-    ]
+        if stored:
+            filled["exceeds_facts"] = clause.get("exceeds_facts", False)
+        normalized.append(filled)
     return {**data, "clauses": normalized}
 
 
@@ -479,6 +534,7 @@ def _model_check(
         "costs_described_as_received": [],
         "invented_labels": [],
         "category_claims": [],
+        "notes": [],
     }
 
     # finish_reason="length" means the output is truncated JSON. It must never be
@@ -502,15 +558,17 @@ def _model_check(
     else:
         return generation, {**empty, "error": "verifier returned no output"}
 
+    # Live output: do *not* default ``exceeds_facts``. A clause that omits it
+    # cannot be checked for claiming more than its facts, so schema validation
+    # below rejects the reply as ``verifier_output_invalid``.
     data = _with_clause_defaults(data)
     errors = schema_errors(data, VERIFIER_SCHEMA)
     if errors:
         return generation, {**empty, "error": "verifier JSON failed schema validation: " + "; ".join(errors)}
 
-    # A clause that claims support (an exact or paraphrase match with an empty
-    # difference) must cite at least one sheet fact id. A cited id we did not
-    # number is a hallucinated reference, so it is an invalid output, not a
-    # rejection.
+    # A clause that passes (its match is not "none" and it does not exceed the
+    # facts) must cite at least one sheet fact id. A cited id we did not number
+    # is a hallucinated reference, so it is an invalid output, not a rejection.
     clauses = data["clauses"]
     missing_fact = [
         item["clause"]
@@ -520,7 +578,7 @@ def _model_check(
     if missing_fact:
         return generation, {
             **empty,
-            "error": "clause marked exact or paraphrase without a cited fact_id: "
+            "error": "supported clause without a cited fact_id: "
             + "; ".join(missing_fact),
         }
     known_ids = _known_fact_ids(facts)
@@ -539,12 +597,15 @@ def _model_check(
             }
 
     # Code rules on top of the model's verdict, independent of its reasoning: a
-    # partial or absent match, or any recorded difference, is unsupported; a
-    # clause resting on a statement fact must name that fact's speaker; and a
-    # relative-time word outside a quoted name is unsupported. The verifier may
-    # not note a difference and then pass the clause.
+    # clause is unsupported when its match is "none", when it asserts more than
+    # its facts ("exceeds_facts" true) or when a stored verdict predates the
+    # field and its match/difference fail the previous rule; a clause resting on
+    # a statement fact must name that fact's speaker; and a relative-time word
+    # outside a quoted name is unsupported. A partial match that merely states
+    # less than its fact does not fail: it stays visible as a note.
     by_id = _facts_by_id(facts)
     unsupported_clauses: list[str] = []
+    notes: list[str] = []
     for item in clauses:
         clause = item["clause"]
         if (
@@ -553,6 +614,8 @@ def _model_check(
             or _relative_time_hits(clause, relative_time_words)
         ):
             unsupported_clauses.append(clause)
+        elif item.get("match") == "partial" and item.get("exceeds_facts") is False:
+            notes.append(f"partial match kept (states less than its fact): {clause}")
     ok = not (
         unsupported_clauses
         or data["unsupported_claims"]
@@ -573,6 +636,7 @@ def _model_check(
         "costs_described_as_received": data["costs_described_as_received"],
         "invented_labels": data["invented_labels"],
         "category_claims": data["category_claims"],
+        "notes": notes,
     }
 
 
@@ -1097,6 +1161,7 @@ def verify(
         verifier_model=generation.model,
         unsupported=unsupported,
         unmatched_numbers=code_result["unmatched"],
+        notes=model_result["notes"],
         model_sentences=model_result["clauses"],
         error=model_result["error"],
         duplicate_sources=duplicate_sources,

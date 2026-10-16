@@ -4,7 +4,9 @@ import pytest
 
 import dryrun
 import facts
+import json_schema
 import seo
+import verify
 
 
 def test_make_generate_answers_facts_schema():
@@ -39,10 +41,18 @@ def test_make_generate_verifier_pass_and_fail():
     ok = json.loads(dryrun.make_generate("pass")("verifier", "prompt").value)
     assert ok["clauses"][0]["match"] == "exact"
     assert ok["clauses"][0]["fact_ids"] == ["F1"]
+    assert ok["clauses"][0]["exceeds_facts"] is False
     assert ok["unsupported_claims"] == []
 
     bad = json.loads(dryrun.make_generate("fail-verify")("verifier", "prompt").value)
     assert bad["unsupported_claims"]
+    assert bad["clauses"][0]["exceeds_facts"] is True
+
+
+def test_make_generate_verifier_payload_is_schema_valid():
+    for scenario in dryrun.SCENARIOS:
+        payload = json.loads(dryrun.make_generate(scenario)("verifier", "prompt").value)
+        assert json_schema.schema_errors(payload, verify.VERIFIER_SCHEMA) == [], scenario
 
 
 def test_unknown_scenario_raises():

@@ -44,7 +44,7 @@ def model(clauses=None, unsupported=None, rumors=None, regional=None, costs=None
     return {
         "clauses": clauses
         if clauses is not None
-        else [{"clause": "The console costs $499", "fact_ids": ["F1"], "match": "exact", "difference": ""}],
+        else [{"clause": "The console costs $499", "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}],
         "unsupported_claims": unsupported or [],
         "rumors_stated_as_fact": rumors or [],
         "unsupported_regional": regional or [],
@@ -163,7 +163,7 @@ def test_wrong_price_fails_code_check_even_if_model_agrees(tmp_path):
         sheet(),
         run_state=providers.RunState(),
         generate=make_generate(
-            model([{"clause": "The console costs $599", "fact_ids": ["F1"], "match": "exact", "difference": ""}])
+            model([{"clause": "The console costs $599", "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}])
         ),
         report_dir=tmp_path,
         verify_config=config(),
@@ -175,7 +175,7 @@ def test_wrong_price_fails_code_check_even_if_model_agrees(tmp_path):
 def test_invented_claim_fails_model_check(tmp_path):
     payload = model(
         clauses=[
-            {"clause": "Free games forever", "fact_ids": [], "match": "none", "difference": "not in the sheet"}
+            {"clause": "Free games forever", "fact_ids": [], "match": "none", "exceeds_facts": False, "difference": "not in the sheet"}
         ],
         unsupported=["Free games forever"],
     )
@@ -254,24 +254,28 @@ def test_unsupported_benefit_sentence_fails_against_facts_F10_to_F12(tmp_path):
                 "clause": "Embark trains in-house AI models to detect cheating",
                 "fact_ids": ["F10"],
                 "match": "exact",
+                "exceeds_facts": False,
                 "difference": "",
             },
             {
                 "clause": "Uses kernel-level anti-cheat from Denuvo",
                 "fact_ids": ["F11"],
                 "match": "exact",
+                "exceeds_facts": False,
                 "difference": "",
             },
             {
                 "clause": "Detects cheaters using Anybrain's AI service",
                 "fact_ids": ["F12"],
                 "match": "exact",
+                "exceeds_facts": False,
                 "difference": "",
             },
             {
                 "clause": ANTICHEAT_SENTENCE,
                 "fact_ids": [],
                 "match": "none",
+                "exceeds_facts": False,
                 "difference": "the sheet does not say players receive security",
             },
         ],
@@ -339,11 +343,12 @@ DMZ_ARTICLE = "Deploy with vehicles or cash, and each deployment costs $100,000 
 def test_clause_level_check_flags_unsupported_part_of_mixed_sentence(tmp_path):
     payload = model(
         clauses=[
-            {"clause": "Deploy with vehicles or cash", "fact_ids": [], "match": "none", "difference": "not in the sheet"},
+            {"clause": "Deploy with vehicles or cash", "fact_ids": [], "match": "none", "exceeds_facts": False, "difference": "not in the sheet"},
             {
                 "clause": "each deployment costs $100,000 DMZ Cash",
                 "fact_ids": ["F1"],
                 "match": "exact",
+                "exceeds_facts": False,
                 "difference": "",
             },
         ],
@@ -371,6 +376,7 @@ def test_cost_described_as_received_fails(tmp_path):
                 "clause": "Players get $100,000 DMZ Cash to deploy",
                 "fact_ids": ["F1"],
                 "match": "exact",
+                "exceeds_facts": False,
                 "difference": "",
             }
         ],
@@ -396,6 +402,7 @@ def test_invented_label_mid_tier_options_fails(tmp_path):
                 "clause": "Mid-tier options cost $100,000 DMZ Cash",
                 "fact_ids": ["F1"],
                 "match": "exact",
+                "exceeds_facts": False,
                 "difference": "",
             }
         ],
@@ -421,6 +428,7 @@ def test_category_claim_fails(tmp_path):
                 "clause": "The extraction shooter deployment costs $100,000 DMZ Cash",
                 "fact_ids": ["F1"],
                 "match": "exact",
+                "exceeds_facts": False,
                 "difference": "",
             }
         ],
@@ -441,7 +449,7 @@ def test_category_claim_fails(tmp_path):
 def test_unsupported_list_is_deduplicated(tmp_path):
     payload = model(
         clauses=[
-            {"clause": "Each deployment costs $100,000 DMZ Cash", "fact_ids": [], "match": "none", "difference": "not in the sheet"}
+            {"clause": "Each deployment costs $100,000 DMZ Cash", "fact_ids": [], "match": "none", "exceeds_facts": False, "difference": "not in the sheet"}
         ],
         unsupported=["Each deployment costs $100,000 DMZ Cash"],
         costs=["Each deployment costs $100,000 DMZ Cash"],
@@ -460,7 +468,7 @@ def test_unsupported_list_is_deduplicated(tmp_path):
 
 def test_supported_clause_without_cited_fact_fails(tmp_path):
     payload = model(
-        clauses=[{"clause": "The console costs $499", "fact_ids": [], "match": "exact", "difference": ""}]
+        clauses=[{"clause": "The console costs $499", "fact_ids": [], "match": "exact", "exceeds_facts": False, "difference": ""}]
     )
     report = verify_module.verify(
         ARTICLE,
@@ -571,7 +579,7 @@ def test_malformed_verifier_output_is_verifier_output_invalid(tmp_path):
 
 def test_supported_clause_with_unknown_fact_id_fails(tmp_path):
     payload = model(
-        clauses=[{"clause": "The console costs $499", "fact_ids": ["F99"], "match": "exact", "difference": ""}]
+        clauses=[{"clause": "The console costs $499", "fact_ids": ["F99"], "match": "exact", "exceeds_facts": False, "difference": ""}]
     )
     report = verify_module.verify(
         ARTICLE,
@@ -588,7 +596,7 @@ def test_supported_clause_with_unknown_fact_id_fails(tmp_path):
 
 def test_unsupported_article_is_article_rejected(tmp_path):
     payload = model(
-        clauses=[{"clause": "The console costs $499", "fact_ids": ["F1"], "match": "exact", "difference": ""}]
+        clauses=[{"clause": "The console costs $499", "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}]
     )
     report = verify_module.verify(
         "The console costs $599 and a $899 bundle.\n",
@@ -607,7 +615,7 @@ def test_unsupported_article_is_article_rejected(tmp_path):
 def test_invented_claim_is_article_rejected(tmp_path):
     payload = model(
         clauses=[
-            {"clause": "Free games forever", "fact_ids": [], "match": "none", "difference": "not in the sheet"}
+            {"clause": "Free games forever", "fact_ids": [], "match": "none", "exceeds_facts": False, "difference": "not in the sheet"}
         ],
         unsupported=["Free games forever"],
     )
@@ -1015,7 +1023,7 @@ RIGHT_SPEAKER_CLAUSE = (
 def test_statement_clause_crediting_the_wrong_speaker_is_unsupported(tmp_path):
     payload = model(
         clauses=[
-            {"clause": WRONG_SPEAKER_CLAUSE, "fact_ids": ["F1"], "match": "exact", "difference": ""}
+            {"clause": WRONG_SPEAKER_CLAUSE, "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}
         ]
     )
     report = verify_module.verify(
@@ -1034,7 +1042,7 @@ def test_statement_clause_crediting_the_wrong_speaker_is_unsupported(tmp_path):
 def test_statement_clause_naming_the_speaker_passes(tmp_path):
     payload = model(
         clauses=[
-            {"clause": RIGHT_SPEAKER_CLAUSE, "fact_ids": ["F1"], "match": "exact", "difference": ""}
+            {"clause": RIGHT_SPEAKER_CLAUSE, "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}
         ]
     )
     report = verify_module.verify(
@@ -1074,7 +1082,75 @@ def style_sheet():
     }
 
 
-def test_partial_match_is_unsupported_even_with_a_difference_note(tmp_path):
+def tmr_sheet():
+    """A subset-of-fact clause the previous rule wrongly rejected (ASUS X20)."""
+    return {
+        "id": "tmr-1",
+        "generated_at": "2026-10-09T12:00:00+00:00",
+        "sources": [
+            {
+                "source_name": "ASUS Republic of Gamers",
+                "link": "https://asus.example/ally",
+                "tier": 1,
+                "owner": "asus",
+                "region": "global",
+            }
+        ],
+        "claims": [
+            {
+                "claim": "The joystick sensors are magnetic TMR sensors",
+                "value": (
+                    "Magnetic TMR sensors designed to reduce stick drift and "
+                    "maintain a tight 3% dead zone"
+                ),
+                "source_url": "https://asus.example/ally",
+                "confidence": 0.9,
+                "kind": "confirmed",
+            },
+            {
+                "claim": "The D-pad is a transforming D-pad",
+                "value": (
+                    "A transforming D-pad that switches from four-way to "
+                    "eight-way movement without tools"
+                ),
+                "source_url": "https://asus.example/ally",
+                "confidence": 0.9,
+                "kind": "confirmed",
+            },
+        ],
+    }
+
+
+def test_partial_match_that_only_states_less_than_its_fact_passes_and_is_noted(tmp_path):
+    clause = "The joystick sensors are magnetic TMR sensors"
+    payload = model(
+        clauses=[
+            {
+                "clause": clause,
+                "fact_ids": ["F1"],
+                "match": "partial",
+                "exceeds_facts": False,
+                "difference": "",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        clause + ".\n",
+        tmr_sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is True
+    assert report.unsupported == []
+    assert report.failure_reason is None
+    assert any(clause in note for note in report.notes)
+    data = json.loads((tmp_path / "verify-tmr-1.json").read_text(encoding="utf-8"))
+    assert data["notes"] and clause in data["notes"][0]
+
+
+def test_clause_merging_facts_with_exceeds_facts_true_fails(tmp_path):
     clause = "an unexpected fighting style"
     payload = model(
         clauses=[
@@ -1082,7 +1158,8 @@ def test_partial_match_is_unsupported_even_with_a_difference_note(tmp_path):
                 "clause": clause,
                 "fact_ids": ["F1", "F2"],
                 "match": "partial",
-                "difference": "the sheet says a more exciting style and keeps unexpected separate",
+                "exceeds_facts": True,
+                "difference": "merges the exciting style and the unexpected element into a claim no fact states",
             }
         ]
     )
@@ -1102,7 +1179,7 @@ def test_partial_match_is_unsupported_even_with_a_difference_note(tmp_path):
 def test_relative_time_word_outside_quotes_is_unsupported(tmp_path):
     clause = "The console launches today"
     payload = model(
-        clauses=[{"clause": clause, "fact_ids": ["F1"], "match": "exact", "difference": ""}]
+        clauses=[{"clause": clause, "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}]
     )
     report = verify_module.verify(
         clause + ".\n",
@@ -1122,7 +1199,7 @@ def test_relative_time_word_inside_a_quoted_name_is_allowed():
 
 
 def test_missing_match_is_verifier_output_invalid(tmp_path):
-    payload = model(clauses=[{"clause": "The console costs $499", "fact_ids": ["F1"], "difference": ""}])
+    payload = model(clauses=[{"clause": "The console costs $499", "fact_ids": ["F1"], "exceeds_facts": False, "difference": ""}])
     report = verify_module.verify(
         ARTICLE,
         sheet(),
@@ -1136,6 +1213,381 @@ def test_missing_match_is_verifier_output_invalid(tmp_path):
     assert "missing required key 'match'" in report.error
 
 
+# --- exceeds_facts decides clause support ------------------------------------
+
+
+def test_exact_match_with_exceeds_facts_true_fails(tmp_path):
+    clause = "The console costs $499"
+    payload = model(
+        clauses=[
+            {
+                "clause": clause,
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "exceeds_facts": True,
+                "difference": "claims a reason the facts do not state",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        ARTICLE,
+        sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert clause in report.unsupported
+
+
+def test_match_none_fails_even_with_exceeds_facts_false(tmp_path):
+    clause = "A free skin ships with the console"
+    payload = model(
+        clauses=[
+            {
+                "clause": clause,
+                "fact_ids": [],
+                "match": "none",
+                "exceeds_facts": False,
+                "difference": "",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        ARTICLE,
+        sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert clause in report.unsupported
+
+
+def test_hedge_dropping_clause_with_exceeds_facts_true_fails(tmp_path):
+    clause = "The console is launching in 2027"
+    facts = sheet(claim(value="The console is reportedly launching in 2027"))
+    payload = model(
+        clauses=[
+            {
+                "clause": clause,
+                "fact_ids": ["F1"],
+                "match": "paraphrase",
+                "exceeds_facts": True,
+                "difference": "drops the hedge reportedly",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        clause + ".\n",
+        facts,
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert clause in report.unsupported
+
+
+def test_invented_reason_clause_with_exceeds_facts_true_fails(tmp_path):
+    clause = "The console launches on October 13 to beat the PS5"
+    facts = sheet(claim(value="The console launches on October 13"))
+    payload = model(
+        clauses=[
+            {
+                "clause": clause,
+                "fact_ids": ["F1"],
+                "match": "partial",
+                "exceeds_facts": True,
+                "difference": "adds a reason the facts do not state",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        clause + ".\n",
+        facts,
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert clause in report.unsupported
+
+
+def test_wrong_number_still_fails_code_check_when_exceeds_facts_false(tmp_path):
+    article = "## Price\nThe console costs $599.\n"
+    payload = model(
+        clauses=[
+            {
+                "clause": "The console costs $599",
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "exceeds_facts": False,
+                "difference": "",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        article,
+        sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert "$599" in report.unmatched_numbers
+
+
+def test_wrong_date_still_fails_code_check_when_exceeds_facts_false(tmp_path):
+    article = "## Release\nThe console ships November 13.\n"
+    payload = model(
+        clauses=[
+            {
+                "clause": "The console ships November 13",
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "exceeds_facts": False,
+                "difference": "",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        article,
+        date_sheet("October 13"),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert "November 13" in report.unmatched_numbers
+
+
+def test_non_boolean_exceeds_facts_is_verifier_output_invalid(tmp_path):
+    payload = model(
+        clauses=[
+            {
+                "clause": "The console costs $499",
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "exceeds_facts": "no",
+                "difference": "",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        ARTICLE,
+        sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "verifier_output_invalid"
+    assert "exceeds_facts" in report.error
+
+
+def test_live_clause_without_exceeds_facts_is_verifier_output_invalid(tmp_path):
+    # A live reply that omits the key has not answered the question that decides
+    # whether a clause passes, so the whole reply is invalid rather than a pass.
+    payload = model(
+        clauses=[
+            {
+                "clause": "The console costs $499",
+                "fact_ids": ["F1"],
+                "match": "partial",
+                "difference": "",
+            }
+        ]
+    )
+    assert "exceeds_facts" not in payload["clauses"][0]
+    report = verify_module.verify(
+        ARTICLE,
+        sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "verifier_output_invalid"
+    assert "missing required key 'exceeds_facts'" in report.error
+
+
+def test_omitted_exceeds_facts_is_handled_like_any_other_invalid_output(tmp_path):
+    # Same handling/retry policy as a malformed reply: a hard
+    # verifier_output_invalid, never a skip and never a pass.
+    missing = model(
+        clauses=[
+            {
+                "clause": "The console costs $499",
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "difference": "",
+            }
+        ]
+    )
+    reports = [
+        verify_module.verify(
+            ARTICLE,
+            sheet(),
+            run_state=providers.RunState(),
+            generate=make_generate(payload),
+            report_dir=tmp_path,
+            verify_config=config(),
+        )
+        for payload in (missing, "no json here")
+    ]
+    missing_report, malformed_report = reports
+    assert missing_report.failure_reason == "verifier_output_invalid"
+    assert malformed_report.failure_reason == "verifier_output_invalid"
+    assert missing_report.passed is False
+    assert malformed_report.passed is False
+
+
+def test_live_clause_with_exceeds_facts_false_passes(tmp_path):
+    payload = model()  # default clause: match exact, exceeds_facts False
+    assert payload["clauses"][0]["exceeds_facts"] is False
+    report = verify_module.verify(
+        ARTICLE,
+        sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is True
+    assert report.failure_reason is None
+
+
+def test_exceeds_facts_default_is_filled_only_for_stored_reports():
+    payload = {"clauses": [{"clause": "x", "fact_ids": [], "match": "exact", "difference": ""}]}
+    live = verify_module._with_clause_defaults(payload)
+    assert "exceeds_facts" not in live["clauses"][0], "live output must not gain the key"
+    stored = verify_module._with_clause_defaults(payload, stored=True)
+    assert stored["clauses"][0]["exceeds_facts"] is False
+
+
+def test_old_verify_report_without_exceeds_facts_falls_back_to_previous_rule(tmp_path):
+    old = {
+        "id": "old-1",
+        "passed": False,
+        "model_sentences": [
+            {
+                "clause": "an unexpected fighting style",
+                "fact_ids": ["F1", "F2"],
+                "match": "partial",
+                "difference": "the sheet keeps the two ideas separate",
+            },
+            {
+                "clause": "The console costs $499",
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "difference": "",
+            },
+        ],
+    }
+    path = tmp_path / "verify-old-1.json"
+    path.write_text(json.dumps(old), encoding="utf-8")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    partial, exact = data["model_sentences"]
+    assert "exceeds_facts" not in partial
+    assert verify_module._clause_supported(partial) is False
+    assert verify_module._clause_supported(exact) is True
+
+
+# --- Tōkon regressions -------------------------------------------------------
+
+
+def tokon_dlc_sheet():
+    return {
+        "id": "tokon-dlc",
+        "generated_at": "2026-10-09T12:00:00+00:00",
+        "sources": [
+            {
+                "source_name": "Famitsu",
+                "link": "https://famitsu.example/tokon",
+                "tier": 1,
+                "owner": "kadokawa",
+                "region": "jp",
+            }
+        ],
+        "claims": [
+            {
+                "claim": "Phoenix Cyclops was added as DLC rather than a day-one fighter",
+                "value": "Phoenix Cyclops was added as DLC rather than a day-one fighter",
+                "source_url": "https://famitsu.example/tokon",
+                "confidence": 0.9,
+                "kind": "confirmed",
+            }
+        ],
+    }
+
+
+def test_tokon_invented_reason_clause_still_fails(tmp_path):
+    clause = (
+        "Phoenix Cyclops was added as DLC rather than a day-one fighter "
+        "to satisfy fan demand"
+    )
+    payload = model(
+        clauses=[
+            {
+                "clause": clause,
+                "fact_ids": ["F1"],
+                "match": "partial",
+                "exceeds_facts": True,
+                "difference": "adds a motive, fan demand, the facts do not state",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        clause + ".\n",
+        tokon_dlc_sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert clause in report.unsupported
+
+
+def test_tokon_wrong_number_clause_still_fails(tmp_path):
+    clause = "The Year 1 DLC roster adds 12 fighters"
+    payload = model(
+        clauses=[
+            {
+                "clause": clause,
+                "fact_ids": [],
+                "match": "none",
+                "exceeds_facts": True,
+                "difference": "the sheet states no fighter count",
+            }
+        ]
+    )
+    report = verify_module.verify(
+        clause + ".\n",
+        tokon_dlc_sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert report.passed is False
+    assert "12" in report.unmatched_numbers
+
+
 # --- company performance claims (deterministic) ------------------------------
 
 
@@ -1146,7 +1598,7 @@ def _performance_sheet(value):
 def test_unattributed_performance_claim_is_unsupported(tmp_path):
     sentence = "The launcher starts 46 percent faster than Steam."
     payload = model(
-        clauses=[{"clause": sentence, "fact_ids": ["F1"], "match": "exact", "difference": ""}]
+        clauses=[{"clause": sentence, "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}]
     )
     report = verify_module.verify(
         f"## Performance\n{sentence}\n",
@@ -1164,7 +1616,7 @@ def test_unattributed_performance_claim_is_unsupported(tmp_path):
 def test_attributed_performance_claim_passes(tmp_path):
     sentence = "Epic says the launcher starts 46 percent faster than Steam."
     payload = model(
-        clauses=[{"clause": sentence, "fact_ids": ["F1"], "match": "exact", "difference": ""}]
+        clauses=[{"clause": sentence, "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}]
     )
     report = verify_module.verify(
         f"## Performance\n{sentence}\n",
@@ -1194,7 +1646,7 @@ def test_company_claim_check_accepts_lead_and_verb_attributions():
 def test_plain_numbers_are_not_company_claims(tmp_path):
     sentence = "The game costs $30 and launches on 2 November 2026."
     payload = model(
-        clauses=[{"clause": sentence, "fact_ids": ["F1"], "match": "exact", "difference": ""}]
+        clauses=[{"clause": sentence, "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}]
     )
     report = verify_module.verify(
         f"## Release\n{sentence}\n",
