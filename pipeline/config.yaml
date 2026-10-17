@@ -211,7 +211,7 @@ facts:
   # verdict decide. Defaults to shadow while the evidence rule is proved against
   # production stories; the grouping call it adds counts toward
   # score.model_call_budget.
-  confirmation_mode: shadow
+  confirmation_mode: evidence
   # Corroboration of the central fact (PLAN.md pipeline stage 6): another source's
   # claim counts as restating the central fact when the Jaccard overlap of their
   # content words (claim text plus value) reaches this fraction, no figures or
