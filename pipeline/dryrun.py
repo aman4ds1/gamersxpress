@@ -107,8 +107,32 @@ def sample_gathered(cluster_id: str, now: dt.datetime | None = None) -> dict:
     }
 
 
-def _filler(count: int) -> str:
-    return " ".join(_FILLER_WORDS[index % len(_FILLER_WORDS)] for index in range(count))
+def _filler(count: int, *, offset: int = 0) -> str:
+    # A per-cycle suffix keeps every token unique, so no two generated
+    # sentences share wording (the near-duplicate sentence gate).
+    words: list[str] = []
+    for index in range(offset, offset + count):
+        word = _FILLER_WORDS[index % len(_FILLER_WORDS)]
+        cycle = index // len(_FILLER_WORDS)
+        words.append(word if cycle == 0 else f"{word}{cycle}")
+    return " ".join(words)
+
+
+def _prose_filler(count: int, *, offset: int = 0) -> str:
+    """``count`` words of synthetic prose in ten-word sentences.
+
+    The publish gates require at least two sentences per H2 section and reject
+    near-duplicate sentences, so the sample body must look like prose.
+    """
+    words = _filler(count, offset=offset).split()
+    sentences: list[str] = []
+    for start in range(0, len(words), 10):
+        chunk = words[start : start + 10]
+        if len(chunk) < 5 and sentences:
+            sentences[-1] = sentences[-1][:-1] + " " + " ".join(chunk) + "."
+        else:
+            sentences.append(" ".join(chunk) + ".")
+    return " ".join(sentences)
 
 
 def sample_body(*, short: bool = False) -> str:
@@ -116,9 +140,9 @@ def sample_body(*, short: bool = False) -> str:
         return "## Overview\n\n" + _filler(60)
     return (
         "## Overview\n\n"
-        + _filler(220)
+        + _prose_filler(220)
         + "\n\n## What it means\n\n"
-        + _filler(140)
+        + _prose_filler(140, offset=220)
     )
 
 

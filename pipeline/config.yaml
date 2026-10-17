@@ -615,6 +615,20 @@ gates:
   near_duplicate:
     title_similarity: 0.8
     window_days: 7
+  # Draft-quality gates, added after one real draft passed every older gate
+  # while carrying a dangling reference, a circular attribution, a date stated
+  # three times, an empty section, eight sentences opening with one outlet and
+  # an entity the body never mentions. Each `check_*` switch turns its gate
+  # off; the two limits are the per-gate thresholds.
+  check_repeated_facts: true       # a date or 3+ digit number over the limit fails
+  max_repeat_tokens: 2
+  check_near_duplicate_sentences: true  # content-word Jaccard >= 0.8 fails
+  check_dangling_references: true  # "Beside this"/"This claim" openers need their noun
+  check_circular_attribution: true # "<Name> said that <Name>"
+  check_thin_sections: true        # every H2 needs 2 sentences and 40 words
+  check_opener_variety: true       # one outlet opening too many sentences fails
+  max_same_opener: 3
+  check_entity_mentions: true      # entities must appear; top primary entity required
   banned_phrases:
     - "in today's fast-paced world"
     - "gamers everywhere"

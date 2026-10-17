@@ -614,3 +614,31 @@ def test_saved_sheet_writer_prompt_fits_groq_after_compaction():
         f"computed Groq cap {cap} is below the writer minimum "
         f"{providers.DEFAULT_MIN_OUTPUT_TOKENS['writer']}; the sheet would be skipped"
     )
+
+
+def test_writer_template_cites_every_source_together():
+    template = write_module.load_template()
+    assert "cite every source together" in template
+    assert "according to Xbox Wire and PC Gamer" in template
+
+
+def test_writer_template_limits_outlet_sentence_openers():
+    template = write_module.load_template()
+    assert "Never open more than two consecutive sentences with the same outlet name" in template
+
+
+def test_writer_template_sections_need_two_supported_facts():
+    template = write_module.load_template()
+    assert "at least two facts for it" in template
+    assert '"why it matters" filler section' in template
+
+
+def test_writer_template_unconfirmed_section_only_with_an_unconfirmed_claim():
+    template = write_module.load_template()
+    assert "only when the sheet holds an unconfirmed claim" in template
+
+
+def test_writer_template_never_refers_to_an_unstated_claim():
+    template = write_module.load_template()
+    assert "Never refer to a claim, prediction or rumor the article has not stated" in template
+    assert "never open with" in template

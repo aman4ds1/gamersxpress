@@ -19,6 +19,11 @@ block. The gates are:
 * **Text overlap**: the article must not lift n-grams from the gathered source
   text (configurable n-gram size and max ratio).
 * **Banned phrases** from ``config.yaml`` (title, description or body).
+* **Draft quality** (config switches under ``gates``): no date/number token
+  repeated past ``max_repeat_tokens``, no near-duplicate sentence pairs, no
+  dangling anaphoric opener, no circular attribution, no thin H2 section, no
+  repetitive outlet openers past ``max_same_opener``, and every front-matter
+  entity (plus the facts sheet's top primary entity) named in the article.
 * **Duplicates**: no duplicate slug or title, and no near-duplicate title inside
   the configurable window.
 * **Links**: every internal ``/news/<slug>`` link resolves to an article; every
@@ -119,6 +124,17 @@ DEFAULT_GATES: dict[str, Any] = {
     "overlap": {"ngram": 8, "max_ratio": 0.2},
     "near_duplicate": {"title_similarity": 0.8, "window_days": 7},
     "banned_phrases": [],
+    # Draft-quality gates. Each ``check_*`` switch turns one gate off; the two
+    # numeric limits are the per-gate thresholds.
+    "check_repeated_facts": True,
+    "max_repeat_tokens": 2,
+    "check_near_duplicate_sentences": True,
+    "check_dangling_references": True,
+    "check_circular_attribution": True,
+    "check_thin_sections": True,
+    "check_opener_variety": True,
+    "max_same_opener": 3,
+    "check_entity_mentions": True,
 }
 
 # Reader-text rules shared with the SEO stage (``pipeline/seo.py``). config.yaml
@@ -160,6 +176,81 @@ _MONTH_RE = re.compile(
 )
 _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+_MONTHS_PATTERN = (
+    "January|February|March|April|May|June|July|August|"
+    "September|October|November|December"
+)
+#: Date expressions for the repetition gate. Each spec pairs a pattern with a
+#: key function that normalises the match (so "13 October" and "October 13"
+#: count as the same fact) and the surface form shown in the failure message.
+_DATE_SPECS: tuple[tuple[re.Pattern[str], Callable[[re.Match], str]], ...] = (
+    (
+        re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),
+        lambda match: match.group(0).lower(),
+    ),
+    (
+        re.compile(rf"\b({_MONTHS_PATTERN})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b", re.IGNORECASE),
+        lambda match: f"{match.group(1).lower()} {match.group(2)}",
+    ),
+    (
+        re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTHS_PATTERN})\.?\b", re.IGNORECASE),
+        lambda match: f"{match.group(2).lower()} {match.group(1)}",
+    ),
+)
+#: A number token: three or more digits (commas allowed, e.g. "1,299").
+_NUMBER_TOKEN_RE = re.compile(r"\b\d[\d,]{2,}\b")
+
+#: Words that carry no content for the near-duplicate sentence check.
+_CONTENT_STOPWORDS = frozenset(
+    """
+    a about above after again against all am an and any are as at be because been
+    before being below between both but by can could did do does doing down during
+    each few for from further had has have having he her here hers herself him
+    himself his how i if in into is it its itself just me more most my myself no
+    nor not of off on once only or other our ours ourselves out over own same she
+    should so some such than that the their theirs them themselves then there
+    these they this those through to too under until up very was we were what
+    when where which while who whom why will with would you your yours yourself
+    yourselves also even well still back one two new first last
+    """.split()
+)
+
+#: Openers that refer back to something the article must have stated. The
+#: second element is the noun the opener refers to; ``None`` means any of
+#: :data:`REFERENCE_NOUNS` will do.
+ANAPHORIC_OPENERS: tuple[tuple[str, str | None], ...] = (
+    ("beside this", None),
+    ("besides this", None),
+    ("this prediction", "prediction"),
+    ("this rumor", "rumor"),
+    ("this claim", "claim"),
+    ("that claim", "claim"),
+    ("these claims", "claim"),
+    ("the above", None),
+    ("as noted", None),
+    ("as mentioned", None),
+)
+
+#: The nouns an anaphoric opener can refer back to.
+REFERENCE_NOUNS: tuple[str, ...] = (
+    "prediction", "rumor", "claim", "estimate", "report", "figure", "number",
+    "statement",
+)
+
+#: "<Name> said that <Name>" with the same name on both sides.
+_CIRCULAR_VERB_RE = re.compile(
+    r"\b(stated|said|announced|confirmed|reported)\s+that\b", re.IGNORECASE
+)
+_CIRCULAR_NAME_BEFORE_RE = re.compile(
+    r"([A-Za-z][\w'\u2019.-]*(?:\s+[A-Za-z][\w'\u2019.-]*){0,3})\s*$"
+)
+
+#: Sentences opening with an outlet name followed by a reporting verb.
+_OUTLET_OPENER_RE = re.compile(
+    r"^\W*([A-Z][\w'\u2019.-]*(?:\s+[A-Z][\w'\u2019.-]*){0,3})"
+    r"\s+(?:reports|reported|says|said)(?![\w-])"
+)
 
 
 @dataclass
@@ -259,6 +350,19 @@ def load_gates_config(path: str | Path | None = None) -> dict:
         "title_similarity": float(near.get("title_similarity", DEFAULT_GATES["near_duplicate"]["title_similarity"])),
         "window_days": int(near.get("window_days", DEFAULT_GATES["near_duplicate"]["window_days"])),
     }
+    for key in (
+        "check_repeated_facts",
+        "check_near_duplicate_sentences",
+        "check_dangling_references",
+        "check_circular_attribution",
+        "check_thin_sections",
+        "check_opener_variety",
+        "check_entity_mentions",
+    ):
+        value = section.get(key, DEFAULT_GATES[key])
+        config[key] = value if isinstance(value, bool) else DEFAULT_GATES[key]
+    config["max_repeat_tokens"] = int(section.get("max_repeat_tokens", DEFAULT_GATES["max_repeat_tokens"]))
+    config["max_same_opener"] = int(section.get("max_same_opener", DEFAULT_GATES["max_same_opener"]))
     return config
 
 
@@ -481,6 +585,241 @@ def _empty_sections(body: str) -> list[str]:
             words += len(_WORD_RE.findall(line))
     flush()
     return empty
+
+
+# --- draft-quality gate helpers ----------------------------------------------
+
+
+def repeated_fact_tokens(body: str, max_repeat: int = 2) -> list[str]:
+    """Failure messages for date/number tokens that occur more than ``max_repeat`` times.
+
+    A token is a calendar date ("October 13", "13 October", "2026-10-13") or a
+    number of three or more digits ("1,299", "5090"). Stating the same fact
+    three times is repetition, not emphasis.
+    """
+    counts: dict[str, int] = {}
+    surface: dict[str, str] = {}
+    masked = body or ""
+    for pattern, key_fn in _DATE_SPECS:
+        for match in list(pattern.finditer(masked)):
+            key = key_fn(match)
+            counts[key] = counts.get(key, 0) + 1
+            surface.setdefault(key, " ".join(match.group(0).split()))
+        masked = pattern.sub(lambda _match: " " * len(_match.group(0)), masked)
+    for match in _NUMBER_TOKEN_RE.finditer(masked):
+        key = match.group(0).replace(",", "")
+        counts[key] = counts.get(key, 0) + 1
+        surface.setdefault(key, match.group(0))
+    return [
+        f"repeated fact: {surface[key]}"
+        for key in sorted(counts, key=lambda item: surface[item])
+        if counts[key] > max_repeat
+    ]
+
+
+def _content_words(text: str) -> set[str]:
+    """Lowercased word tokens that are not stopwords."""
+    return {
+        word for word in _WORD_RE.findall(str(text or "").lower())
+        if word not in _CONTENT_STOPWORDS
+    }
+
+
+def near_duplicate_sentence_failures(body: str, threshold: float = 0.8) -> list[str]:
+    """Failure messages for sentence pairs with a high content-word Jaccard overlap."""
+    sentences = _sentences(body)
+    contents = [_content_words(sentence) for sentence in sentences]
+    failures: list[str] = []
+    for first in range(len(sentences)):
+        for second in range(first + 1, len(sentences)):
+            left, right = contents[first], contents[second]
+            if not left or not right:
+                continue
+            overlap = len(left & right) / len(left | right)
+            if overlap >= threshold and not any("near-duplicate" in f for f in failures):
+                failures.append(
+                    f"near-duplicate sentences: {sentences[first]!r} and {sentences[second]!r}"
+                )
+    return failures
+
+
+def dangling_reference_failures(body: str) -> list[str]:
+    """Failure messages for anaphoric openers with no stated noun to refer back to."""
+    failures: list[str] = []
+    text = _FENCE_BLOCK_RE.sub(" ", body or "")
+    nouns = dict(ANAPHORIC_OPENERS)
+    for block in re.split(r"\n\s*\n", text):
+        if not block.strip():
+            continue
+        sentences = _sentences(block)
+        for index, sentence in enumerate(sentences):
+            cleaned = re.sub(r"^[^\w]+", "", sentence).lower()
+            opener = next(
+                (
+                    candidate
+                    for candidate, _noun in ANAPHORIC_OPENERS
+                    if cleaned.startswith(candidate)
+                    and (
+                        len(cleaned) == len(candidate)
+                        or not cleaned[len(candidate)].isalnum()
+                    )
+                ),
+                None,
+            )
+            if opener is None:
+                continue
+            if index == 0:
+                failures.append(
+                    f"dangling reference: a paragraph starts with the anaphoric opener {opener!r}"
+                )
+                continue
+            previous = sentences[index - 1].lower()
+            required = (nouns[opener],) if nouns[opener] else REFERENCE_NOUNS
+            if not any(re.search(rf"\b{word}s?\b", previous) for word in required):
+                failures.append(
+                    f"dangling reference: {sentence!r} begins with {opener!r} but the "
+                    f"previous sentence in the paragraph never mentions "
+                    f"{nouns[opener] or 'what it refers to'}"
+                )
+    return failures
+
+
+def _name_key(word: str) -> str:
+    """Folded name token with possessives and punctuation stripped."""
+    key = _fold(word).strip("''\u2019.,")
+    return re.sub(r"'s$", "", key)
+
+
+def circular_attribution_failures(body: str) -> list[str]:
+    """Failure messages for ``<Name> said that <Name>`` self-attribution."""
+    failures: list[str] = []
+    text = body or ""
+    for match in _CIRCULAR_VERB_RE.finditer(text):
+        prefix = text[: match.start()]
+        sentence_start = max(prefix.rfind(char) for char in ".!?\n")
+        before = _CIRCULAR_NAME_BEFORE_RE.search(prefix[sentence_start + 1:])
+        if not before:
+            continue
+        before_words = before.group(1).split()
+        if not before_words[0][:1].isupper():
+            continue
+        tail = text[match.end():]
+        sentence_end = len(tail)
+        for index, char in enumerate(tail):
+            if char in ".!?\n":
+                sentence_end = index
+                break
+        after_words = _WORD_RE.findall(tail[:sentence_end])[: len(before_words)]
+        if len(after_words) < len(before_words):
+            continue
+        if [_name_key(word) for word in before_words] == [
+            _name_key(word) for word in after_words
+        ]:
+            failures.append(
+                f"circular attribution: {' '.join(before_words)} {match.group(1).lower()} "
+                f"that {' '.join(after_words)}"
+            )
+    return failures
+
+
+def _h2_sections(body: str) -> list[tuple[str, str]]:
+    """(heading, text) per ``##`` section; H3 subsections stay inside their H2."""
+    sections: list[tuple[str, str]] = []
+    heading: str | None = None
+    lines: list[str] = []
+    in_fence = False
+    for line in (body or "").splitlines():
+        if re.match(r"^\s*```", line):
+            in_fence = not in_fence
+        if not in_fence:
+            match = re.match(r"^\s{0,3}##\s+(.+?)\s*$", line)
+            if match:
+                if heading is not None:
+                    sections.append((heading, "\n".join(lines)))
+                heading, lines = match.group(1), []
+                continue
+        if heading is not None:
+            lines.append(line)
+    if heading is not None:
+        sections.append((heading, "\n".join(lines)))
+    return sections
+
+
+def thin_section_failures(
+    body: str, *, min_sentences: int = 2, min_words: int = 40
+) -> list[str]:
+    """Failure messages for H2 sections that say too little to earn their heading."""
+    failures: list[str] = []
+    for heading, text in _h2_sections(body):
+        words = _count_words(text)
+        sentences = _sentences(text)
+        if len(sentences) < min_sentences or words < min_words:
+            failures.append(
+                f"thin section: {heading} (needs at least {min_sentences} sentences "
+                f"and {min_words} words; has {len(sentences)} and {words})"
+            )
+    return failures
+
+
+def repetitive_opener_failures(body: str, max_same: int = 3) -> list[str]:
+    """Failure messages for one outlet name opening too many sentences."""
+    counts: dict[str, int] = {}
+    surface: dict[str, str] = {}
+    for sentence in _sentences(body):
+        match = _OUTLET_OPENER_RE.match(sentence)
+        if not match:
+            continue
+        name = " ".join(match.group(1).split())
+        key = name.lower()
+        counts[key] = counts.get(key, 0) + 1
+        surface.setdefault(key, name)
+    return [
+        f"repetitive sentence openers: {surface[key]} opens {counts[key]} sentences "
+        f"(max {max_same})"
+        for key in sorted(counts, key=lambda item: surface[item])
+        if counts[key] > max_same
+    ]
+
+
+def _mention_tokens(name: str) -> tuple[str, ...]:
+    """Entity tokens for mention matching, with possessive "'s" parts dropped."""
+    return tuple(token for token in _entity_tokens(name) if token != "s")
+
+
+def entity_mention_failures(
+    title: str,
+    entities: Iterable[str],
+    body: str,
+    facts: dict | None = None,
+) -> list[str]:
+    """Failure messages for entities the article never names.
+
+    Every front-matter entity must occur in the body or the title (normalised
+    for case, accents and possessives), and the story's top primary entity --
+    the first canonical entity of the facts sheet -- must be among them.
+    """
+    failures: list[str] = []
+    names = [str(entity).strip() for entity in entities or [] if str(entity).strip()]
+    text_tokens = _mention_tokens(f"{title}\n{body}")
+    for name in names:
+        tokens = _mention_tokens(name)
+        if tokens and not _contains_run(text_tokens, tokens):
+            failures.append(f"entity not mentioned in the body or title: {name!r}")
+    canonical = [
+        str(entity)
+        for entity in ((facts or {}).get("coherence") or {}).get("canonical_entities") or []
+        if str(entity).strip()
+    ]
+    if canonical:
+        top = canonical[0].strip()
+        top_tokens = _mention_tokens(top)
+        if top_tokens and not any(
+            _name_covers(_mention_tokens(name), top_tokens) for name in names
+        ):
+            failures.append(
+                f"top primary entity {top!r} is missing from the front matter entities"
+            )
+    return failures
 
 
 # --- external checks (injectable) --------------------------------------------
@@ -760,6 +1099,51 @@ def run_gates(
             completeness_failures.append(f"body adds the word {word!r} that no fact states")
     record("completeness", completeness_failures)
 
+    # 5g. one fact, one mention: no date or number repeated past the limit
+    repetition_failures: list[str] = []
+    if config.get("check_repeated_facts", DEFAULT_GATES["check_repeated_facts"]):
+        repetition_failures = repeated_fact_tokens(body, config["max_repeat_tokens"])
+    record("repeated_facts", repetition_failures)
+
+    # 5h. near-duplicate sentences: the same fact rewritten as a second sentence
+    near_sentence_failures: list[str] = []
+    if config.get("check_near_duplicate_sentences", DEFAULT_GATES["check_near_duplicate_sentences"]):
+        near_sentence_failures = near_duplicate_sentence_failures(body, threshold=0.8)
+    record("near_duplicate_sentences", near_sentence_failures)
+
+    # 5i. dangling references: an anaphoric opener needs the sentence before it
+    # to name what "this" refers to, and never opens a paragraph
+    dangling_failures: list[str] = []
+    if config.get("check_dangling_references", DEFAULT_GATES["check_dangling_references"]):
+        dangling_failures = dangling_reference_failures(body)
+    record("dangling_references", dangling_failures)
+
+    # 5j. circular attribution: "<Name> said that <Name>" cites itself
+    circular_failures: list[str] = []
+    if config.get("check_circular_attribution", DEFAULT_GATES["check_circular_attribution"]):
+        circular_failures = circular_attribution_failures(body)
+    record("circular_attribution", circular_failures)
+
+    # 5k. thin sections: every H2 earns its heading with two sentences and 40 words
+    thin_failures: list[str] = []
+    if config.get("check_thin_sections", DEFAULT_GATES["check_thin_sections"]):
+        thin_failures = thin_section_failures(body, min_sentences=2, min_words=40)
+    record("thin_sections", thin_failures)
+
+    # 5l. opener variety: no outlet name opens more than the allowed sentences
+    opener_failures: list[str] = []
+    if config.get("check_opener_variety", DEFAULT_GATES["check_opener_variety"]):
+        opener_failures = repetitive_opener_failures(body, config["max_same_opener"])
+    record("sentence_openers", opener_failures)
+
+    # 5m. entities appear in the article, and the top primary entity is listed
+    mention_failures: list[str] = []
+    if config.get("check_entity_mentions", DEFAULT_GATES["check_entity_mentions"]):
+        mention_failures = entity_mention_failures(
+            title, front.get("entities") or [], body, facts,
+        )
+    record("entity_mentions", mention_failures)
+
     # 6. duplicates and near-duplicates
     duplicate_failures: list[str] = []
     near_cfg = config["near_duplicate"]
@@ -843,20 +1227,29 @@ def _normalize(url: str) -> str:
 
 __all__ = [
     "ALLOWED_CATEGORIES",
+    "ANAPHORIC_OPENERS",
     "DEFAULT_CONTENT_LIMITS",
     "DEFAULT_GATES",
     "DEFAULT_RULES",
     "GateResult",
     "LEAK_PATTERNS",
+    "REFERENCE_NOUNS",
+    "circular_attribution_failures",
+    "dangling_reference_failures",
     "default_link_checker",
     "default_site_checks",
+    "entity_mention_failures",
     "find_leaks",
     "load_content_limits",
     "load_content_rules",
     "load_existing_articles",
     "load_gates_config",
+    "near_duplicate_sentence_failures",
     "overlap_ratio",
     "parse_front_matter",
+    "repeated_fact_tokens",
+    "repetitive_opener_failures",
     "run_gates",
+    "thin_section_failures",
     "title_entity_coverage",
 ]
