@@ -3082,25 +3082,152 @@ def _same_value_fact(a: dict, b: dict) -> bool:
     return bool(_topic_words(str(a.get("claim") or "")) & _topic_words(str(b.get("claim") or "")))
 
 
-def _same_fact(a: dict, b: dict) -> bool:
-    """True when two claims describe one fact: same claim text or shared value."""
+def _value_figures(value: object) -> set[str]:
+    """Digit figures in a value (thousands separators already dropped)."""
+    return _value_key_tokens(str(value or "")) - _MONTHS
+
+
+def _label_figures(claim: dict) -> set[str]:
+    """Digit figures a claim's label (claim text) states."""
+    return _value_key_tokens(str(claim.get("claim") or "")) - _MONTHS
+
+
+def _year_like(token: str) -> bool:
+    """True for a four-digit calendar-year figure (1000-2999)."""
+    return len(token) == 4 and token.isdigit() and 1000 <= int(token) <= 2999
+
+
+def _claim_text_hard_tokens(claim: dict) -> tuple[set[str], set[str]]:
+    """The figures and month names a claim's label (claim text) states."""
+    tokens = _value_key_tokens(str(claim.get("claim") or ""))
+    return {token for token in tokens if token not in _MONTHS}, tokens & _MONTHS
+
+
+def _values_hard_conflict(a: dict, b: dict) -> bool:
+    """True when two claims' values state contradicting figures or dates.
+
+    The subject's own number (a figure the label also states, such as the "4"
+    in "Modern Warfare 4") and four-digit calendar years are not facts the
+    values disagree about, so they never force a conflict. A figure or month
+    only one side's value states is no conflict either (the other value simply
+    states less): two claims conflict only when both values carry a figure
+    (or a month) the other does not share, so "October 16" and "October 23"
+    are different facts while "13th to 20th October" and "October 13" are not.
+    """
+    a_label = _label_figures(a)
+    b_label = _label_figures(b)
+    a_figures = {
+        token for token in _value_figures(a.get("value"))
+        if token not in a_label and not _year_like(token)
+    }
+    b_figures = {
+        token for token in _value_figures(b.get("value"))
+        if token not in b_label and not _year_like(token)
+    }
+    if a_figures and b_figures and not (a_figures & b_figures):
+        return True
+    a_months = _value_key_tokens(str(a.get("value") or "")) & _MONTHS
+    b_months = _value_key_tokens(str(b.get("value") or "")) & _MONTHS
+    if a_months and b_months and not (a_months & b_months):
+        return True
+    return False
+
+
+def _labels_differ_in_date_or_number(a: dict, b: dict) -> bool:
+    """True when the two labels state different figures or month names.
+
+    A claim's label carries its own fact, so two labels that name a different
+    number or month ("...early access on October 16" against "...release on
+    October 23") describe different facts even when the values happen to
+    overlap. A label with no figure or month states neither, so it never
+    differs from the other on its own.
+    """
+    a_numbers, a_months = _claim_text_hard_tokens(a)
+    b_numbers, b_months = _claim_text_hard_tokens(b)
+    return bool((a_numbers ^ b_numbers) or (a_months ^ b_months))
+
+
+def _claim_entities(claim: dict, entities: Optional[Iterable[str]]) -> set[str]:
+    """The story's primary entities a claim's text or value names.
+
+    ``entities`` is the story's canonical entity list (the "primary entities"),
+    and each one the claim names is returned. The check needs that list: a
+    claim's own proper-name phrases are not a reliable primary-entity list for
+    claims (a lowercase or sentence-leading subject yields none), so without it
+    the entity condition is skipped rather than guessed.
+    """
+    if not entities:
+        return set()
+    text = f"{claim.get('claim', '')} {claim.get('value', '')}"
+    return {entity for entity in entities if _claim_names_entity(text, entity)}
+
+
+def _claims_share_entity(
+    a: dict, b: dict, entities: Optional[Iterable[str]]
+) -> bool:
+    """True when two claims share a primary entity (or no list is given).
+
+    A claim that names none of the story's primary entities cannot be shown to
+    be about the same subject as another, so it is not blocked here; the other
+    merge conditions still apply.
+    """
+    a_entities = _claim_entities(a, entities)
+    b_entities = _claim_entities(b, entities)
+    if not a_entities or not b_entities:
+        return True
+    return bool(a_entities & b_entities)
+
+
+def _same_fact(
+    a: dict, b: dict, *, entities: Optional[Iterable[str]] = None
+) -> bool:
+    """True when two claims describe one fact and may merge into one.
+
+    They may merge only when every condition holds: (a) they come from
+    different sources (two claims from one source never merge -- one article is
+    never two versions of its own fact); (b) their values state no contradicting
+    figure, date or month; (c) they share a primary entity and their content
+    words overlap under the existing measure (same normalized claim text, or a
+    shared date/figure plus topic words); and (d) their labels state the same
+    figures and months, so a label that names a different date or number is a
+    different fact.
+    """
+    if _source_url_key(a.get("source_url")) == _source_url_key(b.get("source_url")):
+        return False
+    if _values_hard_conflict(a, b):
+        return False
+    if _labels_differ_in_date_or_number(a, b):
+        return False
+    if not _claims_share_entity(a, b, entities):
+        return False
     if _claim_key(a) == _claim_key(b):
         return True
     return _same_value_fact(a, b)
 
 
-def _claim_groups(claims: list[dict]) -> list[list[dict]]:
+def _claim_groups(
+    claims: list[dict], *, entities: Optional[Iterable[str]] = None
+) -> list[list[dict]]:
     """Group claims that describe one fact.
 
-    Claims group when their normalized claim text matches, or when their values
-    share a live date or figure and their claims share topic words: "The test
-    runs from 13th to 20th October" and "October 13" are the same fact, while a
-    different date ("October 12") stays its own fact.
+    Claims group when :func:`_same_fact` holds: different sources, values whose
+    figures/dates do not contradict, a shared primary entity with overlapping
+    content words, and labels that agree on their figures and months. Each
+    group holds at most one claim per source, so a fact's versions always come
+    from distinct sources: "The test runs from 13th to 20th October" and
+    "October 13" are the same fact, while a different date ("October 12") or a
+    second claim from the same source stays its own fact.
     """
     groups: list[list[dict]] = []
     for claim in claims or []:
+        claim_source = _source_url_key(claim.get("source_url"))
         for group in groups:
-            if any(_same_fact(claim, other) for other in group):
+            if any(
+                _same_fact(claim, other, entities=entities) for other in group
+            ) and all(
+                _source_url_key(other.get("source_url")) != claim_source
+                for other in group
+            ):
                 group.append(claim)
                 break
         else:
@@ -3218,16 +3345,21 @@ def _source_supports(merged: dict, url_key: str) -> bool:
     )
 
 
-def merge_claims(claims: list[dict]) -> list[dict]:
+def merge_claims(
+    claims: list[dict], *, entities: Optional[Iterable[str]] = None
+) -> list[dict]:
     """Merge duplicate claims across sources: one claim per fact.
 
-    A fact groups every claim that describes it (:func:`_claim_groups`) -- by
-    shared claim text, or by a shared date/figure plus topic words -- and is
-    stored once, listing every source URL that states it (``source_urls``),
-    taking the weakest ``kind`` when sources disagree, keeping the hedge words
-    in the value, joining the named origins, and keeping the lowest confidence.
+    A fact groups every claim that describes it (:func:`_claim_groups`) -- from
+    different sources, with no contradicting figures or dates, sharing a primary
+    entity and overlapping content words, and with labels that agree on their
+    dates and numbers -- and is stored once, listing every source URL that
+    states it (``source_urls``), taking the weakest ``kind`` when sources
+    disagree, keeping the hedge words in the value, joining the named origins,
+    and keeping the lowest confidence. ``entities`` is the story's primary
+    entity list, used to check that the merged claims share a subject.
     """
-    return [_merge_group(group) for group in _claim_groups(claims)]
+    return [_merge_group(group) for group in _claim_groups(claims, entities=entities)]
 
 
 def _collapse_contained_origins(names: set[str]) -> list[str]:
@@ -4858,10 +4990,12 @@ def facts(
 
     tier1_present = any(int(source.get("tier") or 0) == 1 for source in sources)
 
-    # Same facts merge (by shared claim text, or by a shared date/figure plus
-    # topic words) before the central claim is picked. The merged central
-    # claim of a cluster with a tier-1 source takes that source's own wording.
-    groups = _claim_groups(kept)
+    # Same facts merge before the central claim is picked: claims from different
+    # sources whose values state no contradicting figure or date, that share a
+    # primary entity and overlapping content words, and whose labels agree on
+    # their dates and numbers. The merged central claim of a cluster with a
+    # tier-1 source takes that source's own wording.
+    groups = _claim_groups(kept, entities=canonical)
     preferred_central = _preferred_central_index(
         groups, sources, title, canonical=canonical
     )

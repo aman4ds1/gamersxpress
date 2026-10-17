@@ -588,6 +588,82 @@ def test_merge_claims_origin_unstated_when_no_source_names_one():
     assert merged[0]["origin"] == "unstated"
 
 
+def test_merge_claims_never_merges_two_claims_from_the_same_source_with_different_dates():
+    # One article is never two versions of its own fact: even an identical label
+    # whose value states a different date stays its own claim, so a single source
+    # cannot fold a range of dates into one fact.
+    merged = facts.merge_claims(
+        [
+            claim(claim="Modern Warfare 4 full release date", value="October 23, 2026", source_url="https://a.example/1"),
+            claim(claim="Modern Warfare 4 full release date", value="October 20, 2026", source_url="https://a.example/1"),
+        ]
+    )
+    assert len(merged) == 2, "claims from one source never merge with each other"
+
+
+def test_merge_claims_two_sources_same_fact_same_date_merge_into_one_with_two_versions():
+    merged = facts.merge_claims(
+        [
+            claim(claim="Modern Warfare 4 campaign early access begins", value="October 16, 2026", source_url="https://news.xbox.com/mw4"),
+            claim(claim="Modern Warfare 4 campaign early access begins", value="October 16, 2026", source_url="https://pcgamer.com/mw4"),
+        ],
+        entities=["Modern Warfare 4"],
+    )
+    assert len(merged) == 1
+    assert merged[0]["source_urls"] == ["https://news.xbox.com/mw4", "https://pcgamer.com/mw4"]
+    assert len(merged[0]["versions"]) == 2, "one version per source, the same fact's value"
+
+
+def test_merge_claims_keeps_control_resonant_and_alan_wake_2_sales_separate():
+    # Two different titles' sales milestones share the same figure; they must not
+    # merge onto one claim just because the wording and the number overlap.
+    merged = facts.merge_claims(
+        [
+            claim(
+                claim="Control Resonant sold one million copies in three weeks",
+                value="1,000,000 copies in three weeks",
+                source_url="https://a.example/control-resonant",
+            ),
+            claim(
+                claim="Alan Wake 2 took two months to sell one million copies",
+                value="1,000,000 copies in two months",
+                source_url="https://b.example/alan-wake-2",
+            ),
+        ],
+        entities=["Control Resonant", "Alan Wake 2"],
+    )
+    assert len(merged) == 2, "different titles never merge into one fact"
+
+
+def test_merge_claims_mw4_release_sheet_keeps_at_least_eight_claims():
+    # The real run's 12 raw claims (Xbox Wire 4, PC Gamer 8) about one game's
+    # release schedule collapsed to 4, fusing campaign early access, DMZ early
+    # access and the full release -- three different dates -- into one fact.
+    xbox = "https://news.xbox.com/en-us/2026/10/16/modern-warfare-4-campaign-early-access-now-live/"
+    pcgamer = "https://pcgamer.com/games/call-of-duty/modern-warfare-4-release-date-launch-times-early-access/"
+    merged = facts.merge_claims(
+        [
+            claim(claim="Modern Warfare 4 campaign early access availability", value="Modern Warfare 4: Campaign Early Access is live as of October 16, 2026", source_url=xbox),
+            claim(claim="Modern Warfare 4 campaign early access launch date", value="October 16, 2026", source_url=xbox),
+            claim(claim="DMZ early access start date", value="October 20, 2026", source_url=xbox),
+            claim(claim="Modern Warfare 4 standalone release date", value="October 23, 2026", source_url=xbox),
+            claim(claim="Modern Warfare 4 release times and early access explained", value="Modern Warfare 4 release times and early access explained", source_url=pcgamer),
+            claim(claim="Early access to the campaign starts October 16", value="October 16, 2026", source_url=pcgamer),
+            claim(claim="Early access to DMZ starts October 20", value="October 20, 2026", source_url=pcgamer),
+            claim(claim="The full release is on October 23 at midnight local time", value="October 23, 2026 at midnight local time", source_url=pcgamer),
+            claim(claim="PC preload is already live", value="already live", source_url=pcgamer),
+            claim(claim="Activision has not revealed an exact time for the campaign early access unlock on the 16th", value="exact time not revealed for October 16, 2026", source_url=pcgamer),
+            claim(claim="Some sources predict DMZ early access release time will be 10 am PT", value="10 am PT (1 pm ET/6 pm BST)", source_url=pcgamer),
+            claim(claim="You will need 115GB for the game's storage", value="115GB", source_url=pcgamer),
+        ],
+        entities=["Modern Warfare 4", "DMZ"],
+    )
+    assert len(merged) >= 8, "distinct release dates must not collapse into one claim"
+    for entry in merged:
+        values = {version["value"] for version in entry["versions"]}
+        assert not ({"October 20, 2026", "October 23, 2026"} <= values), "different dates never share a claim"
+
+
 # --- facts() end to end ------------------------------------------------------
 
 
