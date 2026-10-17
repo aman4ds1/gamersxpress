@@ -456,6 +456,66 @@ facts:
     - "PR:"
     - "Press Release"
     - "Sponsored"
+  # Absence rule (pipeline/facts.py). A claim whose value or label says that the
+  # subject has NOT done something that discloses information -- an absence --
+  # is never a statement by that subject: PC Gamer writing "Activision hasn't
+  # revealed an exact time" is PC Gamer's own wording, not an Activision
+  # statement. A marker below, followed within `absence_max_gap_words` words by
+  # one of `absence_disclosure_words`, marks such a claim. It is then forced to
+  # kind `reported` (or kept `rumor` when it already is one), origin `unstated`,
+  # empty speaker, and it never counts toward the origin or first-party rules.
+  absence_patterns:
+    - "hasn't"
+    - "has not"
+    - "have not"
+    - "haven't"
+    - "didn't"
+    - "did not"
+    - "not yet"
+    - "no official"
+    - "no word"
+  absence_disclosure_words:
+    - revealed
+    - announced
+    - confirmed
+    - said
+    - stated
+    - commented
+    - disclosed
+    - shared
+    - detailed
+    - released
+    - info
+    - information
+    - word
+  absence_max_gap_words: 4
+  # Attribution-cue vocabulary for evidence checking (pipeline/facts.py). A
+  # claim's `attribution_quote` must carry one of these cues to credit its
+  # speaker, and may never be equal to, contained in, or containing the claim's
+  # own `quote`: a fragment of the claim is not an attribution. The first-party
+  # own-site and headline-announcement modes are exempt (their speaker is the
+  # site owner or is named in the title). Extend the list to teach a new cue.
+  attribution_cues:
+    - said
+    - says
+    - stated
+    - announced
+    - confirmed
+    - revealed
+    - according to
+    - told
+    - wrote
+    - posted
+    - claims
+    - reports
+    - noted
+    - explained
+    - added
+    - in a statement
+    - in a blog post
+    - unveiled
+    - detailed
+    - shared
 
 
 # Verifier stage (pipeline/verify.py; PLAN.md principle 4 / stage 6).

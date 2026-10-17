@@ -217,6 +217,32 @@ def _clause_line(entry: Any) -> str:
     return f"- {clause}" + (f" (flagged because: {reason})" if reason else "")
 
 
+def _clause_lines_for_repair(article: Any, unsupported_clauses: list[Any]) -> list[str]:
+    """The ``- <clause>`` lines for the repair prompt, dependents included.
+
+    The verifier flags sentences; a sentence right after a flagged one that
+    leans on it ("Beside this prediction, …") is unsupported too once the
+    flagged sentence goes, so it is added to the flagged set here and shown to
+    the writer as ``rewrite or delete``. A dependent already listed is not
+    repeated.
+    """
+    clauses = list(unsupported_clauses or [])
+    entries: list[Any] = list(clauses)
+    article_text = article if isinstance(article, str) else ""
+    if article_text:
+        sentences = _sentences(article_text)
+        is_flagged = _flagged_flags(sentences, clauses)
+        listed = {
+            _fold(_clause_parts(entry)[0])
+            for entry in clauses
+            if _clause_parts(entry)[0]
+        }
+        for sentence in _dependent_sentences(article_text, is_flagged):
+            if _fold(sentence) not in listed:
+                entries.append({"clause": sentence, "reason": DEPENDENT_CLAUSE_REASON})
+    return [line for line in (_clause_line(entry) for entry in entries) if line]
+
+
 def build_repair_prompt(
     article: Any,
     unsupported_clauses: list[Any],
@@ -237,8 +263,7 @@ def build_repair_prompt(
     for token in (UNSUPPORTED_CLAUSES_TOKEN, ARTICLE_TOKEN, FACTS_SHEET_TOKEN):
         if token not in template:
             raise ValueError(f"repair prompt template has no {token} placeholder: {template_path}")
-    lines = [line for line in (_clause_line(entry) for entry in unsupported_clauses) if line]
-    clauses = "\n".join(lines) or "- (none)"
+    clauses = "\n".join(_clause_lines_for_repair(article, unsupported_clauses)) or "- (none)"
     sheet = _numbered_facts(writer_view(facts))
     # Substitute the article last so its own text is never rescanned for tokens.
     text = template.replace(UNSUPPORTED_CLAUSES_TOKEN, clauses).replace(FACTS_SHEET_TOKEN, sheet)
@@ -308,6 +333,20 @@ _ATTRIBUTION_VERB_RE = re.compile(
 _HEADING_LINE_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
 _LIST_ITEM_LINE_RE = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,3}[.)])\s+")
 
+#: Anaphoric openers, longest first so a multi-word marker is matched whole. A
+#: sentence that opens with one of these leans on the sentence just before it,
+#: so it cannot stand on its own once that sentence is removed.
+ANAPHORIC_MARKERS = (
+    "in addition to this", "beside this", "besides this", "following this",
+    "in contrast", "as mentioned", "as noted", "the above", "additionally",
+    "however", "this", "that", "these", "those", "such", "also",
+)
+
+#: The reason shown to the writer for each dependent sentence.
+DEPENDENT_CLAUSE_REASON = (
+    "follows a flagged sentence and refers back to it; rewrite or delete"
+)
+
 
 def _norm(text: str) -> str:
     """Whitespace-normalized text: the only tolerance a repair comparison allows."""
@@ -325,6 +364,117 @@ def _fold(text: str) -> str:
 def _sentences(text: str) -> list[str]:
     """Sentences of ``text``; front-matter lines count as sentences of their own."""
     return [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", text or "") if part.strip()]
+
+
+def _paragraph_sentence_groups(text: str) -> list[list[str]]:
+    """``text``'s sentences grouped by Markdown paragraph (blank-line separated).
+
+    Flattening the groups reproduces :func:`_sentences`, but the group boundary
+    is what lets :func:`_dependent_sentences` see which sentences share a
+    paragraph, so a dependent sentence is only paired with its neighbour.
+    """
+    groups: list[list[str]] = []
+    for chunk in re.split(r"\n\s*\n", str(text or "")):
+        sentences = [
+            part.strip()
+            for part in re.split(r"(?<=[.!?])\s+|\n+", chunk)
+            if part.strip()
+        ]
+        if sentences:
+            groups.append(sentences)
+    return groups
+
+
+def _starts_with_anaphoric(sentence: str) -> bool:
+    """True when ``sentence`` opens with one of :data:`ANAPHORIC_MARKERS`."""
+    folded = _fold(sentence)
+    if not folded:
+        return False
+    for marker in ANAPHORIC_MARKERS:
+        if folded == marker:
+            return True
+        if folded.startswith(marker) and not folded[len(marker)].isalnum():
+            return True
+    return False
+
+
+def _flagged_flags(sentences: list[str], flagged_clauses: list[Any]) -> list[bool]:
+    """Which of ``sentences`` carry a flagged clause, by folded containment."""
+    folded_clauses = [
+        folded
+        for folded in (_fold(_clause_parts(clause)[0]) for clause in flagged_clauses)
+        if folded
+    ]
+    return [
+        any(clause in _fold(sentence) for clause in folded_clauses)
+        for sentence in sentences
+    ]
+
+
+def _dependent_sentences(text: str, is_flagged: list[bool]) -> list[str]:
+    """Sentences, in order, that lean on a flagged sentence just before them.
+
+    A sentence directly after a flagged one in the same paragraph that opens
+    with an anaphoric marker ("This…", "Beside this…", "However…") cannot stand
+    on its own once the flagged sentence goes, so it must be rewritten or
+    deleted too. ``is_flagged`` is indexed like the flattened paragraph groups.
+    """
+    dependents: list[str] = []
+    flat = 0
+    for group in _paragraph_sentence_groups(text):
+        for position in range(len(group) - 1):
+            if is_flagged[flat + position] and _starts_with_anaphoric(group[position + 1]):
+                dependents.append(group[position + 1])
+        flat += len(group)
+    return dependents
+
+
+def _dependent_indices(text: str, is_flagged: list[bool]) -> set[int]:
+    """Flat indices of :func:`_dependent_sentences`, for repair validation."""
+    indices: set[int] = set()
+    flat = 0
+    for group in _paragraph_sentence_groups(text):
+        for position in range(len(group) - 1):
+            if is_flagged[flat + position] and _starts_with_anaphoric(group[position + 1]):
+                indices.add(flat + position + 1)
+        flat += len(group)
+    return indices
+
+
+def _removable_heading_indices(
+    text: str, is_flagged: list[bool], dependents: set[int]
+) -> set[int]:
+    """Headings a repair may delete because their whole section is gone.
+
+    A heading is removable only when every sentence of its section (until the
+    next heading) is flagged or a dependent: the section would otherwise be
+    left with no paragraph, so removing the heading keeps the article coherent.
+    """
+    groups = _paragraph_sentence_groups(text)
+    starts: list[int] = []
+    flat = 0
+    for group in groups:
+        starts.append(flat)
+        flat += len(group)
+
+    def is_heading(index: int) -> bool:
+        group = groups[index]
+        return len(group) == 1 and bool(
+            _HEADING_LINE_RE.match(group[0]) or _LIST_ITEM_LINE_RE.match(group[0])
+        )
+
+    removable: set[int] = set()
+    for index in range(len(groups)):
+        if not is_heading(index):
+            continue
+        content: list[int] = []
+        for following in range(index + 1, len(groups)):
+            if is_heading(following):
+                break
+            content.extend(range(starts[following], starts[following] + len(groups[following])))
+        if content and all(is_flagged[i] or i in dependents for i in content):
+            removable.add(starts[index])
+    return removable
 
 
 def _body_of_article(text: str) -> str:
@@ -388,6 +538,12 @@ def validate_repair(original: str, repaired: str, flagged_clauses: list[str]) ->
     4. no heading or list item is added;
     5. the word count does not grow by more than
        :data:`REPAIR_MAX_NET_ADDED_WORDS` net words.
+
+    A sentence that directly follows a flagged one in the same paragraph and
+    opens with an anaphoric marker ("This…", "Beside this…", "However…") is a
+    dependent: it must be rewritten or deleted too, and a heading whose whole
+    section disappears with it may be removed. Such a paragraph or section
+    being emptied and removed is accepted.
     """
     original = str(original or "")
     repaired = str(repaired or "")
@@ -405,6 +561,16 @@ def validate_repair(original: str, repaired: str, flagged_clauses: list[str]) ->
             flagged.append(folded)
     is_flagged = [any(clause in sentence for clause in flagged) for sentence in original_folded]
     original_set = set(original_norm)
+
+    # A sentence that leans on a flagged sentence may not survive its removal:
+    # treat it as flagged (so dropping it is allowed) and require it to change.
+    # A heading whose whole section disappears goes with it.
+    dependents = _dependent_indices(original, is_flagged)
+    if dependents:
+        for index in _removable_heading_indices(original, is_flagged, dependents):
+            is_flagged[index] = True
+        for index in dependents:
+            is_flagged[index] = True
 
     # Rule 2: an unflagged sentence keeps its exact wording and its position.
     cursor = 0
@@ -458,6 +624,13 @@ def validate_repair(original: str, repaired: str, flagged_clauses: list[str]) ->
         if _HEADING_LINE_RE.match(sentence) or _LIST_ITEM_LINE_RE.match(sentence):
             if _norm(sentence) not in original_headings:
                 problems.append(f"repair added a heading or list item: {sentence[:120]!r}")
+
+    for index in sorted(dependents):
+        if original_norm[index] in repaired_norm:
+            problems.append(
+                "dependent sentence must be rewritten or deleted: "
+                f"{original_sentences[index]!r}"
+            )
 
     net_words = len(repaired.split()) - len(original.split())
     if net_words > REPAIR_MAX_NET_ADDED_WORDS:

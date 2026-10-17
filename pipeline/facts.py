@@ -311,8 +311,42 @@ _DEFAULT_ANONYMOUS_VOCABULARY = frozenset({
 #: ``facts.press_release_markers`` in config.yaml.
 _DEFAULT_PRESS_RELEASE_MARKERS = ("(PR)", "PR:", "Press Release", "Sponsored")
 
+#: Absence markers (pipeline/facts.py). A claim whose value or label says the
+#: subject has *not* disclosed something -- "Activision hasn't revealed an exact
+#: time" -- is the outlet's own report of an absence, never a statement by the
+#: subject. Each marker must be followed within
+#: :data:`DEFAULT_ABSENCE_MAX_GAP_WORDS` words by a disclosure word to mark the
+#: claim. Extendable through ``facts.absence_patterns`` in config.yaml.
+_DEFAULT_ABSENCE_PATTERNS = (
+    "hasn't", "has not", "have not", "haven't", "didn't", "did not",
+    "not yet", "no official", "no word",
+)
+#: Disclosure words that, within a few words of an absence marker, complete the
+#: absence ("hasn't revealed", "not yet confirmed", "no official info").
+#: Extendable through ``facts.absence_disclosure_words`` in config.yaml.
+_DEFAULT_ABSENCE_DISCLOSURE_WORDS = (
+    "revealed", "announced", "confirmed", "said", "stated", "commented",
+    "disclosed", "shared", "detailed", "released", "info", "information", "word",
+)
+#: How many words may separate an absence marker from its disclosure word.
+#: Overridable through ``facts.absence_max_gap_words`` in config.yaml.
+DEFAULT_ABSENCE_MAX_GAP_WORDS = 4
+
+#: Attribution cues (pipeline/facts.py). A claim's ``attribution_quote`` must
+#: carry one of these cues to credit its speaker, and may never be a fragment
+#: of the claim's own ``quote``. Extendable through ``facts.attribution_cues``
+#: in config.yaml.
+_DEFAULT_ATTRIBUTION_CUES = (
+    "said", "says", "stated", "announced", "confirmed", "revealed",
+    "according to", "told", "wrote", "posted", "claims", "reports",
+    "noted", "explained", "added", "in a statement", "in a blog post",
+    "unveiled", "detailed", "shared",
+)
+
 _ANONYMOUS_VOCABULARY_CACHE: tuple[tuple[int, int] | None, frozenset[str]] | None = None
 _PRESS_RELEASE_MARKERS_CACHE: tuple[tuple[int, int] | None, tuple[str, ...]] | None = None
+_ABSENCE_CONFIG_CACHE: tuple[tuple[int, int] | None, tuple[tuple[str, ...], tuple[str, ...], int]] | None = None
+_ATTRIBUTION_CUES_CACHE: tuple[tuple[int, int] | None, tuple[str, ...]] | None = None
 
 
 def anonymous_vocabulary() -> frozenset[str]:
@@ -370,6 +404,70 @@ def press_release_markers() -> tuple[str, ...]:
             markers.append(text)
     result = tuple(markers)
     _PRESS_RELEASE_MARKERS_CACHE = (signature, result)
+    return result
+
+
+def _config_signature() -> tuple[int, int] | None:
+    """The config file's (mtime_ns, size), or ``None`` when it cannot be read."""
+    try:
+        stat = Path(DEFAULT_CONFIG_PATH).stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def absence_config() -> tuple[tuple[str, ...], tuple[str, ...], int]:
+    """``(markers, disclosure_words, max_gap_words)`` for the absence rule.
+
+    ``facts.absence_patterns`` and ``facts.absence_disclosure_words`` extend the
+    code defaults; ``facts.absence_max_gap_words`` sets how many words may sit
+    between a marker and its disclosure word. Cached against the config file's
+    size and mtime.
+    """
+    global _ABSENCE_CONFIG_CACHE
+    signature = _config_signature()
+    if _ABSENCE_CONFIG_CACHE is not None and _ABSENCE_CONFIG_CACHE[0] == signature:
+        return _ABSENCE_CONFIG_CACHE[1]
+    facts = load_config().get("facts") or {}
+    markers = list(_DEFAULT_ABSENCE_PATTERNS)
+    for entry in facts.get("absence_patterns") or []:
+        text = str(entry).strip()
+        if text and text not in markers:
+            markers.append(text)
+    disclosures = list(_DEFAULT_ABSENCE_DISCLOSURE_WORDS)
+    for entry in facts.get("absence_disclosure_words") or []:
+        text = str(entry).strip()
+        if text and text not in disclosures:
+            disclosures.append(text)
+    try:
+        gap = int(facts.get("absence_max_gap_words", DEFAULT_ABSENCE_MAX_GAP_WORDS))
+    except (TypeError, ValueError):
+        gap = DEFAULT_ABSENCE_MAX_GAP_WORDS
+    gap = max(0, gap)
+    result = (tuple(markers), tuple(disclosures), gap)
+    _ABSENCE_CONFIG_CACHE = (signature, result)
+    return result
+
+
+def attribution_cues() -> tuple[str, ...]:
+    """The attribution cues: the code defaults plus config additions.
+
+    A claim's ``attribution_quote`` must carry one of these to credit its
+    speaker. Config entries in ``facts.attribution_cues`` extend the defaults.
+    Cached against the config file's size and mtime.
+    """
+    global _ATTRIBUTION_CUES_CACHE
+    signature = _config_signature()
+    if _ATTRIBUTION_CUES_CACHE is not None and _ATTRIBUTION_CUES_CACHE[0] == signature:
+        return _ATTRIBUTION_CUES_CACHE[1]
+    entries = (load_config().get("facts") or {}).get("attribution_cues") or []
+    cues = list(_DEFAULT_ATTRIBUTION_CUES)
+    for entry in entries:
+        text = str(entry).strip().lower()
+        if text and text not in cues:
+            cues.append(text)
+    result = tuple(cues)
+    _ATTRIBUTION_CUES_CACHE = (signature, result)
     return result
 
 
@@ -744,22 +842,26 @@ def validate_claims(data: Any, *, source_url: str | None = None) -> list[dict]:
         if origin == UNSTATED_ORIGIN and kind in ("confirmed", "estimate"):
             kind = "reported"
         clipped.append(
-            {
-                **claim,
-                "source_url": url,
-                "claim": _clip_field(claim["claim"]),
-                "value": _clip_field(claim["value"]),
-                "origin": origin,
-                "affiliation": _normalize_affiliation(claim.get("affiliation")),
-                "kind": kind,
-                "quote": _clip_field(str(claim.get("quote") or "").strip(), MAX_QUOTE_CHARS),
-                "attribution_quote": _clip_field(
-                    str(claim.get("attribution_quote") or "").strip(),
-                    MAX_ATTRIBUTION_QUOTE_CHARS,
-                ),
-                "speaker": str(claim.get("speaker") or "").strip(),
-                "speaker_type": _normalize_speaker_type(claim.get("speaker_type")),
-            }
+            _normalize_absence_claim(
+                {
+                    **claim,
+                    "source_url": url,
+                    "claim": _clip_field(claim["claim"]),
+                    "value": _clip_field(claim["value"]),
+                    "origin": origin,
+                    "affiliation": _normalize_affiliation(claim.get("affiliation")),
+                    "kind": kind,
+                    "quote": _clip_field(
+                        str(claim.get("quote") or "").strip(), MAX_QUOTE_CHARS
+                    ),
+                    "attribution_quote": _clip_field(
+                        str(claim.get("attribution_quote") or "").strip(),
+                        MAX_ATTRIBUTION_QUOTE_CHARS,
+                    ),
+                    "speaker": str(claim.get("speaker") or "").strip(),
+                    "speaker_type": _normalize_speaker_type(claim.get("speaker_type")),
+                }
+            )
         )
     return clipped
 
@@ -2431,6 +2533,95 @@ def _normalize_evidence(text: object) -> str:
     return value.strip().lower()
 
 
+_ABSENCE_TOKEN_RE = re.compile(r"[a-z0-9']+")
+
+
+def _boundary_pattern(phrase: str) -> re.Pattern[str]:
+    """A regex matching ``phrase`` (already lowercased) on word boundaries."""
+    return re.compile(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])")
+
+
+def is_absence_claim(claim: object) -> bool:
+    """True when a claim's label or value states the subject has NOT disclosed.
+
+    An absence marker (``hasn't``, ``not yet``, ``no official``) followed within
+    ``facts.absence_max_gap_words`` words by a disclosure word (``revealed``,
+    ``confirmed``, ``info``) marks the claim. Such a claim is the outlet's own
+    report of an absence, never a statement by the subject, so the origin, the
+    speaker and the first-party/origin rules must not credit it.
+    """
+    if not isinstance(claim, dict):
+        return False
+    text = _normalize_evidence(f"{claim.get('claim', '')} {claim.get('value', '')}")
+    if not text:
+        return False
+    markers, disclosures, gap = absence_config()
+    disclosure_set = {
+        folded for word in disclosures if (folded := _normalize_evidence(word))
+    }
+    if not disclosure_set:
+        return False
+    for marker in markers:
+        folded = _normalize_evidence(marker)
+        if not folded:
+            continue
+        for match in _boundary_pattern(folded).finditer(text):
+            tokens = _ABSENCE_TOKEN_RE.findall(text[match.end():])[: gap + 1]
+            if any(token in disclosure_set for token in tokens):
+                return True
+    return False
+
+
+def _normalize_absence_claim(claim: dict) -> dict:
+    """Force an absence claim to ``reported``, origin ``unstated``, no speaker.
+
+    Keeps ``rumor`` when the claim already is one. Adds an ``absence`` marker so
+    downstream count rules can skip it without re-detecting it.
+    """
+    if not is_absence_claim(claim):
+        return claim
+    kind = str(claim.get("kind") or "")
+    return {
+        **claim,
+        "kind": "rumor" if kind == "rumor" else "reported",
+        "origin": UNSTATED_ORIGIN,
+        "affiliation": "",
+        "speaker": "",
+        "speaker_type": "none",
+        "absence": True,
+    }
+
+
+def apply_absence_rule(claims: list[dict]) -> list[dict]:
+    """Return ``claims`` with the absence rule applied to each (claim post-processing)."""
+    return [_normalize_absence_claim(claim) for claim in claims]
+
+
+def _attribution_has_cue(attribution: str) -> bool:
+    """True when an attribution quote carries one of ``facts.attribution_cues``."""
+    if not attribution:
+        return False
+    cues = [_normalize_evidence(cue) for cue in attribution_cues()]
+    cues = [cue for cue in cues if cue]
+    if not cues:
+        return False
+    pattern = re.compile(
+        r"(?<![a-z0-9])(?:" + "|".join(re.escape(cue) for cue in cues) + r")(?![a-z0-9])"
+    )
+    return pattern.search(attribution) is not None
+
+
+def _attribution_folds_into_quote(attribution: str, quote: str) -> bool:
+    """True when the attribution is (or is inside, or contains) the claim quote.
+
+    A fragment of the claim is not an attribution: an attribution quote equal to,
+    contained in, or containing the claim quote credits no speaker.
+    """
+    if not attribution or not quote:
+        return False
+    return attribution == quote or attribution in quote or quote in attribution
+
+
 def _evidence_speaker_names(speaker: object, aliases: dict[str, str]) -> set[str]:
     """Every match key that identifies a claim's speaker (own form plus aliases)."""
     names = set(_origin_names(speaker, aliases))
@@ -2630,6 +2821,19 @@ def verify_evidence(
 
     quote_found = bool(quote) and quote in text
     attribution_found = bool(attribution) and (attribution in text or attribution in headline)
+    # Attribution hardening: a quote only credits a speaker when it carries an
+    # attribution cue and is not a fragment of the claim itself. "Activision
+    # hasn't revealed" is a slice of the claim, not a speaker saying anything.
+    # A first-party own-site post or a headline announcement credits its speaker
+    # through its mode, so it never needs the cue.
+    if attribution_found and not _attribution_has_cue(attribution):
+        attribution_found = False
+    if attribution_found and _attribution_folds_into_quote(attribution, quote):
+        attribution_found = False
+
+    absence = is_absence_claim(claim)
+    if absence:
+        attribution_found = False
 
     names = _evidence_speaker_names(speaker, aliases) if speaker else set()
     owner_names = _source_owner_names(source_owner, source_outlet, aliases)
@@ -2667,20 +2871,22 @@ def verify_evidence(
         )
 
     no_attr_needed = mode in ("first_party_site", "headline_announcement")
-    if not quote:
+    if absence:
+        reason = "absence claim"
+    elif not quote:
         reason = "quote missing"
     elif not quote_found:
         reason = "quote not found"
-    elif not no_attr_needed and not attribution:
-        reason = "attribution quote missing"
-    elif not no_attr_needed and not attribution_found:
-        reason = "attribution quote not found"
     elif anonymous:
         reason = "speaker is anonymous"
     elif self_reference:
         reason = "source cites itself"
     elif product:
         reason = "speaker is a product"
+    elif not no_attr_needed and not attribution:
+        reason = "attribution quote missing"
+    elif not no_attr_needed and not attribution_found:
+        reason = "attribution quote not found"
     elif not speaker_grounded:
         reason = "speaker not grounded"
     else:
@@ -2690,6 +2896,7 @@ def verify_evidence(
         quote_found
         and speaker_grounded
         and (attribution_found or no_attr_needed)
+        and not absence
         and not anonymous
         and not self_reference
         and not product
@@ -2748,6 +2955,8 @@ def _first_party_origins(
     source_org: dict[str, str] = {}
     owners: set[str] = set()
     for claim in [*(claims or []), *(corroborating or [])]:
+        if claim.get("absence") or is_absence_claim(claim):
+            continue
         if claim.get("kind") not in FIRST_PARTY_KINDS:
             continue
         url_key = _source_url_key(claim.get("source_url"))
@@ -2872,6 +3081,12 @@ def resolve_claim_origins(
     # are still collected (``downgrades``) for the sheet, so nothing is lost.
     per_source: dict[str, dict] = {}
     for claim in claims:
+        if is_absence_claim(claim):
+            # An absence claim is the outlet's own report of what a subject has
+            # not said: it never carries that subject's origin or speaker, no
+            # matter what the extractor put in the fields.
+            resolved.append(_normalize_absence_claim(claim))
+            continue
         source = by_url.get(_source_url_key(claim.get("source_url"))) or {}
         text = str(source.get("text") or "")
         claim_url = claim.get("source_url")
@@ -3468,6 +3683,8 @@ def _confirmation_origins(
     aliases = load_origin_aliases() if aliases is None else aliases
     per_source: dict[str, set[str]] = {}
     for claim in [*(claims or []), *(corroborating or [])]:
+        if claim.get("absence") or is_absence_claim(claim):
+            continue
         if claim.get("kind") not in CONFIRMING_KINDS:
             continue
         source = by_url.get(_claim_source_url_key(claim))

@@ -1713,3 +1713,10 @@ def test_comparison_than_with_a_number_is_flagged():
     cfg = config()
     sentence = "The new build is smaller than the previous release by some margin, at 12 GB."
     assert verify_module._company_claim_check(f"## Build\n{sentence}\n", cfg) == [sentence]
+
+
+def test_verifier_instruction_rejects_attributing_silence_to_the_silent_party():
+    instruction = verify_module.SYSTEM_INSTRUCTION
+    assert "silence" in instruction
+    assert "exceeds_facts" in instruction
+    assert "never credit the silent party with saying it" in instruction

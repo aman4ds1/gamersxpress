@@ -4649,6 +4649,193 @@ def test_headline_only_claim_confirms_only_when_the_title_names_the_owner():
     assert built_plain["evidence"]["attribution_mode"] == "none"
 
 
+# --- absence rule and attribution hardening ----------------------------------
+
+
+def test_absence_claim_becomes_reported_with_no_speaker():
+    entry = facts.validate_claims(
+        {
+            "claims": [
+                claim(
+                    claim="Activision hasn't revealed an exact time",
+                    value="no exact time",
+                    kind="statement",
+                    origin="activision",
+                    quote="Activision hasn't revealed an exact time",
+                    attribution_quote="Activision hasn't revealed",
+                    speaker="Activision",
+                    speaker_type="organization",
+                )
+            ]
+        }
+    )[0]
+    assert entry["kind"] == "reported"
+    assert entry["origin"] == facts.UNSTATED_ORIGIN
+    assert entry["speaker"] == ""
+    assert entry["speaker_type"] == "none"
+    assert entry["absence"] is True
+
+
+def test_absence_claim_never_keeps_its_origin():
+    entry = claim(
+        claim="Activision hasn't revealed an exact time",
+        value="no exact time",
+        kind="statement",
+        origin="activision",
+        source_url="https://a.example/1",
+        speaker="Activision",
+        speaker_type="organization",
+    )
+    sources = [
+        source(
+            link="https://a.example/1",
+            tier=2,
+            name="PC Gamer",
+            text="Activision hasn't revealed an exact time for the campaign unlock.",
+        )
+    ]
+    resolved = facts.resolve_claim_origins([entry], sources)
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+    assert resolved[0]["speaker"] == ""
+
+
+def test_absence_claim_never_counts_toward_first_party_or_confirmation():
+    entry = claim(
+        claim="Activision hasn't revealed an exact time",
+        value="no exact time",
+        kind="statement",
+        origin="activision",
+        source_url="https://a.example/1",
+        speaker="Activision",
+        speaker_type="organization",
+    )
+    sources = [
+        source(
+            link="https://a.example/1",
+            tier=2,
+            name="PC Gamer",
+            text="Activision hasn't revealed an exact time for the campaign unlock.",
+        )
+    ]
+    by_url = facts._sources_by_url(sources)
+    assert facts._first_party_origins([entry], by_url, {}, None)[2] == set()
+    assert facts._confirmation_origins([entry], by_url) == []
+
+
+def test_announcement_claim_is_not_treated_as_an_absence():
+    entry = facts.validate_claims(
+        {
+            "claims": [
+                claim(
+                    claim="Activision announced the unlock time",
+                    value="the unlock time",
+                    kind="statement",
+                    origin="activision",
+                    quote="Activision announced the unlock time",
+                    attribution_quote="Activision announced",
+                    speaker="Activision",
+                    speaker_type="organization",
+                )
+            ]
+        }
+    )[0]
+    assert entry["kind"] == "statement"
+    assert entry["origin"] == "activision"
+    assert entry["speaker"] == "Activision"
+    assert not entry.get("absence")
+
+
+def test_verify_evidence_rejects_an_attribution_equal_to_the_claim_quote():
+    phrase = "the update lands in June"
+    result = facts.verify_evidence(
+        claim(
+            quote=phrase,
+            attribution_quote=phrase,
+            speaker="Epic Games",
+            speaker_type="organization",
+        ),
+        "Epic Games said the update lands in June.",
+    )
+    assert result["quote_found"] is True
+    assert result["attribution_found"] is False
+    assert result["ok"] is False
+
+
+def test_verify_evidence_credits_an_attribution_with_a_cue():
+    result = facts.verify_evidence(
+        claim(
+            quote="the update lands in June",
+            attribution_quote="According to Epic Games",
+            speaker="Epic Games",
+            speaker_type="organization",
+        ),
+        "According to Epic Games, the update lands in June.",
+    )
+    assert result["attribution_found"] is True
+    assert result["ok"] is True
+
+
+def test_verify_evidence_first_party_site_still_passes_without_a_cue():
+    text = "The Acme X1 is available now at every retailer."
+    result = facts.verify_evidence(
+        claim(
+            quote="The Acme X1 is available now at every retailer",
+            attribution_quote="Acme Games availability",
+            speaker="Acme Games",
+            speaker_type="organization",
+        ),
+        text,
+        "Acme X1 availability",
+        source_outlet="Acme Games",
+        source_tier=1,
+        source_owner="Acme Games",
+    )
+    assert result["attribution_mode"] == "first_party_site"
+    assert result["ok"] is True
+
+
+def test_verify_evidence_headline_announcement_still_passes_without_a_cue():
+    text = "The Acme X1 is available now at every retailer."
+    result = facts.verify_evidence(
+        claim(
+            quote="The Acme X1 is available now at every retailer",
+            attribution_quote="Acme Games announces availability",
+            speaker="Acme Games",
+            speaker_type="organization",
+        ),
+        text,
+        "Acme Games announces availability of the Acme X1",
+        source_outlet="Wire Desk",
+        source_tier=1,
+        source_owner="wire-desk",
+    )
+    assert result["attribution_mode"] == "headline_announcement"
+    assert result["ok"] is True
+
+
+def test_ps5_only_claim_is_off_topic_for_an_unrelated_game_story():
+    only_ps5 = claim(
+        claim="PS5 consoles moved 21 million units",
+        value="21 million consoles",
+        source_url="https://a.example/1",
+    )
+    unrelated_source = source(
+        link="https://a.example/1",
+        name="Alpha",
+        title="PS5 consoles moved 21 million units",
+        text="PS5 consoles moved 21 million units last quarter.",
+    )
+    kept, dropped, primary = facts.coherence_check(
+        [only_ps5],
+        [unrelated_source],
+        title="Galaxy Racers ships on 2 November",
+        entities=["Galaxy Racers"],
+    )
+    assert primary == ["galaxy racers"]
+    assert kept == []
+    assert dropped == [only_ps5]
+
+
 def test_headline_only_source_makes_no_model_call_and_yields_one_title_claim(monkeypatch, tmp_path):
     use_mode(monkeypatch, "legacy")
     title = "Acme announces the new console today"

@@ -533,6 +533,61 @@ def test_build_prompt_uses_the_compact_view():
     assert "A game was announced" in prompt
 
 
+def test_writer_template_states_absences_in_the_outlets_voice():
+    template = write_module.load_template()
+    assert "Absences belong to the outlet" in template
+    assert "Never attribute an absence" in template
+    assert "PC Gamer notes that Activision has not revealed an exact time" in template
+
+
+FLAGGED_SENTENCE = "The card ships with a two-year warranty worldwide."
+DEPENDENT_SENTENCE = "Beside this prediction, the schedule stays unclear worldwide."
+
+
+def test_validate_repair_accepts_deleting_a_flagged_sentence_and_its_dependent():
+    original = repair_article(FLAGGED_SENTENCE, DEPENDENT_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(OVERVIEW_SENTENCE)
+    assert write_module.validate_repair(original, repaired, [FLAGGED_SENTENCE]) == []
+
+
+def test_validate_repair_rejects_keeping_a_dependent_sentence():
+    original = repair_article(FLAGGED_SENTENCE, DEPENDENT_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(DEPENDENT_SENTENCE, OVERVIEW_SENTENCE)
+    problems = write_module.validate_repair(original, repaired, [FLAGGED_SENTENCE])
+    assert any("dependent sentence must be rewritten or deleted" in problem for problem in problems), problems
+
+
+def test_build_repair_prompt_flags_dependent_sentences():
+    prompt = write_module.build_repair_prompt(
+        "## Body\n" + FLAGGED_SENTENCE + "\n" + DEPENDENT_SENTENCE,
+        [FLAGGED_SENTENCE],
+        {"claims": []},
+    )
+    assert DEPENDENT_SENTENCE in prompt
+    assert write_module.DEPENDENT_CLAUSE_REASON in prompt
+
+
+def test_validate_repair_accepts_removing_an_emptied_paragraph():
+    original = REPAIR_FRONT + "## Overview\n\n" + FLAGGED_SENTENCE + "\n" + DEPENDENT_SENTENCE + "\n\n" + OVERVIEW_SENTENCE + "\n"
+    repaired = REPAIR_FRONT + "## Overview\n\n" + OVERVIEW_SENTENCE + "\n"
+    assert write_module.validate_repair(original, repaired, [FLAGGED_SENTENCE]) == []
+
+
+def test_validate_repair_accepts_removing_an_emptied_section():
+    original = (
+        REPAIR_FRONT
+        + "## Overview\n\n"
+        + OVERVIEW_SENTENCE
+        + "\n\n## Extra\n\n"
+        + FLAGGED_SENTENCE
+        + "\n"
+        + DEPENDENT_SENTENCE
+        + "\n"
+    )
+    repaired = REPAIR_FRONT + "## Overview\n\n" + OVERVIEW_SENTENCE + "\n"
+    assert write_module.validate_repair(original, repaired, [FLAGGED_SENTENCE]) == []
+
+
 def test_repair_prompt_uses_the_compact_view():
     sheet = {**facts_sheet(), "grounding": [{"claim": "x", "reason": "y"}]}
     prompt = write_module.build_repair_prompt("## Body\nA sentence.", ["A sentence"], sheet)
