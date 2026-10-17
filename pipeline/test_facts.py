@@ -733,7 +733,8 @@ def test_facts_rejects_three_outlets_repeating_one_estimate(tmp_path):
     assert not (tmp_path / "story-1.json").exists()
 
 
-def test_facts_allows_single_attributed_origin_when_enabled(tmp_path):
+def test_facts_allows_single_attributed_origin_when_enabled(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "legacy")
     data = gathered(sources=[source(text="Sony said the card is coming.")])  # single tier-2 source
     result = facts.facts(
         data,
@@ -744,6 +745,60 @@ def test_facts_allows_single_attributed_origin_when_enabled(tmp_path):
     )
     assert result["confirmation"]["rule"] == "single-origin-attributed"
     assert result["confirmation"]["confirmed"] is True
+
+
+def test_facts_single_attributed_origin_does_not_confirm_under_evidence(monkeypatch, tmp_path):
+    # Evidence-mode twin: the same story, but the evidence rule refuses a lone
+    # attributed origin even with allow_single_origin_attributed enabled. The
+    # legacy reason is "a single attributed origin supports the headline claim
+    # and single-origin confirmation is enabled"; the evidence reason is
+    # "the central fact is not backed by enough verified cross-source evidence".
+    use_mode(monkeypatch, "evidence")
+    data = gathered(sources=[source(text="Sony said the card is coming.")])
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            data,
+            output_dir=tmp_path,
+            now=NOW,
+            allow_single_origin_attributed=True,
+            generate=make_generate({"claims": [claim(origin="sony")]}),
+        )
+    sheet = json.loads((tmp_path / "unconfirmed" / "story-1.json").read_text(encoding="utf-8"))
+    assert sheet["confirmation"]["confirmed"] is False
+    assert sheet["confirmation"]["rule"] == "unconfirmed"
+    assert sheet["confirmation"]["rule_source"] == "evidence"
+    assert sheet["confirmation"]["reason"] == (
+        "the central fact is not backed by enough verified cross-source evidence"
+    )
+    assert not (tmp_path / "story-1.json").exists()
+
+
+def test_evidence_mode_single_verified_origin_does_not_confirm(monkeypatch, tmp_path):
+    # A single claim that passes verify_evidence from one owner, with the headline
+    # title so it is the central fact, still does not confirm under the evidence
+    # rule even with allow_single_origin_attributed enabled: the rule that
+    # produces the outcome is "unconfirmed" (rule_source "evidence",
+    # verified_claims 1, single_origin_attributed True).
+    use_mode(monkeypatch, "evidence")
+    src = source(link="https://a.example/1", name="Alpha", owner="co-a", tier=2,
+                 title=ACME_TITLE, text=ACME_TEXT)
+    generate = make_generate({"claims": [acme_claim("https://a.example/1")]})
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-one", [src]), id="acme-one", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW,
+            allow_single_origin_attributed=True, generate=generate,
+        )
+    sheet = json.loads((tmp_path / "unconfirmed" / "acme-one.json").read_text(encoding="utf-8"))
+    assert sheet["confirmation"]["confirmed"] is False
+    assert sheet["confirmation"]["rule"] == "unconfirmed"
+    assert sheet["confirmation"]["rule_source"] == "evidence"
+    assert sheet["confirmation"]["verified_claims"] == 1
+    assert sheet["confirmation"]["single_origin_attributed"] is True
+    assert sheet["confirmation"]["reason"] == (
+        "the central fact is not backed by enough verified cross-source evidence"
+    )
+    assert not (tmp_path / "acme-one.json").exists()
 
 
 def test_origin_not_in_source_text_is_downgraded(caplog, tmp_path):
@@ -949,7 +1004,8 @@ def per_source_generate(payloads):
     return generate, calls
 
 
-def test_facts_extracts_once_per_source(tmp_path):
+def test_facts_extracts_once_per_source(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "legacy")
     payloads = [
         {"claims": [claim(claim="First claim", value="one", origin="sony", source_url="https://a.example/1")]},
         {"claims": [claim(claim="Second claim", value="two", origin="microsoft", source_url="https://b.example/2")]},
@@ -966,6 +1022,34 @@ def test_facts_extracts_once_per_source(tmp_path):
     assert len(result["claims"]) == 2
     assert result["confirmation"]["origins"] == ["microsoft", "sony"]
     assert facts.MAX_CLAIMS_PER_SOURCE == 15
+
+
+def test_facts_extracts_once_per_source_under_evidence(monkeypatch, tmp_path):
+    # Evidence-mode twin: the same story and the same one-extraction-per-source
+    # billing. The legacy rule reached "two-independent-origins" from the claims'
+    # ``origin`` fields; the evidence rule judges only verified evidence, and
+    # these synthetic claims carry no verbatim quote or named speaker, so the
+    # confirmation it gives for this story is "unconfirmed" (verified_claims 0).
+    use_mode(monkeypatch, "evidence")
+    payloads = [
+        {"claims": [claim(claim="First claim", value="one", origin="sony", source_url="https://a.example/1")]},
+        {"claims": [claim(claim="Second claim", value="two", origin="microsoft", source_url="https://b.example/2")]},
+    ]
+    generate, calls = per_source_generate(payloads)
+    data = gathered(
+        sources=[
+            source(link="https://a.example/1", text="Sony announced the first fact."),
+            source(link="https://b.example/2", name="Beta", owner="co-b", text="Microsoft announced the second fact."),
+        ],
+    )
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(data, output_dir=tmp_path, now=NOW, generate=generate)
+    assert calls == ["fast", "fast"], "one extraction call per source"
+    sheet = json.loads((tmp_path / "unconfirmed" / "story-1.json").read_text(encoding="utf-8"))
+    assert sheet["confirmation"]["confirmed"] is False
+    assert sheet["confirmation"]["rule"] == "unconfirmed"
+    assert sheet["confirmation"]["rule_source"] == "evidence"
+    assert sheet["confirmation"]["verified_claims"] == 0
 
 
 def test_facts_extracts_claims_from_a_feature_bullet_source(tmp_path):
@@ -1889,7 +1973,8 @@ def test_seo_canonical_entities_contain_no_alias_only_entries():
     assert "fighting souls" not in canonical
 
 
-def test_tier1_passing_mention_does_not_confirm_the_story(tmp_path):
+def test_tier1_passing_mention_does_not_confirm_the_story(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "legacy")
     # A tier-1 source's only claim is about something else; it names the game in
     # its headline but never states the headline's fact. Two outlets agreeing on
     # that passing claim must not confirm the story.
@@ -1924,6 +2009,223 @@ def test_tier1_passing_mention_does_not_confirm_the_story(tmp_path):
         )
     assert "tier-1 source does not state the headline claim" in str(excinfo.value)
     assert not (tmp_path / "tokon-passing.json").exists()
+
+
+def test_tier1_passing_mention_does_not_confirm_the_story_under_evidence(monkeypatch, tmp_path):
+    # Evidence-mode twin: the same story, and the same safety outcome -- a tier-1
+    # source whose only claim is a passing mention does not confirm the story.
+    # The legacy reason is "tier-1 source does not state the headline claim";
+    # the evidence reason is "the central fact is not backed by enough verified
+    # cross-source evidence".
+    use_mode(monkeypatch, "evidence")
+    official = source(
+        link="https://blog.playstation.com/tokon",
+        name="PlayStation Blog",
+        tier=1,
+        owner="sony",
+        title="Marvel Tōkon: Fighting Souls news roundup",
+        text="Marvel Tōkon: Fighting Souls news roundup. The blog covers many topics.",
+    )
+    outlet = source(
+        link="https://eurogamer.net/tokon",
+        name="Eurogamer",
+        tier=2,
+        owner="ign-entertainment",
+        title="Marvel Tōkon: Fighting Souls news roundup",
+        text="Marvel Tōkon: Fighting Souls news roundup. The blog covers many topics.",
+    )
+    generate = per_source_generate([
+        {"claims": [claim(claim="The blog covers many topics", value="a roundup", source_url=official["link"], origin="sony")]},
+        {"claims": [claim(claim="The blog covers many topics", value="a roundup", source_url=outlet["link"], origin="unstated")]},
+    ])[0]
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("tokon-passing", [official, outlet]),
+            id="tokon-passing",
+            title="Marvel Tōkon: Fighting Souls reveals Phoenix Cyclops",
+            output_dir=tmp_path,
+            now=NOW,
+            generate=generate,
+        )
+    sheet = json.loads((tmp_path / "unconfirmed" / "tokon-passing.json").read_text(encoding="utf-8"))
+    assert sheet["confirmation"]["confirmed"] is False
+    assert sheet["confirmation"]["rule"] == "unconfirmed"
+    assert sheet["confirmation"]["rule_source"] == "evidence"
+    assert sheet["confirmation"]["reason"] == (
+        "the central fact is not backed by enough verified cross-source evidence"
+    )
+    assert not (tmp_path / "tokon-passing.json").exists()
+
+
+def test_tier1_passing_mention_with_verified_claims_does_not_confirm_under_evidence(monkeypatch, tmp_path):
+    # Evidence-mode passing-mention test whose claims pass verify_evidence. The
+    # tier-1 source's title and central claim are about something else (it ships
+    # three games; the game is named only in passing) and a second outlet states
+    # the headline claim from a different owner. One verified outlet is a single
+    # origin, so no evidence rule is met and the rule that produces the outcome
+    # is "unconfirmed" (rule_source "evidence", verified_claims 1): the tier-1
+    # passing mention does not confirm the story.
+    use_mode(monkeypatch, "evidence")
+    official = source(
+        link="https://official.example/review",
+        name="Official Blog",
+        tier=1,
+        owner="acme games",
+        title="Acme Games year in review",
+        text=(
+            "Acme Games year in review. Acme Games said it shipped three games this year. "
+            "Acme Arena fans await more."
+        ),
+    )
+    outlet = source(
+        link="https://outlet1.example/acme", name="Outlet 1", tier=2, owner="co-b",
+        title=ACME_TITLE, text=ACME_TEXT,
+    )
+    payloads = [
+        {"claims": [acme_claim(
+            official["link"], claim="The company shipped three games this year", value="three games",
+            origin="Acme Games", kind="reported", quote="shipped three games this year",
+            attribution_quote="Acme Games said",
+        )]},
+        {"claims": [acme_claim(outlet["link"])]},
+    ]
+    generate, calls = grouping_generate(payloads, [["c0"], ["c1"]])
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-passing", [official, outlet]), id="acme-passing", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+        )
+    assert calls == ["fast", "fast", "group"]
+    sheet = json.loads((tmp_path / "unconfirmed" / "acme-passing.json").read_text(encoding="utf-8"))
+    assert sheet["confirmation"]["confirmed"] is False
+    assert sheet["confirmation"]["rule"] == "unconfirmed"
+    assert sheet["confirmation"]["rule_source"] == "evidence"
+    assert sheet["confirmation"]["verified_claims"] == 1
+    assert sheet["confirmation"]["tier1_sources"] == 0
+    assert sheet["confirmation"]["reason"] == (
+        "the central fact is not backed by enough verified cross-source evidence"
+    )
+    assert not (tmp_path / "acme-passing.json").exists()
+
+
+def test_tier1_claim_naming_only_the_company_does_not_state_the_headline(monkeypatch, tmp_path):
+    # Regression: a tier-1 claim that names the story's company ("Acme Games
+    # shipped three games") but never states the headline fact. The company name
+    # alone used to clear facts.min_central_overlap -- "Acme Games" matches one of
+    # the two headline entities -- and confirm the story as "tier1". Naming the
+    # company must not stand in for the headline, in either mode.
+    official = source(
+        link="https://news.acme.example/1",
+        name="Acme News",
+        tier=1,
+        owner="acme games",
+        title="Acme Games shipped three games",
+        text="Acme Games said it shipped three games this year.",
+    )
+    payloads = [{"claims": [acme_claim(
+        official["link"],
+        claim="Acme Games shipped three games",
+        value="three games",
+        quote="shipped three games",
+        attribution_quote="Acme Games said",
+    )]}]
+
+    use_mode(monkeypatch, "legacy")
+    with pytest.raises(facts.UnconfirmedStory) as excinfo:
+        facts.facts(
+            gathered("acme-company", [official]), id="acme-company", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path / "legacy", now=NOW,
+            generate=per_source_generate(payloads)[0],
+        )
+    assert "tier-1 source does not state the headline claim" in str(excinfo.value)
+    legacy = json.loads(
+        (tmp_path / "legacy" / "unconfirmed" / "acme-company.json").read_text(encoding="utf-8")
+    )
+    assert legacy["confirmation"]["confirmed"] is False
+    assert legacy["confirmation"]["rule"] == "unconfirmed"
+    assert legacy["confirmation"]["reason"] == "tier-1 source does not state the headline claim"
+
+    use_mode(monkeypatch, "evidence")
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-company", [official]), id="acme-company", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path / "evidence", now=NOW,
+            generate=per_source_generate(payloads)[0],
+        )
+    evidence = json.loads(
+        (tmp_path / "evidence" / "unconfirmed" / "acme-company.json").read_text(encoding="utf-8")
+    )
+    assert evidence["confirmation"]["confirmed"] is False
+    assert evidence["confirmation"]["rule"] != "tier1"
+    assert evidence["confirmation"]["rule_source"] == "evidence"
+    assert evidence["confirmation"]["tier1_sources"] == 0
+    assert evidence["confirmation"]["reason"] == (
+        "the central fact is not backed by enough verified cross-source evidence"
+    )
+
+
+def test_preferred_central_keeps_a_tier1_claim_that_states_the_headline():
+    url = "https://acme.example/1"
+    groups = facts._claim_groups([acme_claim(url)], entities=ACME_ENTITIES)
+    sources = [source(link=url, tier=1)]
+    preferred = facts._preferred_central_index(
+        groups, sources, ACME_TITLE, canonical=ACME_ENTITIES
+    )
+    assert preferred is not None
+    assert preferred[1] == facts._source_url_key(url)
+
+
+def test_tier1_claim_stating_the_headline_confirms_as_tier1(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "legacy")
+    official = source(
+        link="https://news.acme.example/1", name="Acme News", tier=1, owner="acme games",
+        title=ACME_TITLE, text=ACME_TEXT,
+    )
+    payloads = [{"claims": [acme_claim(official["link"])]}]
+    result = facts.facts(
+        gathered("acme-stated", [official]), id="acme-stated", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW,
+        generate=per_source_generate(payloads)[0],
+    )
+    assert result["confirmation"]["confirmed"] is True
+    assert result["confirmation"]["rule"] == "tier1"
+    assert result["confirmation"]["tier1_sources"] == 1
+
+
+def test_tier1_claim_naming_only_the_game_does_not_state_the_headline():
+    url = "https://acme.example/1"
+    claims = [acme_claim(
+        url,
+        claim="Acme Arena shipped three games",
+        value="three games",
+        quote="shipped three games",
+        attribution_quote="Acme said",
+    )]
+    groups = facts._claim_groups(claims, entities=ACME_ENTITIES)
+    sources = [source(link=url, tier=1)]
+    assert facts._preferred_central_index(
+        groups, sources, ACME_TITLE, canonical=ACME_ENTITIES
+    ) is None
+
+
+def test_official_announcement_headline_claim_still_confirms_as_tier1(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "legacy")
+    title = "Acme Games announces Acme Arena launch date"
+    official = source(
+        link="https://news.acme.example/1", name="Acme News", tier=1, owner="acme games",
+        title=title, text="Acme Games announces the Acme Arena launch date today.",
+    )
+    payloads = [{"claims": [acme_claim(
+        official["link"], claim=title, value="Acme Arena launch date",
+        quote="announces the Acme Arena launch date", attribution_quote="Acme Games announces",
+    )]}]
+    result = facts.facts(
+        gathered("acme-announce", [official]), id="acme-announce", title=title,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW,
+        generate=per_source_generate(payloads)[0],
+    )
+    assert result["confirmation"]["confirmed"] is True
+    assert result["confirmation"]["rule"] == "tier1"
 
 
 # --- unconfirmed sheets and stored grounding drops ---------------------------
@@ -3732,6 +4034,86 @@ def test_evidence_mode_confirms_a_first_party_restatement_across_sources(monkeyp
     assert calls == ["fast", "fast", "fast", "group"]
 
 
+def test_evidence_mode_first_party_confirms_two_owners_of_the_same_organization(monkeypatch, tmp_path):
+    # Positive path: two sources from two different owners each carry a claim in
+    # the central group whose verbatim quote and attribution quote are present
+    # in their synthetic texts and whose speaker is the same organization. The
+    # rule is "first-party", rule_source "evidence", verified_claims 2.
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(2, owners=["co-a", "co-b"])
+    generate, calls = grouping_generate(payloads, [["c0", "c1"]])
+    result = facts.facts(
+        gathered("acme-first-party", sources), id="acme-first-party", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+    )
+    assert result["confirmation"]["confirmed"] is True
+    assert result["confirmation"]["rule"] == "first-party"
+    assert result["confirmation"]["rule_source"] == "evidence"
+    assert result["confirmation"]["verified_claims"] == 2
+    assert result["confirmation"]["first_party_organizations"] == ["acme games"]
+    assert result["confirmation"]["reason"] == (
+        "2 independent sources attribute the central fact to acme games with verified evidence"
+    )
+    assert calls == ["fast", "fast", "group"]
+
+
+def test_evidence_mode_two_different_organizations_confirm_as_two_origins(monkeypatch, tmp_path):
+    # Variant: the two verified speakers are different organizations, so the rule
+    # is "two-independent-origins", rule_source "evidence", verified_claims 2.
+    use_mode(monkeypatch, "evidence")
+    sources = [
+        source(link="https://a.example/1", name="Outlet A", owner="co-a", tier=2,
+               title=ACME_TITLE, text=ACME_TEXT),
+        source(link="https://b.example/2", name="Outlet B", owner="co-b", tier=2,
+               title=ACME_TITLE,
+               text="Beta Studios announced Acme Arena is the fastest-selling game in its history."),
+    ]
+    payloads = [
+        {"claims": [acme_claim("https://a.example/1", speaker="Acme Games")]},
+        {"claims": [acme_claim("https://b.example/2", speaker="Beta Studios",
+                               attribution_quote="Beta Studios announced")]},
+    ]
+    generate, calls = grouping_generate(payloads, [["c0", "c1"]])
+    result = facts.facts(
+        gathered("acme-two-orgs", sources), id="acme-two-orgs", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+    )
+    assert result["confirmation"]["confirmed"] is True
+    assert result["confirmation"]["rule"] == "two-independent-origins"
+    assert result["confirmation"]["rule_source"] == "evidence"
+    assert result["confirmation"]["verified_claims"] == 2
+    assert result["confirmation"]["origins"] == ["acme games", "beta studios"]
+    assert result["confirmation"]["reason"] == (
+        "two independent named origins state the central fact"
+    )
+    assert calls == ["fast", "fast", "group"]
+
+
+def test_evidence_mode_same_owner_is_not_two_origins(monkeypatch, tmp_path):
+    # Variant: the two sources share an owner, so the two verified claims count
+    # as one origin and the story does not confirm. The rule is "unconfirmed"
+    # (rule_source "evidence", verified_claims 2).
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(2, owners=["co-a", "co-a"])
+    generate, calls = grouping_generate(payloads, [["c0", "c1"]])
+    with pytest.raises(facts.UnconfirmedStory):
+        facts.facts(
+            gathered("acme-shared-owner", sources), id="acme-shared-owner", title=ACME_TITLE,
+            entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+        )
+    assert calls == ["fast", "fast", "group"]
+    sheet = json.loads((tmp_path / "unconfirmed" / "acme-shared-owner.json").read_text(encoding="utf-8"))
+    assert sheet["confirmation"]["confirmed"] is False
+    assert sheet["confirmation"]["rule"] == "unconfirmed"
+    assert sheet["confirmation"]["rule_source"] == "evidence"
+    assert sheet["confirmation"]["verified_claims"] == 2
+    assert sheet["confirmation"]["first_party_organizations"] == []
+    assert sheet["confirmation"]["reason"] == (
+        "the central fact is not backed by enough verified cross-source evidence"
+    )
+    assert not (tmp_path / "acme-shared-owner.json").exists()
+
+
 def test_evidence_mode_needs_enough_verified_sources(monkeypatch, tmp_path):
     use_mode(monkeypatch, "evidence")
     sources, payloads = acme_scenario(3)
@@ -4232,8 +4614,62 @@ def test_evidence_confirmation_tier1_unrelated_speaker_is_not_first_party():
 
 
 def test_extraction_prompt_states_the_in_sentence_attribution_rule():
-    assert facts.PROMPT_VERSION == "facts-v10"
+    assert facts.PROMPT_VERSION == "facts-v11"
     instruction = facts.SYSTEM_INSTRUCTION
     assert "Rebel Wolves has confirmed that" in instruction
     assert "copy that phrase as attribution_quote and set speaker to the named source" in instruction
+
+
+# --- headline-only sources: one title claim, never a model call ---------------
+
+
+def _headline_only_source(link, name, tier, owner, title):
+    return {**source(link=link, name=name, tier=tier, owner=owner, text=""), "title": title, "body_status": "headline_only"}
+
+
+def test_headline_only_claim_confirms_only_when_the_title_names_the_owner():
+    announced = _headline_only_source(
+        "https://news.acme.example/1", "Acme News", 1, "acme",
+        "Acme announces the new console today",
+    )
+    built = facts._headline_only_claim(announced, facts.load_origin_aliases())
+    assert built["claim"] == "Acme announces the new console today"
+    assert built["kind"] == "confirmed"
+    assert built["evidence"]["ok"] is True
+    assert built["evidence"]["attribution_mode"] == "headline_announcement"
+    assert built["origin"] != facts.UNSTATED_ORIGIN
+
+    plain = _headline_only_source(
+        "https://news.acme.example/1", "Acme News", 1, "acme",
+        "A new console is coming this year",
+    )
+    built_plain = facts._headline_only_claim(plain, facts.load_origin_aliases())
+    assert built_plain["kind"] == "reported"
+    assert built_plain["evidence"]["ok"] is False
+    assert built_plain["evidence"]["attribution_mode"] == "none"
+
+
+def test_headline_only_source_makes_no_model_call_and_yields_one_title_claim(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "legacy")
+    title = "Acme announces the new console today"
+    official = _headline_only_source("https://news.acme.example/1", "Acme News", 1, "acme", title)
+    outlet = _headline_only_source("https://outlet.example/2", "Outlet", 2, "outlet", title)
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        raise AssertionError("a headline-only source must never reach the model")
+
+    result = facts.facts(
+        gathered("headline-only", [official, outlet]),
+        id="headline-only",
+        title=title,
+        output_dir=tmp_path,
+        now=NOW,
+        generate=generate,
+    )
+    assert len(result["claims"]) == 1
+    assert result["claims"][0]["claim"] == title
+    assert result["confirmation"]["rule"] == "tier1"
+    assert [source["link"] for source in result["sources"]] == [
+        "https://news.acme.example/1", "https://outlet.example/2",
+    ]
 

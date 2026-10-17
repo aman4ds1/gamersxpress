@@ -1380,3 +1380,27 @@ def test_plain_unconfirmed_is_still_remembered(tmp_path):
     report = latest_candidates_report(paths)
     assert report["candidates"][0]["outcome"] == "dropped"
     assert report["candidates"][0]["reason"] == "unconfirmed"
+
+
+# --- readiness counts prose, not raw text length ------------------------------
+
+
+def test_countable_sources_use_body_status_not_raw_length():
+    nav_shell = {
+        "link": "https://nav.example/1", "status": "ok", "tier": 1,
+        "text": "x" * 5000, "body_status": "headline_only",
+        "prose_chars": 0, "prose_lines": 0,
+    }
+    body = {
+        "link": "https://body.example/2", "status": "ok", "tier": 1,
+        "text": "short but real prose", "body_status": "ok",
+        "prose_chars": 450, "prose_lines": 4,
+    }
+    usable = run_module._countable_gathered_sources({"sources": [nav_shell, body]})
+    assert [source["link"] for source in usable] == ["https://body.example/2"]
+
+
+def test_countable_sources_fall_back_to_length_without_a_body_status():
+    legacy = {"link": "https://legacy.example/1", "status": "ok", "tier": 1, "text": "y" * 500}
+    assert run_module._source_body_ok(legacy) is True
+    assert run_module._source_body_ok({**legacy, "text": "too short"}) is False

@@ -140,7 +140,7 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v10"
+PROMPT_VERSION = "facts-v11"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -3667,6 +3667,52 @@ def _claim_overlap_fraction(claim: dict, units: list[tuple[str, str]]) -> float:
     return shared / len(units)
 
 
+#: Headline words that state the headline's own action. The fallback in
+#: ``_headline_restated`` uses them when the headline is nothing but the story's
+#: entities, so a claim that names the entity still has to state what it does.
+_HEADLINE_VERB_TOKENS = frozenset({
+    "is", "are", "was", "were", "am", "be", "been", "being",
+    "says", "said", "say", "will", "would", "does", "do", "did",
+    "announces", "announced", "announce",
+    "reveals", "revealed", "reveal",
+    "confirms", "confirmed", "confirm",
+    "launches", "launched", "launch",
+    "adds", "added", "add",
+    "gets", "got", "has", "have", "had",
+})
+
+
+def _headline_restated(
+    claim: dict,
+    *,
+    title: str,
+    units: list[tuple[str, str]],
+    threshold: float,
+) -> bool:
+    """Whether a claim restates enough of the headline to be its central claim.
+
+    The story's canonical entities are set aside: a claim that only names the
+    company or the game must never clear ``facts.min_central_overlap``. What the
+    measure counts is the headline's *claim-specific* content -- its figures and
+    dates (the significant units that are not entities). When the headline has
+    none (it is only entities and stop words), the old significant-unit measure
+    applies, but only when the claim also states one of the headline's numbers,
+    dates or verbs.
+    """
+    claim_specific = [(kind, value) for kind, value in units if kind != "entity"]
+    if claim_specific:
+        return _claim_overlap_fraction(claim, claim_specific) >= threshold
+    if _claim_overlap_fraction(claim, units) < threshold:
+        return False
+    hard = _value_key_tokens(title)
+    verbs = _word_tokens(cluster.strip_diacritics(title)) & _HEADLINE_VERB_TOKENS
+    if not hard and not verbs:
+        return False
+    text = f"{str(claim.get('claim', ''))} {str(claim.get('value', ''))}"
+    claim_words = _word_tokens(cluster.strip_diacritics(text))
+    return bool(claim_words & (hard | verbs))
+
+
 def central_claim(claims: list[dict], *, title: str = "") -> Optional[dict]:
     """Pick the claim that restates the cluster's seed headline.
 
@@ -4252,7 +4298,9 @@ def _preferred_central_index(
             for claim in group:
                 if _source_url_key(claim.get("source_url")) not in tier1_urls:
                     continue
-                if _claim_overlap_fraction(claim, units) < threshold:
+                if not _headline_restated(
+                    claim, title=title, units=units, threshold=threshold
+                ):
                     continue
                 score = _title_overlap_score(claim, title_tokens)
                 key = (
@@ -4797,6 +4845,48 @@ def _write_unconfirmed_sheet(
         return None
 
 
+def _headline_only_claim(source: dict, aliases: dict[str, str]) -> dict:
+    """Build the single claim a headline-only source states in its own title.
+
+    A source whose page and feed both held no prose (``body_status``
+    ``headline_only``) still announces whatever its title says, but nothing
+    around it may be trusted: the page was navigation chrome and the tiles were
+    other posts' headlines. This builds that one claim in code -- no extraction
+    model call -- so only the words the source itself published can enter the
+    sheet.
+
+    The claim is ``confirmed`` with a ``headline_announcement`` evidence mode
+    when the title names the source's own organization as the announcer ("Acme
+    announces ..."), which is the source speaking for itself; otherwise it is
+    ``reported`` and carries no confirming evidence. It may only ever confirm the
+    claim it states, never another source's.
+    """
+    title = str(source.get("title") or "").strip()
+    owner = source.get("owner")
+    source_name = source.get("source_name")
+    names = _source_owner_names(owner, source_name, aliases)
+    announces = _headline_announces_speaker(_normalize_evidence(title), names)
+    return {
+        "claim": title,
+        "value": title,
+        "source_url": source.get("link"),
+        "confidence": 0.5,
+        "origin": canonicalize_origin(owner or source_name, aliases),
+        "affiliation": "",
+        "kind": "confirmed" if announces else "reported",
+        "quote": "",
+        "attribution_quote": "",
+        "speaker": str(owner or source_name or ""),
+        "speaker_type": "organization",
+        "headline_only": True,
+        "evidence": {
+            "ok": bool(announces),
+            "attribution_mode": "headline_announcement" if announces else "none",
+            "reason": None if announces else "headline-only source: no body text to verify",
+        },
+    }
+
+
 def facts(
     gathered: dict,
     *,
@@ -4873,6 +4963,20 @@ def facts(
         return payload
 
     selected_sources = _select_sources(sources, max_sources)
+    # A headline-only source (page and feed both held no prose) never reaches the
+    # extraction model: the words around it are navigation chrome and other
+    # posts' tile headlines. It contributes exactly the one claim its own title
+    # states, built in code below.
+    headline_only_sources = [
+        source
+        for source in selected_sources
+        if str(source.get("body_status") or "") == "headline_only"
+    ]
+    extractable_sources = [
+        source
+        for source in selected_sources
+        if str(source.get("body_status") or "") != "headline_only"
+    ]
     extracted: list[dict] = []
     generation = None
     # The families that served extraction, so the grouping call can prefer a
@@ -4882,7 +4986,7 @@ def facts(
     # source was read, so a later "unconfirmed" verdict reflects the budget
     # rather than the story's coverage.
     budget_truncated = False
-    for position, source in enumerate(selected_sources):
+    for position, source in enumerate(extractable_sources):
         text = str(source.get("text") or "")
         if not text.strip():
             logger.info("story %s: source %s has no text; nothing to extract", name, source.get("link"))
@@ -4892,7 +4996,7 @@ def facts(
             and model_call_budget is not None
             and run_state.calls >= model_call_budget
         ):
-            budget_truncated = position < len(selected_sources)
+            budget_truncated = position < len(extractable_sources)
             logger.warning(
                 "story %s: model-call budget of %d reached; skipping remaining sources",
                 name, model_call_budget,
@@ -4920,8 +5024,13 @@ def facts(
                 name, source.get("link"), len(text), len(part),
             )
         extracted.extend(part)
-    if generation is None:
+    if generation is None and not headline_only_sources:
         raise FactsError(f"story {name}: none of the sources had extractable text")
+    if headline_only_sources:
+        logger.info(
+            "story %s: %d headline-only source(s) contribute one title claim each",
+            name, len(headline_only_sources),
+        )
 
     kept, dropped, primary = coherence_check(
         extracted,
@@ -4975,13 +5084,29 @@ def facts(
         attribution_traces=attribution_traces,
     )
 
+    # A headline-only source contributes exactly the claim its own title states.
+    # It is built here, after grounding, coherence and origin resolution, so the
+    # title's words are never dropped for being absent from a body that never
+    # existed and its origin (the source's own owner) is never downgraded against
+    # that empty text. It still merges with any same-fact claim from a source
+    # with a body.
+    headline_claims = [
+        _headline_only_claim(source, aliases) for source in headline_only_sources
+    ]
+    if headline_claims:
+        kept = kept + headline_claims
+
     # Evidence diagnostics: each claim's stored quote and attribution are checked
     # verbatim against its own source text, and its speaker must be grounded,
     # non-anonymous and not a product or the outlet itself. This is recorded on
     # the claim (tagged with its source URL) and tallied per source below; it is
-    # a diagnostic only and does not affect confirmation yet.
+    # a diagnostic only and does not affect confirmation yet. A headline-only
+    # claim already carries its own evidence (there is no text to check it
+    # against), so it is left as built.
     sources_by_url = _sources_by_url(sources)
     for claim in kept:
+        if claim.get("headline_only"):
+            continue
         source = sources_by_url.get(_source_url_key(claim.get("source_url"))) or {}
         claim["evidence"] = _evidence_for_claim(
             claim, source, aliases=aliases, entities=canonical
@@ -5180,11 +5305,15 @@ def facts(
             "canonical_entities": canonical,
             "dropped_claims": _coherence_dropped_details(dropped, primary),
         },
-        "extractor": {
-            "provider": generation.provider,
-            "model": generation.model,
-            "family": generation.family,
-        },
+        "extractor": (
+            {
+                "provider": generation.provider,
+                "model": generation.model,
+                "family": generation.family,
+            }
+            if generation is not None
+            else None
+        ),
         "fingerprint": {"format": cluster.FINGERPRINT_FORMAT, "value": fingerprint},
     }
     if fact_groups is not None:

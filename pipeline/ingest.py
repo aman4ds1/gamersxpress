@@ -39,6 +39,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -331,6 +332,71 @@ def _save_cache(cache: dict, path: str | Path, now: dt.datetime) -> None:
     path.write_text(json.dumps(cache, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+_FEED_BLOCK_TAGS = frozenset(
+    {"p", "div", "br", "li", "tr", "section", "article", "blockquote",
+     "h1", "h2", "h3", "h4", "h5", "h6"}
+)
+
+
+class _FeedTextExtractor(HTMLParser):
+    """Collect a feed entry's HTML as plain text, keeping paragraph breaks."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in ("script", "style"):
+            self._skip += 1
+        elif tag in _FEED_BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style"):
+            self._skip = max(0, self._skip - 1)
+        elif tag in _FEED_BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            self._parts.append(data)
+
+
+def html_to_text(value: object) -> str:
+    """Convert feed HTML to plain text, one line per block, empty lines gone."""
+    raw = str(value or "")
+    if not raw:
+        return ""
+    parser = _FeedTextExtractor()
+    try:
+        parser.feed(raw)
+        parser.close()
+    except Exception:  # noqa: BLE001 - a malformed snippet is not worth failing on
+        return ""
+    lines = [
+        re.sub(r"[ \t\f\v\u00a0]+", " ", line).strip()
+        for line in "".join(parser._parts).splitlines()
+    ]
+    return "\n".join(line for line in lines if line)
+
+
+def _entry_content(item: dict) -> str:
+    """The feed entry's full content (``content:encoded`` / ``content``) as text.
+
+    feedparser maps both ``content:encoded`` and ``content`` to ``item['content']``
+    (a list of dicts with a ``value``); the long-form body is preferred over the
+    short summary so a feed that carries the article can stand in when the page
+    itself is only a navigation shell.
+    """
+    for entry in item.get("content") or []:
+        value = entry.get("value") if isinstance(entry, dict) else entry
+        text = html_to_text(value)
+        if text:
+            return text
+    return ""
+
+
 def _item_published(item: dict) -> dt.datetime | None:
     for key in ("published_parsed", "updated_parsed"):
         parsed = item.get(key)
@@ -367,6 +433,7 @@ def process_feed(source: dict, content: bytes, now: dt.datetime, window: dt.time
             {
                 "title": (item.get("title") or "").strip(),
                 "link": normalize_url(item.get("link") or ""),
+                "content": _entry_content(item),
                 "published": published.isoformat(),
                 "age_hours": round((now - published).total_seconds() / 3600, 2),
                 "source_name": source["name"],
@@ -665,6 +732,7 @@ __all__ = [
     "normalize_url",
     "registered_domain",
     "process_feed",
+    "html_to_text",
     "reattribute_item",
     "reattribute_items",
     "reattribute_gathered",

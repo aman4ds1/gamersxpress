@@ -111,8 +111,11 @@ DEFAULT_READINESS_MIN_CLAIMS = 6
 _READY_CLAIM_KINDS = frozenset({"confirmed", "reported", "estimate", "statement"})
 
 #: Minimum extracted characters a gathered source needs before it counts toward
-#: a candidate's post-gather source floor. Mirrors the facts prompt's usefulness
-#: floor; a page that yielded less than this is treated as unusable.
+#: a candidate's post-gather source floor. Only a fallback now: gather.py stores
+#: a prose measure (``prose_chars`` / ``body_status``) on every source it fetches,
+#: and that is what is trusted. This length floor applies only to a source
+#: written before the prose measure existed (or a dry-run fixture), so an old
+#: gathered file is still counted the way it always was.
 READINESS_MIN_SOURCE_CHARS = 400
 
 #: Hard wall-clock ceiling for one run, from ``run.max_total_seconds``. When the
@@ -167,20 +170,37 @@ def _facts_readiness(
     return True, None
 
 
+def _source_body_ok(source: dict) -> bool:
+    """True when a gathered source carries article body (not just nav chrome).
+
+    The prose measure stored by :func:`gather.gather` decides: a source is usable
+    only when ``body_status`` is ``ok``. A ``headline_only`` source (page and
+    feed both held no prose) may still contribute the claim its title states, but
+    it is not a source *with body text* and never counts toward the source
+    floor. A source with no ``body_status`` predates the measure (a dry-run
+    fixture or an old sheet), so the legacy length test applies.
+    """
+    status = source.get("body_status")
+    if status is not None:
+        return status == "ok"
+    return len(str(source.get("text") or "")) >= READINESS_MIN_SOURCE_CHARS
+
+
 def _countable_gathered_sources(gathered: dict) -> list[dict]:
-    """Gathered sources that can support a story and hold usable text.
+    """Gathered sources that can support a story and hold usable body text.
 
     A post-gather version of the score-stage source floor: a source counts only
-    when it was fetched successfully, produced enough text to extract claims
-    from, did not disable fetching, and was not demoted to tier 3 (an external
-    page on an unconfigured domain). This lets the run reject a candidate before
-    spending any model call on it.
+    when it was fetched successfully, produced enough prose to extract claims
+    from (``body_status`` ``ok``; see :func:`_source_body_ok`), did not disable
+    fetching, and was not demoted to tier 3 (an external page on an unconfigured
+    domain). This lets the run reject a candidate before spending any model call
+    on it.
     """
     usable: list[dict] = []
     for source in gathered.get("sources") or []:
         if str(source.get("status") or "") != "ok":
             continue
-        if len(str(source.get("text") or "")) < READINESS_MIN_SOURCE_CHARS:
+        if not _source_body_ok(source):
             continue
         if source.get("fetchable") is False:
             continue

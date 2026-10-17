@@ -487,3 +487,97 @@ def test_gather_carries_url_date_from_the_final_url_after_redirect(tmp_path):
 def test_gather_url_date_is_null_without_a_dated_path(tmp_path):
     payload = run_gather(tmp_path, fetcher=lambda url: ("<html>body</html>", url))
     assert payload["sources"][0]["url_date"] is None
+
+
+# --- prose measure: a page is only body when enough of it is prose ------------
+
+NAV_SHELL = "\n".join(
+    [
+        "Skip to main content",
+        "Games",
+        "Xbox Game Studios",
+        "More",
+        "Modern Warfare 4: Campaign Early Access Now Live",
+        "By Jane Doe",
+        "Keep reading",
+        "DMZ Early Access Starts October 20",
+        "Modern Warfare 4 Launches October 23 as a Standalone Release",
+        "Call of Duty Season 2 Arrives Next Week on All Platforms",
+    ]
+)
+
+ARTICLE_BODY = "\n".join(
+    [
+        "The studio confirmed the release date today in a detailed post published on its official blog for fans everywhere.",
+        "Players will explore a brand new region when the expansion finally arrives later this calendar year on all platforms.",
+        "The update also introduces a cooperative mode that lets up to four friends play the campaign together online together.",
+        "A free trial weekend will run before the full launch next month, the studio added at the end of the post.",
+    ]
+)
+
+PC_GAMER_BODY = "\n".join(
+    [
+        "Here is everything we know about the new expansion, gathered in one place for you.",
+        "- A new region to explore when the update finally arrives later this calendar year.",
+        "- A cooperative mode that supports up to four players at once in the campaign.",
+        "- A free trial weekend that will run before the full retail launch next month.",
+        "- A new progression system with rewards that carry over to the next season.",
+        "- A photo mode that lets players pause and frame any moment during play.",
+    ]
+)
+
+
+def test_navigation_shell_measures_no_body():
+    result = gather.prose_measure(NAV_SHELL)
+    assert result["body_status"] == "no_body"
+    assert result["prose_chars"] < gather.PROSE_MIN_CHARS
+    assert result["prose_lines"] < gather.PROSE_MIN_LINES
+
+
+def test_four_paragraph_article_body_is_ok():
+    result = gather.measure_body(ARTICLE_BODY, gather.DEFAULT_BOILERPLATE_PATTERNS)
+    assert result["body_status"] == "ok"
+    assert result["prose_lines"] >= gather.PROSE_MIN_LINES
+    assert result["prose_chars"] >= gather.PROSE_MIN_CHARS
+
+
+def test_pc_gamer_style_bullets_and_short_intro_still_measure_ok():
+    result = gather.prose_measure(PC_GAMER_BODY)
+    assert result["body_status"] == "ok"
+    assert result["prose_lines"] >= gather.PROSE_MIN_LINES
+
+
+def test_boilerplate_lines_are_removed_before_measuring():
+    cleaned = gather.strip_boilerplate(NAV_SHELL, gather.DEFAULT_BOILERPLATE_PATTERNS)
+    assert "Skip to main content" not in cleaned
+    assert "Keep reading" not in cleaned
+    assert "Modern Warfare 4: Campaign Early Access Now Live" in cleaned
+
+
+def test_gather_uses_feed_content_when_the_page_is_no_body(tmp_path):
+    result = gather.gather(
+        cluster([{**item(1), "content": ARTICLE_BODY}]),
+        output_dir=tmp_path,
+        fetcher=lambda url: "<html>nav</html>",
+        extractor=lambda html: NAV_SHELL,
+        robots_call=always_true,
+        delay=0,
+    )
+    source = result["sources"][0]
+    assert source["status"] == "ok"
+    assert source["body_status"] == "ok"
+    assert source["text_origin"] == "feed"
+    assert source["text"] == ARTICLE_BODY
+
+
+def test_source_with_no_page_or_feed_body_becomes_headline_only(tmp_path):
+    result = run_gather(
+        tmp_path,
+        fetcher=lambda url: "<html>x</html>",
+        extractor=lambda html: NAV_SHELL,
+    )
+    source = result["sources"][0]
+    assert source["status"] == "ok"
+    assert source["body_status"] == "headline_only"
+    assert source["text_origin"] == "page"
+    assert source["text"] == NAV_SHELL

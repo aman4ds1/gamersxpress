@@ -184,6 +184,26 @@ cluster:
   # (review, sales, delay). Raising it makes clustering stricter.
   min_event_overlap: 1
 
+# Gather stage (pipeline/gather.py). A line holding one of these as a whole-word
+# phrase is dropped before the prose measure, so navigation chrome and "keep
+# reading" strips never count as article body. A line of fewer than 4 words that
+# is not a heading is dropped too. The measured body is what run.py's readiness
+# check counts (prose_chars), not the raw text length.
+gather:
+  boilerplate_patterns:
+    - Skip to main content
+    - Keep reading
+    - Trending now
+    - Opens in a new tab
+    - Join Game Pass
+    - Read more
+    - Related
+    - Share this
+    - Subscribe
+    - cookie
+    - cookies
+    - We use cookies
+
 # Facts stage (pipeline/facts.py). Extraction runs once per source; this caps
 # how many claims a single source may contribute, so a long article cannot
 # crowd out the story's other sources. Bumping it re-extracts cached sheets.

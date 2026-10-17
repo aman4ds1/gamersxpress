@@ -13,10 +13,27 @@ from ingest import ConfigError, FetchError
 NOW = dt.datetime(2026, 10, 9, 12, 0, 0, tzinfo=dt.timezone.utc)
 
 
+def test_feed_html_is_converted_to_text_with_paragraph_breaks():
+    text = ingest.html_to_text("<p>First paragraph.</p><p>Second paragraph.</p>")
+    assert text.splitlines() == ["First paragraph.", "Second paragraph."]
+    assert ingest.html_to_text("<div>Only <b>one</b> line</div>") == "Only one line"
+    assert ingest.html_to_text("<script>var x = 1;</script><p>Kept</p>") == "Kept"
+    assert ingest.html_to_text("") == ""
+
+
 def rss(items_xml: str = "") -> bytes:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<rss version="2.0"><channel><title>Sample</title>\n'
+        f"{items_xml}\n</channel></rss>"
+    ).encode("utf-8")
+
+
+def rss_with_content(items_xml: str = "") -> bytes:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">'
+        '<channel><title>Sample</title>\n'
         f"{items_xml}\n</channel></rss>"
     ).encode("utf-8")
 
@@ -718,3 +735,31 @@ def test_run_uses_real_config_sources(tmp_path):
     )
     assert len(result["feeds"]) == len(config)
     assert all(row["outcome"] == "empty" for row in result["feeds"])
+
+
+# --- feed content: the long-form body kept alongside the summary --------------
+
+CONTENT_ITEM = (
+    "<item><title>Meta</title><link>https://news.xbox.com/m</link>"
+    "<pubDate>Thu, 09 Oct 2026 09:00:00 +0000</pubDate>"
+    "<description>Short summary of the post.</description>"
+    "<content:encoded><![CDATA["
+    "<p>First paragraph of the post with the actual reporting.</p>"
+    "<p>Second paragraph that carries the rest of the detail.</p>"
+    "]]></content:encoded></item>"
+)
+
+
+def test_process_feed_keeps_full_content_alongside_the_summary():
+    candidates = ingest.process_feed(base_source(), rss_with_content(CONTENT_ITEM), NOW)
+    item = candidates.items[0]
+    assert item["title"] == "Meta"
+    assert item["content"].splitlines() == [
+        "First paragraph of the post with the actual reporting.",
+        "Second paragraph that carries the rest of the detail.",
+    ]
+
+
+def test_process_feed_content_is_empty_when_the_feed_carries_none():
+    candidates = ingest.process_feed(base_source(), rss(item_xml("Meta", "https://news.xbox.com/m", "Thu, 09 Oct 2026 09:00:00 +0000")), NOW)
+    assert candidates.items[0]["content"] == ""

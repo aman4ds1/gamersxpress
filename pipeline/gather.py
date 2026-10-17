@@ -18,7 +18,9 @@ Output is written to ``data/gathered/<cluster-id>.json``:
         {
           "link": "...", "final_url": "...", "title": "...", "source_name": "...",
           "tier": 1, "owner": "...", "region": "us", "published": "...",
-          "status": "ok", "text": "<full text>", "error": null
+          "status": "ok", "text": "<full text>", "error": null,
+          "text_origin": "page", "prose_chars": 1234, "prose_lines": 12,
+          "body_status": "ok"
         }
 
 ``final_url`` is the URL the page finally resolved to after redirects (equal to
@@ -32,6 +34,13 @@ the current one (the cluster id plus the settings that shape extraction), the
 cached payload is returned without fetching anything; any mismatch -- including
 a file written before fingerprints existed -- means the text is re-fetched and
 the file overwritten, so stale gathered output is never reused.
+
+Not every page's extracted text is article body: a navigation shell or a wall of
+tile headlines can pass a naive character count. The text is measured in prose
+lines (see :func:`prose_measure`) and each source carries ``prose_chars``,
+``prose_lines``, ``body_status`` (``ok``, ``no_body`` or, once facts run,
+``headline_only``) and ``text_origin`` (``page`` or ``feed``). When the page is
+``no_body`` the feed entry's own ``content`` is used instead.
 
 Source text is used ONLY by the facts stage (PLAN.md pipeline stage 5); it is
 never passed to the writer.
@@ -53,6 +62,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import trafilatura
+import yaml
 from trafilatura.downloads import DEFAULT_CONFIG as TRAFILATURA_DEFAULT_CONFIG
 
 from cluster import FINGERPRINT_FORMAT, stage_fingerprint, stored_fingerprint
@@ -66,7 +76,45 @@ FETCH_TIMEOUT_SECONDS = 20
 REQUEST_DELAY_SECONDS = 1.0
 # Bump when fetch/extract handling that can change the stored text is tuned, so
 # previously-gathered files read as stale and are re-fetched.
-GATHER_SETTINGS_VERSION = 5
+GATHER_SETTINGS_VERSION = 6
+
+# A page's "text" is only usable as article body when enough of it is prose. A
+# navigation shell, a wall of tile headlines or a "keep reading" strip can pass a
+# naive character count, so the body is measured in prose lines instead: a line
+# of at least :data:`PROSE_MIN_LINE_WORDS` words that ends in sentence
+# punctuation and holds at least one lowercase word. A source is ``ok`` when its
+# text has at least :data:`PROSE_MIN_CHARS` such characters across at least
+# :data:`PROSE_MIN_LINES` lines; otherwise it is ``no_body`` (page and feed both
+# empty of prose) and, once facts run, a ``headline_only`` source that may add
+# only the claim its own title states.
+PROSE_MIN_CHARS = 400
+PROSE_MIN_LINES = 3
+PROSE_MIN_LINE_WORDS = 8
+#: Boilerplate lines shorter than this are dropped before measuring (a heading
+#: or a title survives even when short).
+PROSE_MIN_BOILERPLATE_WORDS = 4
+
+#: Default boilerplate patterns, used when config.yaml has no ``gather`` block.
+#: A line containing one of these as a whole-word phrase is dropped before the
+#: prose measure, so navigation chrome and "keep reading" strips never count as
+#: article body.
+DEFAULT_BOILERPLATE_PATTERNS = (
+    "skip to main content",
+    "keep reading",
+    "trending now",
+    "opens in a new tab",
+    "join game pass",
+    "read more",
+    "related",
+    "share this",
+    "subscribe",
+    "cookie",
+)
+
+#: Sentence-final punctuation, optionally followed by a closing quote.
+_SENTENCE_END_RE = re.compile(r'[.!?](?:["\')\u201d\u2019])?$')
+#: A line of at least one lowercase word carries prose, not just Title Case chrome.
+_HAS_LOWERCASE_WORD_RE = re.compile(r"(?<![A-Za-z])[a-z][A-Za-z'\-]*(?![A-Za-z])")
 
 #: A dated URL path (``/2026/10/07/slug``) often carries a page's true
 #: publication date, which the feed's own date can misreport (an "updated" or
@@ -220,6 +268,117 @@ def url_date(url: object, *, now: dt.datetime | None = None) -> Optional[str]:
     return date.isoformat()
 
 
+def load_boilerplate_patterns(path: str | Path | None = None) -> list[str]:
+    """The boilerplate line patterns from ``config.yaml`` ``gather``.
+
+    Missing, unreadable or malformed config falls back to
+    :data:`DEFAULT_BOILERPLATE_PATTERNS`, so the measure still strips the
+    commonest chrome without a config file present.
+    """
+    config_path = Path(path) if path else PROJECT_ROOT / "pipeline" / "config.yaml"
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return list(DEFAULT_BOILERPLATE_PATTERNS)
+    patterns = (data.get("gather") or {}).get("boilerplate_patterns")
+    if not isinstance(patterns, list):
+        return list(DEFAULT_BOILERPLATE_PATTERNS)
+    cleaned = [str(pattern).strip() for pattern in patterns if str(pattern).strip()]
+    return cleaned or list(DEFAULT_BOILERPLATE_PATTERNS)
+
+
+def _matches_boilerplate(line: str, patterns: list[str]) -> bool:
+    """True when ``line`` is a boilerplate pattern (whole line or a leading CTA).
+
+    Matching the whole line -- or the line's start, so "Read more about Xbox"
+    still drops -- keeps a real sentence that merely contains a word like
+    "related" from being discarded and shrinking the prose measure.
+    """
+    lowered = line.strip().lower()
+    for pattern in patterns:
+        needle = pattern.strip().lower()
+        if not needle:
+            continue
+        if lowered == needle:
+            return True
+        if lowered.startswith(needle) and not lowered[len(needle):len(needle) + 1].isalnum():
+            return True
+    return False
+
+
+def _is_heading(line: str, title: str | None = None) -> bool:
+    """True when a short line is a markdown heading or the source's own title."""
+    stripped = line.strip()
+    if stripped.startswith("#"):
+        return True
+    if title and stripped.lower() == title.strip().lower():
+        return True
+    return False
+
+
+def strip_boilerplate(text: object, patterns: list[str], *, title: str | None = None) -> str:
+    """Drop navigation chrome and non-heading short lines before measuring.
+
+    A line is removed when it matches a configured boilerplate pattern or holds
+    fewer than :data:`PROSE_MIN_BOILERPLATE_WORDS` words and is not a heading.
+    The stored ``text`` is left untouched; this only shapes the prose measure.
+    """
+    kept: list[str] = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            kept.append(raw)
+            continue
+        if _matches_boilerplate(line, patterns):
+            continue
+        if len(line.split()) < PROSE_MIN_BOILERPLATE_WORDS and not _is_heading(line, title):
+            continue
+        kept.append(raw)
+    return "\n".join(kept)
+
+
+def _is_prose_line(line: str) -> bool:
+    """True when a line reads as prose: long, lowercase-bearing, sentence-ended."""
+    stripped = line.strip()
+    if not stripped or not _SENTENCE_END_RE.search(stripped):
+        return False
+    if len(stripped.split()) < PROSE_MIN_LINE_WORDS:
+        return False
+    return bool(_HAS_LOWERCASE_WORD_RE.search(stripped))
+
+
+def prose_measure(text: object) -> dict:
+    """Measure prose in ``text``: its characters, line count and body status.
+
+    ``body_status`` is ``ok`` when the text carries at least
+    :data:`PROSE_MIN_CHARS` prose characters across at least
+    :data:`PROSE_MIN_LINES` prose lines, else ``no_body``.
+    """
+    lines = [line.strip() for line in str(text or "").splitlines() if _is_prose_line(line)]
+    chars = sum(len(line) for line in lines)
+    ok = chars >= PROSE_MIN_CHARS and len(lines) >= PROSE_MIN_LINES
+    return {
+        "prose_chars": chars,
+        "prose_lines": len(lines),
+        "body_status": "ok" if ok else "no_body",
+    }
+
+
+def measure_body(text: object, patterns: list[str], *, title: str | None = None) -> dict:
+    """Strip boilerplate from ``text`` then measure its prose."""
+    return prose_measure(strip_boilerplate(text, patterns, title=title))
+
+
+def _no_body_fields(text_origin: str | None = None) -> dict:
+    """The prose fields for a source that carries no article text at all."""
+    return {
+        "prose_chars": 0,
+        "prose_lines": 0,
+        "body_status": "no_body",
+        "text_origin": text_origin,
+    }
+
+
 def gather(
     cluster: dict,
     *,
@@ -232,14 +391,18 @@ def gather(
     extractor: Callable[[str], Optional[str]] = extract_text,
     delay: float = REQUEST_DELAY_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
+    boilerplate: list[str] | None = None,
 ) -> dict:
     """Fetch the full text of every item in ``cluster`` and save it."""
     output_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
     name = re.sub(r"[^0-9A-Za-z._-]", "-", str(id or cluster.get("id") or "unnamed"))
     now = now or dt.datetime.now(dt.timezone.utc)
+    patterns = list(boilerplate) if boilerplate is not None else load_boilerplate_patterns()
 
     fingerprint = stage_fingerprint(
         name, "gather", GATHER_SETTINGS_VERSION, FETCH_TIMEOUT_SECONDS, USER_AGENT,
+        PROSE_MIN_CHARS, PROSE_MIN_LINES, PROSE_MIN_LINE_WORDS,
+        PROSE_MIN_BOILERPLATE_WORDS, tuple(patterns),
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{name}.json"
@@ -266,13 +429,21 @@ def gather(
             "fetchable": item.get("fetchable", True),
         }
         if item.get("fetchable") is False:
-            source = {**base, "status": "skipped", "text": "", "error": "source fetch disabled"}
+            source = {**base, "status": "skipped", "text": "", "error": "source fetch disabled", **_no_body_fields()}
             logger.info("source '%s' %s skipped: fetch disabled", base["source_name"], url)
         elif robots and not robots_call(url):
-            source = {**base, "status": "denied-robots", "text": "", "error": "disallowed by robots.txt"}
+            source = {**base, "status": "denied-robots", "text": "", "error": "disallowed by robots.txt", **_no_body_fields()}
             logger.info("source '%s' %s skipped: robots.txt", base["source_name"], url)
         else:
-            source = _fetch_one(base, url, fetcher, extractor)
+            source = _fetch_one(
+                base,
+                url,
+                fetcher,
+                extractor,
+                content=str(item.get("content") or ""),
+                patterns=patterns,
+                title=str(base.get("title") or ""),
+            )
         # The URL date comes from the final URL after redirects, when it has one.
         source["url_date"] = url_date(source.get("final_url") or url, now=now)
         sources.append(source)
@@ -297,7 +468,12 @@ def _fetch_one(
     url: str,
     fetcher: Callable[[str], object],
     extractor: Callable[[str], Optional[str]],
+    *,
+    content: str = "",
+    patterns: list[str] | None = None,
+    title: str = "",
 ) -> dict:
+    patterns = patterns if patterns is not None else list(DEFAULT_BOILERPLATE_PATTERNS)
     final_url = url
     try:
         result = fetcher(url)
@@ -307,16 +483,37 @@ def _fetch_one(
         else:
             html = result
     except Exception as exc:  # noqa: BLE001 - record, never crash the stage
-        return {**base, "status": "fetch-error", "text": "", "error": str(exc), "final_url": final_url}
+        return {**base, "status": "fetch-error", "text": "", "error": str(exc), "final_url": final_url, **_no_body_fields()}
     if not html:
-        return {**base, "status": "fetch-error", "text": "", "error": "no response body", "final_url": final_url}
+        return {**base, "status": "fetch-error", "text": "", "error": "no response body", "final_url": final_url, **_no_body_fields()}
     try:
         text = extractor(html)
     except Exception as exc:  # noqa: BLE001 - record, never crash the stage
-        return {**base, "status": "extract-error", "text": "", "error": str(exc), "final_url": final_url}
+        return {**base, "status": "extract-error", "text": "", "error": str(exc), "final_url": final_url, **_no_body_fields()}
     if not text:
-        return {**base, "status": "empty", "text": "", "error": None, "final_url": final_url}
-    return {**base, "status": "ok", "text": text, "error": None, "final_url": final_url}
+        return {**base, "status": "empty", "text": "", "error": None, "final_url": final_url, **_no_body_fields()}
+
+    # The page's own text is preferred, but a navigation shell measures no_body:
+    # when the feed carried the article (content:encoded), fall back to that.
+    page = measure_body(text, patterns, title=title)
+    if page["body_status"] == "ok":
+        return {
+            **base, "status": "ok", "text": text, "error": None, "final_url": final_url,
+            "text_origin": "page", **page,
+        }
+    if content:
+        feed = measure_body(content, patterns, title=title)
+        return {
+            **base, "status": "ok", "text": content, "error": None, "final_url": final_url,
+            "text_origin": "feed", **feed,
+        }
+    # Neither the page nor the feed carried prose: the source may still add the
+    # single claim its own title states.
+    return {
+        **base, "status": "ok", "text": text, "error": None, "final_url": final_url,
+        "text_origin": "page", "prose_chars": page["prose_chars"],
+        "prose_lines": page["prose_lines"], "body_status": "headline_only",
+    }
 
 
 def load_fetch_health(path: str | Path | None = None) -> dict:
@@ -401,4 +598,8 @@ __all__ = [
     "load_fetch_health",
     "update_fetch_health",
     "print_fetch_health_summary",
+    "prose_measure",
+    "measure_body",
+    "strip_boilerplate",
+    "load_boilerplate_patterns",
 ]
