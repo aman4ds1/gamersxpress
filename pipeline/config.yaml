@@ -490,11 +490,15 @@ facts:
     - word
   absence_max_gap_words: 4
   # Attribution-cue vocabulary for evidence checking (pipeline/facts.py). A
-  # claim's `attribution_quote` must carry one of these cues to credit its
-  # speaker, and may never be equal to, contained in, or containing the claim's
-  # own `quote`: a fragment of the claim is not an attribution. The first-party
-  # own-site and headline-announcement modes are exempt (their speaker is the
-  # site owner or is named in the title). Extend the list to teach a new cue.
+  # claim's `attribution_quote` must carry one of these cues, must name its
+  # speaker (or corefer back to it) and must be affirmative -- no negation
+  # (hasn't, has not, did not, not yet, never, without) between its start and
+  # its first cue -- to credit that speaker. An attribution that sits inside
+  # the claim's own sentence is accepted; when the model paraphrases a cue,
+  # verify_evidence repairs the attribution from the claim's quote and flags
+  # `repaired_attribution`. The first-party own-site and headline-announcement
+  # modes are exempt (their speaker is the site owner or is named in the
+  # title). Extend the list to teach a new cue.
   attribution_cues:
     - said
     - says

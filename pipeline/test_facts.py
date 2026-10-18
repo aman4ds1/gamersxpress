@@ -4614,7 +4614,7 @@ def test_evidence_confirmation_tier1_unrelated_speaker_is_not_first_party():
 
 
 def test_extraction_prompt_states_the_in_sentence_attribution_rule():
-    assert facts.PROMPT_VERSION == "facts-v11"
+    assert facts.PROMPT_VERSION == "facts-v12"
     instruction = facts.SYSTEM_INSTRUCTION
     assert "Rebel Wolves has confirmed that" in instruction
     assert "copy that phrase as attribution_quote and set speaker to the named source" in instruction
@@ -4810,6 +4810,221 @@ def test_verify_evidence_headline_announcement_still_passes_without_a_cue():
         source_owner="wire-desk",
     )
     assert result["attribution_mode"] == "headline_announcement"
+    assert result["ok"] is True
+
+
+# --- in-sentence attributions: cue, speaker name, affirmative ----------------
+
+
+def test_verify_evidence_accepts_an_in_sentence_attribution_naming_the_speaker():
+    text = "CD Projekt chief says the remake ships in 2027."
+    result = facts.verify_evidence(
+        claim(
+            quote="the remake ships in 2027",
+            attribution_quote="CD Projekt chief says",
+            speaker="CD Projekt",
+            speaker_type="organization",
+        ),
+        text,
+    )
+    assert result["attribution_found"] is True
+    assert result["repaired_attribution"] is False
+    assert result["ok"] is True
+
+
+def test_verify_evidence_accepts_an_according_to_attribution_inside_the_claim():
+    text = "According to MP1st, the remaster ships in June."
+    result = facts.verify_evidence(
+        claim(
+            quote="the remaster ships in June",
+            attribution_quote="According to MP1st",
+            speaker="MP1st",
+            speaker_type="outlet",
+        ),
+        text,
+    )
+    assert result["attribution_found"] is True
+    assert result["ok"] is True
+
+
+def test_verify_evidence_accepts_a_person_attribution_inside_the_claim():
+    text = "Nowakowski said the studio targets 2027."
+    result = facts.verify_evidence(
+        claim(
+            quote="the studio targets 2027",
+            attribution_quote="Nowakowski said",
+            speaker="Nowakowski",
+            speaker_type="person",
+        ),
+        text,
+    )
+    assert result["attribution_found"] is True
+    assert result["ok"] is True
+
+
+def test_verify_evidence_rejects_a_negated_attribution_and_the_absence_rule_still_applies():
+    text = "Activision hasn't revealed an exact time for the campaign unlock."
+    result = facts.verify_evidence(
+        claim(
+            claim="an exact time",
+            value="an exact time",
+            quote="an exact time for the campaign unlock",
+            attribution_quote="Activision hasn't revealed",
+            speaker="Activision",
+            speaker_type="organization",
+        ),
+        text,
+    )
+    assert result["attribution_found"] is False
+    assert result["repaired_attribution"] is False
+    assert result["ok"] is False
+    assert result["reason"] == "attribution quote not found"
+    entry = facts.validate_claims(
+        {
+            "claims": [
+                claim(
+                    claim="Activision hasn't revealed an exact time",
+                    value="no exact time",
+                    kind="statement",
+                    origin="activision",
+                    quote="Activision hasn't revealed an exact time",
+                    attribution_quote="Activision hasn't revealed",
+                    speaker="Activision",
+                    speaker_type="organization",
+                )
+            ]
+        }
+    )[0]
+    assert entry["kind"] == "reported"
+    assert entry["speaker"] == ""
+    assert entry["absence"] is True
+
+
+def test_verify_evidence_rejects_an_attribution_without_a_cue():
+    text = "Rebel Wolves 2027 tour. The roguelike ships in June."
+    result = facts.verify_evidence(
+        claim(
+            quote="the roguelike ships in June",
+            attribution_quote="Rebel Wolves 2027",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+        ),
+        text,
+    )
+    assert result["attribution_found"] is False
+    assert result["repaired_attribution"] is False
+    assert result["ok"] is False
+    assert result["reason"] == "attribution quote not found"
+
+
+def test_verify_evidence_rejects_an_attribution_omitting_the_speaker():
+    text = "Rebel Wolves has confirmed that the roguelike ships in June."
+    result = facts.verify_evidence(
+        claim(
+            quote="the roguelike ships in June",
+            attribution_quote="has confirmed that",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+        ),
+        text,
+    )
+    assert result["attribution_found"] is False
+    assert result["repaired_attribution"] is False
+    assert result["ok"] is False
+    assert result["reason"] == "attribution quote not found"
+
+
+def test_verify_evidence_repairs_a_paraphrased_attribution_from_the_quote():
+    text = "Rebel Wolves has announced that the roguelike ships in 2027."
+    result = facts.verify_evidence(
+        claim(
+            quote="Rebel Wolves has announced that the roguelike ships in 2027",
+            attribution_quote="Rebel Wolves has confirmed that",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+        ),
+        text,
+    )
+    assert result["quote_found"] is True
+    assert result["attribution_found"] is True
+    assert result["repaired_attribution"] is True
+    assert result["attribution_mode"] == "explicit"
+    assert result["ok"] is True
+
+
+def test_verify_evidence_never_repairs_a_negated_attribution_from_the_quote():
+    text = "Activision hasn't revealed an exact time for the campaign unlock."
+    result = facts.verify_evidence(
+        claim(
+            claim="the campaign unlock schedule",
+            value="an exact time",
+            quote="Activision hasn't revealed an exact time for the campaign unlock",
+            attribution_quote="Activision has confirmed that",
+            speaker="Activision",
+            speaker_type="organization",
+        ),
+        text,
+    )
+    assert result["quote_found"] is True
+    assert result["attribution_found"] is False
+    assert result["repaired_attribution"] is False
+    assert result["ok"] is False
+
+
+def test_verify_evidence_never_repairs_a_quote_without_a_cue():
+    text = "Rebel Wolves ships in June."
+    result = facts.verify_evidence(
+        claim(
+            quote="Rebel Wolves ships in June",
+            attribution_quote="Rebel Wolves announced",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+        ),
+        text,
+    )
+    assert result["quote_found"] is True
+    assert result["attribution_found"] is False
+    assert result["repaired_attribution"] is False
+    assert result["ok"] is False
+
+
+def test_verify_evidence_repair_leaves_first_party_site_unaffected():
+    text = "The Acme X1 is available now at every retailer."
+    result = facts.verify_evidence(
+        claim(
+            quote="The Acme X1 is available now at every retailer",
+            attribution_quote="Acme Games availability",
+            speaker="Acme Games",
+            speaker_type="organization",
+        ),
+        text,
+        "Acme X1 availability",
+        source_outlet="Acme Games",
+        source_tier=1,
+        source_owner="Acme Games",
+    )
+    assert result["attribution_mode"] == "first_party_site"
+    assert result["repaired_attribution"] is False
+    assert result["ok"] is True
+
+
+def test_verify_evidence_repair_leaves_headline_announcement_unaffected():
+    text = "The Acme X1 is available now at every retailer."
+    result = facts.verify_evidence(
+        claim(
+            quote="The Acme X1 is available now at every retailer",
+            attribution_quote="Acme Games announces availability",
+            speaker="Acme Games",
+            speaker_type="organization",
+        ),
+        text,
+        "Acme Games announces availability of the Acme X1",
+        source_outlet="Wire Desk",
+        source_tier=1,
+        source_owner="wire-desk",
+    )
+    assert result["attribution_mode"] == "headline_announcement"
+    assert result["repaired_attribution"] is False
     assert result["ok"] is True
 
 

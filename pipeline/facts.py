@@ -140,7 +140,7 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v11"
+PROMPT_VERSION = "facts-v12"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -333,9 +333,9 @@ _DEFAULT_ABSENCE_DISCLOSURE_WORDS = (
 DEFAULT_ABSENCE_MAX_GAP_WORDS = 4
 
 #: Attribution cues (pipeline/facts.py). A claim's ``attribution_quote`` must
-#: carry one of these cues to credit its speaker, and may never be a fragment
-#: of the claim's own ``quote``. Extendable through ``facts.attribution_cues``
-#: in config.yaml.
+#: carry one of these cues, name its speaker and stay affirmative to credit
+#: that speaker; an attribution that sits inside the claim's own sentence is
+#: accepted. Extendable through ``facts.attribution_cues`` in config.yaml.
 _DEFAULT_ATTRIBUTION_CUES = (
     "said", "says", "stated", "announced", "confirmed", "revealed",
     "according to", "told", "wrote", "posted", "claims", "reports",
@@ -566,7 +566,10 @@ SYSTEM_INSTRUCTION = (
     "copied the same way. When a sentence names its source inside itself (for "
     "example 'Rebel Wolves has confirmed that ...', 'Devs X claim to ...', "
     "'according to Y'), copy that phrase as attribution_quote and set speaker to "
-    "the named source. When the article is a company's own press release or a "
+    "the named source. When the attribution sits inside the sentence that "
+    "carries the claim, attribution_quote must be an exact substring of quote: "
+    "copy those words word for word and never rephrase a cue ('announced' stays "
+    "'announced', never 'confirmed'). When the article is a company's own press release or a "
     "post on a company's own site that states the fact in the company's own "
     "voice, set speaker to that company and speaker_type to 'organization' and "
     "use the headline or the sentence that names the company as the announcer "
@@ -2597,29 +2600,103 @@ def apply_absence_rule(claims: list[dict]) -> list[dict]:
     return [_normalize_absence_claim(claim) for claim in claims]
 
 
-def _attribution_has_cue(attribution: str) -> bool:
-    """True when an attribution quote carries one of ``facts.attribution_cues``."""
-    if not attribution:
-        return False
+def _attribution_cue_pattern() -> re.Pattern[str] | None:
+    """The boundary pattern matching any of ``facts.attribution_cues``."""
     cues = [_normalize_evidence(cue) for cue in attribution_cues()]
     cues = [cue for cue in cues if cue]
     if not cues:
-        return False
-    pattern = re.compile(
+        return None
+    return re.compile(
         r"(?<![a-z0-9])(?:" + "|".join(re.escape(cue) for cue in cues) + r")(?![a-z0-9])"
     )
-    return pattern.search(attribution) is not None
 
 
-def _attribution_folds_into_quote(attribution: str, quote: str) -> bool:
-    """True when the attribution is (or is inside, or contains) the claim quote.
+def _attribution_cue_match(text: str) -> re.Match[str] | None:
+    """The leftmost attribution cue occurring in ``text`` (already normalized)."""
+    if not text:
+        return None
+    pattern = _attribution_cue_pattern()
+    return pattern.search(text) if pattern is not None else None
 
-    A fragment of the claim is not an attribution: an attribution quote equal to,
-    contained in, or containing the claim quote credits no speaker.
-    """
-    if not attribution or not quote:
+
+def _attribution_has_cue(attribution: str) -> bool:
+    """True when an attribution quote carries one of ``facts.attribution_cues``."""
+    return _attribution_cue_match(attribution) is not None
+
+
+#: Negations that turn an attribution into a non-statement. An attribution
+#: quote is affirmative only when none of these sits between its start and its
+#: first cue: "Activision hasn't revealed" is the outlet's own wording, never
+#: an Activision statement. The absence rule covers the same words in a
+#: claim's label and value; this covers them in the attribution quote.
+_ATTRIBUTION_NEGATIONS = (
+    "hasn't", "has not", "have not", "haven't", "didn't", "did not",
+    "not yet", "never", "without",
+)
+
+
+def _attribution_is_negated(attribution: str) -> bool:
+    """True when a negation sits between the attribution start and its first cue."""
+    if not attribution:
         return False
-    return attribution == quote or attribution in quote or quote in attribution
+    cue = _attribution_cue_match(attribution)
+    if cue is None:
+        return False
+    prefix = attribution[: cue.start()]
+    return any(_contains_name(prefix, neg) for neg in _ATTRIBUTION_NEGATIONS)
+
+
+def _attribution_names_speaker(attribution: str, names: set[str]) -> bool:
+    """True when the attribution names its speaker or corefers back to it.
+
+    The speaker's own name (or an alias) must occur inside the attribution
+    quote; a coreference phrase ("the company says") qualifies instead, and
+    the grounding rule then decides whether its referent is findable in the
+    headline or the sentences before it.
+    """
+    if not attribution:
+        return False
+    if any(_contains_name(attribution, name) for name in names):
+        return True
+    cue = _attribution_cue_match(attribution)
+    subject = attribution[: cue.start()] if cue is not None else attribution
+    return _is_coreference_phrase(subject.strip(" \t.,;:!?"))
+
+
+def _attribution_from_quote(quote: str, names: set[str]) -> str:
+    """The window of ``quote`` naming the speaker and carrying its first cue.
+
+    Used when the model paraphrased the cue ("has confirmed that" where the
+    source says "has announced that"): the shortest substring of the found
+    quote that contains the speaker's name and an attribution cue becomes the
+    attribution quote. Empty when the quote names no speaker, carries no cue,
+    or the window is negated -- a negated phrase never credits a speaker.
+    """
+    if not quote or not names:
+        return ""
+    pattern = _attribution_cue_pattern()
+    if pattern is None:
+        return ""
+    name_match = None
+    for name in names:
+        match = re.search(rf"\b{re.escape(name)}\b", quote)
+        if match and (name_match is None or match.start() < name_match.start()):
+            name_match = match
+    if name_match is None:
+        return ""
+    cues = list(pattern.finditer(quote))
+    after = [match for match in cues if match.start() >= name_match.start()]
+    before = [match for match in cues if match.end() <= name_match.start()]
+    if after:
+        cue_match = after[0]
+    elif before:
+        cue_match = before[-1]
+    else:
+        return ""
+    window = quote[min(name_match.start(), cue_match.start()): max(name_match.end(), cue_match.end())]
+    if _attribution_is_negated(window):
+        return ""
+    return window
 
 
 def _evidence_speaker_names(speaker: object, aliases: dict[str, str]) -> set[str]:
@@ -2785,7 +2862,11 @@ def verify_evidence(
     * ``quote_found`` / ``attribution_found`` -- the claim's ``quote`` and
       ``attribution_quote`` occur verbatim in the source text or, for the
       attribution, the source title (after the normalization in
-      :func:`_normalize_evidence`).
+      :func:`_normalize_evidence`). An attribution additionally must carry an
+      attribution cue, name its speaker (or corefer back to it) and be
+      affirmative; when it is not found verbatim, a window of the found quote
+      that names the speaker and carries a cue repairs it and sets
+      ``repaired_attribution``.
     * ``attribution_mode`` -- how the speaker is credited: ``explicit`` (the
       attribution quote is found), ``first_party_site`` (a tier-1 source whose
       speaker is the organization that owns the site), ``headline_announcement``
@@ -2819,23 +2900,40 @@ def verify_evidence(
     speaker = str(claim.get("speaker") or "").strip()
     speaker_type = _normalize_speaker_type(claim.get("speaker_type"))
 
+    names = _evidence_speaker_names(speaker, aliases) if speaker else set()
+    absence = is_absence_claim(claim)
+
     quote_found = bool(quote) and quote in text
     attribution_found = bool(attribution) and (attribution in text or attribution in headline)
+    # Paraphrase repair: when the model's attribution quote is not in the
+    # source but the found quote itself names the speaker and carries a cue
+    # ("Rebel Wolves has announced that ..."), that substring of the quote
+    # becomes the attribution and the entry is flagged repaired. A negated
+    # attribution or a quote without a cue is never repaired.
+    repaired_attribution = False
+    if attribution and not attribution_found and quote_found and not absence:
+        repaired = _attribution_from_quote(quote, names)
+        if repaired:
+            attribution = repaired
+            attribution_found = True
+            repaired_attribution = True
     # Attribution hardening: a quote only credits a speaker when it carries an
-    # attribution cue and is not a fragment of the claim itself. "Activision
-    # hasn't revealed" is a slice of the claim, not a speaker saying anything.
+    # attribution cue, names that speaker (or corefers back to it) and is
+    # affirmative: no negation between its start and its first cue. An
+    # attribution that sits inside the claim's own sentence is accepted.
+    # "Activision hasn't revealed" is the outlet's own wording, not a speaker.
     # A first-party own-site post or a headline announcement credits its speaker
     # through its mode, so it never needs the cue.
     if attribution_found and not _attribution_has_cue(attribution):
         attribution_found = False
-    if attribution_found and _attribution_folds_into_quote(attribution, quote):
+    if attribution_found and not _attribution_names_speaker(attribution, names):
+        attribution_found = False
+    if attribution_found and _attribution_is_negated(attribution):
         attribution_found = False
 
-    absence = is_absence_claim(claim)
     if absence:
         attribution_found = False
 
-    names = _evidence_speaker_names(speaker, aliases) if speaker else set()
     owner_names = _source_owner_names(source_owner, source_outlet, aliases)
     mode = _evidence_attribution_mode(
         attribution_found=attribution_found,
@@ -2904,6 +3002,7 @@ def verify_evidence(
     return {
         "quote_found": quote_found,
         "attribution_found": attribution_found,
+        "repaired_attribution": repaired_attribution,
         "attribution_mode": mode,
         "speaker_grounded": speaker_grounded,
         "anonymous": anonymous,
