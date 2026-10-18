@@ -20,7 +20,7 @@ Output is written to ``data/gathered/<cluster-id>.json``:
           "tier": 1, "owner": "...", "region": "us", "published": "...",
           "status": "ok", "text": "<full text>", "error": null,
           "text_origin": "page", "prose_chars": 1234, "prose_lines": 12,
-          "body_status": "ok"
+          "prose_sentences": 12, "body_status": "ok"
         }
 
 ``final_url`` is the URL the page finally resolved to after redirects (equal to
@@ -36,11 +36,13 @@ a file written before fingerprints existed -- means the text is re-fetched and
 the file overwritten, so stale gathered output is never reused.
 
 Not every page's extracted text is article body: a navigation shell or a wall of
-tile headlines can pass a naive character count. The text is measured in prose
-lines (see :func:`prose_measure`) and each source carries ``prose_chars``,
-``prose_lines``, ``body_status`` (``ok``, ``no_body`` or, once facts run,
-``headline_only``) and ``text_origin`` (``page`` or ``feed``). When the page is
-``no_body`` the feed entry's own ``content`` is used instead.
+tile headlines can pass a naive character count, and a post can be one or two
+long paragraphs that hold no line of its own. The text is measured in prose
+sentences (see :func:`prose_measure`) and each source carries ``prose_chars``,
+``prose_lines`` (the prose sentence count, kept under its historical name),
+``prose_sentences`` (the same count), ``body_status`` (``ok``, ``no_body`` or,
+once facts run, ``headline_only``) and ``text_origin`` (``page`` or ``feed``).
+When the page is ``no_body`` the feed entry's own ``content`` is used instead.
 
 Source text is used ONLY by the facts stage (PLAN.md pipeline stage 5); it is
 never passed to the writer.
@@ -75,21 +77,22 @@ USER_AGENT = "GamersXpress/0.1 (+https://gamersxpress.com; news-pipeline)"
 FETCH_TIMEOUT_SECONDS = 20
 REQUEST_DELAY_SECONDS = 1.0
 # Bump when fetch/extract handling that can change the stored text is tuned, so
-# previously-gathered files read as stale and are re-fetched.
-GATHER_SETTINGS_VERSION = 6
+# previously-gathered files read as stale and are re-fetched. Also bump when the
+# prose measure itself changes, so cached prose fields are re-measured.
+GATHER_SETTINGS_VERSION = 7
 
 # A page's "text" is only usable as article body when enough of it is prose. A
 # navigation shell, a wall of tile headlines or a "keep reading" strip can pass a
-# naive character count, so the body is measured in prose lines instead: a line
-# of at least :data:`PROSE_MIN_LINE_WORDS` words that ends in sentence
-# punctuation and holds at least one lowercase word. A source is ``ok`` when its
-# text has at least :data:`PROSE_MIN_CHARS` such characters across at least
-# :data:`PROSE_MIN_LINES` lines; otherwise it is ``no_body`` (page and feed both
-# empty of prose) and, once facts run, a ``headline_only`` source that may add
-# only the claim its own title states.
+# naive character count, and a post can be one or two long paragraphs, so the
+# body is measured in prose sentences instead: a sentence of at least
+# :data:`PROSE_MIN_SENTENCE_WORDS` words that holds at least one lowercase word.
+# A source is ``ok`` when its text has at least :data:`PROSE_MIN_CHARS`
+# characters across at least :data:`PROSE_MIN_LINES` prose sentences; otherwise
+# it is ``no_body`` (page and feed both empty of prose) and, once facts run, a
+# ``headline_only`` source that may add only the claim its own title states.
 PROSE_MIN_CHARS = 400
 PROSE_MIN_LINES = 3
-PROSE_MIN_LINE_WORDS = 8
+PROSE_MIN_SENTENCE_WORDS = 6
 #: Boilerplate lines shorter than this are dropped before measuring (a heading
 #: or a title survives even when short).
 PROSE_MIN_BOILERPLATE_WORDS = 4
@@ -111,8 +114,20 @@ DEFAULT_BOILERPLATE_PATTERNS = (
     "cookie",
 )
 
-#: Sentence-final punctuation, optionally followed by a closing quote.
-_SENTENCE_END_RE = re.compile(r'[.!?](?:["\')\u201d\u2019])?$')
+#: A sentence break: sentence-final punctuation (``. ! ?``, optionally closed by
+#: a quote) followed by whitespace and then an uppercase letter or a quote. A
+#: bullet dash before that opener (PC Gamer-style ``- A new region ...``) also
+#: opens a sentence, so bullet lines count as prose sentences of their own.
+_SENTENCE_BREAK_RE = re.compile(
+    r'[.!?](?:["\')\u201d\u2019])?(?=\s+(?:[-\u2013\u2014]\s+)?["\u201c\u2018(A-Z])'
+)
+#: Common abbreviations that end in a period but never end a sentence, so a
+#: break after them (``Mr. Smith``, ``the U.S. release``) is refused.
+_ABBREVIATIONS = frozenset({
+    "mr", "mrs", "ms", "dr", "prof", "st", "vs", "etc", "jr", "sr",
+    "no", "inc", "ltd", "co", "approx", "dept", "est", "vol",
+    "u.s", "u.k", "e.g", "i.e", "a.m", "p.m",
+})
 #: A line of at least one lowercase word carries prose, not just Title Case chrome.
 _HAS_LOWERCASE_WORD_RE = re.compile(r"(?<![A-Za-z])[a-z][A-Za-z'\-]*(?![A-Za-z])")
 
@@ -337,29 +352,54 @@ def strip_boilerplate(text: object, patterns: list[str], *, title: str | None = 
     return "\n".join(kept)
 
 
-def _is_prose_line(line: str) -> bool:
-    """True when a line reads as prose: long, lowercase-bearing, sentence-ended."""
-    stripped = line.strip()
-    if not stripped or not _SENTENCE_END_RE.search(stripped):
+def _split_sentences(text: str) -> list[str]:
+    """Split ``text`` into sentences after ``. ! ?`` + whitespace + uppercase.
+
+    A break after a common abbreviation (``Mr.``, ``Dr.``, ``vs.``, ``U.S.``,
+    ``etc.``, ``e.g.``) is refused, so those never over-split a sentence.
+    """
+    sentences: list[str] = []
+    start = 0
+    for match in _SENTENCE_BREAK_RE.finditer(text):
+        if text[match.start()] == "." and text[:match.start()].split():
+            if text[:match.start()].split()[-1].lower() in _ABBREVIATIONS:
+                continue
+        sentence = text[start:match.end()].strip()
+        if sentence:
+            sentences.append(sentence)
+        start = match.end()
+    tail = text[start:].strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def _is_prose_sentence(sentence: str) -> bool:
+    """True when a sentence reads as prose: long enough, lowercase-bearing."""
+    if not sentence or len(sentence.split()) < PROSE_MIN_SENTENCE_WORDS:
         return False
-    if len(stripped.split()) < PROSE_MIN_LINE_WORDS:
-        return False
-    return bool(_HAS_LOWERCASE_WORD_RE.search(stripped))
+    return bool(_HAS_LOWERCASE_WORD_RE.search(sentence))
 
 
 def prose_measure(text: object) -> dict:
-    """Measure prose in ``text``: its characters, line count and body status.
+    """Measure prose in ``text``: its characters, sentence count, body status.
 
-    ``body_status`` is ``ok`` when the text carries at least
-    :data:`PROSE_MIN_CHARS` prose characters across at least
-    :data:`PROSE_MIN_LINES` prose lines, else ``no_body``.
+    The cleaned text is split into sentences and ``prose_chars`` is the total
+    length of those that count as prose (at least
+    :data:`PROSE_MIN_SENTENCE_WORDS` words, at least one lowercase word).
+    ``prose_lines`` holds the prose sentence count (kept under its historical
+    name, mirrored by ``prose_sentences``) and ``body_status`` is ``ok`` when
+    that count reaches :data:`PROSE_MIN_LINES` and ``prose_chars`` reaches
+    :data:`PROSE_MIN_CHARS`, else ``no_body``.
     """
-    lines = [line.strip() for line in str(text or "").splitlines() if _is_prose_line(line)]
-    chars = sum(len(line) for line in lines)
-    ok = chars >= PROSE_MIN_CHARS and len(lines) >= PROSE_MIN_LINES
+    sentences = [s for s in _split_sentences(str(text or "")) if _is_prose_sentence(s)]
+    chars = sum(len(sentence) for sentence in sentences)
+    count = len(sentences)
+    ok = chars >= PROSE_MIN_CHARS and count >= PROSE_MIN_LINES
     return {
         "prose_chars": chars,
-        "prose_lines": len(lines),
+        "prose_lines": count,
+        "prose_sentences": count,
         "body_status": "ok" if ok else "no_body",
     }
 
@@ -374,6 +414,7 @@ def _no_body_fields(text_origin: str | None = None) -> dict:
     return {
         "prose_chars": 0,
         "prose_lines": 0,
+        "prose_sentences": 0,
         "body_status": "no_body",
         "text_origin": text_origin,
     }
@@ -401,7 +442,7 @@ def gather(
 
     fingerprint = stage_fingerprint(
         name, "gather", GATHER_SETTINGS_VERSION, FETCH_TIMEOUT_SECONDS, USER_AGENT,
-        PROSE_MIN_CHARS, PROSE_MIN_LINES, PROSE_MIN_LINE_WORDS,
+        PROSE_MIN_CHARS, PROSE_MIN_LINES, PROSE_MIN_SENTENCE_WORDS,
         PROSE_MIN_BOILERPLATE_WORDS, tuple(patterns),
     )
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -512,7 +553,8 @@ def _fetch_one(
     return {
         **base, "status": "ok", "text": text, "error": None, "final_url": final_url,
         "text_origin": "page", "prose_chars": page["prose_chars"],
-        "prose_lines": page["prose_lines"], "body_status": "headline_only",
+        "prose_lines": page["prose_lines"], "prose_sentences": page["prose_sentences"],
+        "body_status": "headline_only",
     }
 
 

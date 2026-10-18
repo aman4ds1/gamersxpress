@@ -581,3 +581,81 @@ def test_source_with_no_page_or_feed_body_becomes_headline_only(tmp_path):
     assert source["body_status"] == "headline_only"
     assert source["text_origin"] == "page"
     assert source["text"] == NAV_SHELL
+
+
+# --- sentence measure: prose sentences, not lines ----------------------------
+
+TECHPOWERUP_POST = " ".join(
+    [
+        "Nvidia has officially confirmed the launch window for its next-generation graphics card lineup during a briefing this week.",
+        "The company stated that the new cards will arrive in early 2027, roughly a year after the current generation debuted.",
+        "According to the briefing, the flagship model will target 4K gaming at high refresh rates with improved ray tracing.",
+        "Pricing has not been finalized, though analysts expect the range to start where the previous series did last year.",
+        "Board partners are reportedly preparing overclocked variants with beefier coolers for enthusiasts who want headroom.",
+        "The new architecture promises better power efficiency, which should translate into quieter cards under sustained loads.",
+        "Laptop versions are expected to follow a few months later, bringing the same design to thin and light machines too.",
+        "Early benchmarks leaked last month suggested meaningful gains, but Nvidia has not independently verified those figures.",
+        "Supplies are expected to be limited at first, following the pattern seen with recent high-demand hardware launches.",
+        "Developers we spoke with said the extra memory will help with texture-heavy titles releasing next year across platforms.",
+        "A full reveal is scheduled for the company's spring event, where pricing and availability details are expected.",
+    ]
+)
+
+TWO_LONG_SENTENCES = (
+    "Nvidia has officially confirmed the launch window for its next-generation graphics card lineup during a press briefing "
+    "held this week, and board partners are already teasing their designs for the new hardware. The company added that "
+    "pricing and availability details will be shared much closer to the release date, though early benchmarks leaked last "
+    "month suggest solid generational gains across the entire product lineup for gamers."
+)
+
+FOUR_SENTENCE_PARAGRAPH = (
+    "Nvidia has officially confirmed that the next graphics card family will launch during the first half of the year. "
+    "The announcement came during a detailed press briefing where the company laid out its product roadmap for gamers. "
+    "Partners are already preparing overclocked designs with larger coolers for the flagship models shipping later. "
+    "Pricing and full availability details are expected to arrive much closer to the launch date later this year."
+)
+
+BOILERPLATE_FIRST_APPEARED = (
+    "The post Nvidia confirmed the launch window for its GPU appeared first on TechPowerUp."
+)
+
+
+def test_single_paragraph_eleven_sentence_post_measures_ok():
+    result = gather.prose_measure(TECHPOWERUP_POST)
+    assert result["body_status"] == "ok"
+    assert result["prose_sentences"] == 11
+    assert result["prose_lines"] == 11
+    assert result["prose_chars"] >= gather.PROSE_MIN_CHARS
+    assert 1200 <= len(TECHPOWERUP_POST) <= 1400
+
+
+def test_two_long_sentences_are_still_no_body():
+    result = gather.prose_measure(TWO_LONG_SENTENCES)
+    assert result["prose_sentences"] == 2
+    assert result["prose_chars"] >= gather.PROSE_MIN_CHARS
+    assert result["body_status"] == "no_body"
+
+
+def test_four_sentence_paragraph_of_about_450_characters_is_ok():
+    result = gather.prose_measure(FOUR_SENTENCE_PARAGRAPH)
+    assert result["prose_sentences"] == 4
+    assert 400 <= len(FOUR_SENTENCE_PARAGRAPH) <= 500
+    assert result["body_status"] == "ok"
+
+
+def test_boilerplate_first_appeared_line_is_no_body():
+    assert len(BOILERPLATE_FIRST_APPEARED) == 86
+    result = gather.prose_measure(BOILERPLATE_FIRST_APPEARED)
+    assert result["prose_chars"] == 86
+    assert result["prose_sentences"] == 1
+    assert result["body_status"] == "no_body"
+
+
+def test_sentence_split_never_breaks_after_common_abbreviations():
+    may = (
+        "Mr. Smith said the U.S. release is set for May, and Dr. Jones added that "
+        "vs. mode returns later this year. The team shared the news today."
+    )
+    etc = "The patch adds maps, skins, etc. The team shared the news today."
+    assert gather.prose_measure(may)["prose_sentences"] == 2
+    assert gather.prose_measure(etc)["prose_sentences"] == 1
