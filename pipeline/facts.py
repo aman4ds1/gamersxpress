@@ -1207,11 +1207,14 @@ def _numbers_in(text: object) -> set[str]:
 
 
 def _capitalized_terms(text: object) -> set[str]:
-    """Folded capitalized terms in a value, ignoring its first (sentence) word.
+    """Normalized capitalized terms in a value, ignoring its first (sentence) word.
 
     Sentence-initial capitalization is not evidence, so "The" is skipped while
     real names and acronyms ("PvE", "Steam", "October") are checked against the
-    source text. Folded for comparison, so "Tōkon" matches "Tokon".
+    source text. Each term is normalized (:func:`_grounding_normalize`), so a
+    possessive or curly apostrophe never hides a name the source states bare
+    ("Dawnwalker's" matches "Dawnwalker" and "Dawnwalker’s"; "Michał" matches
+    "Michal").
     """
     raw = str(text or "")
     tokens = _GROUNDING_WORD_RE.findall(raw)
@@ -1220,7 +1223,9 @@ def _capitalized_terms(text: object) -> set[str]:
         if index == 0:
             continue
         if token[0].isupper() and any(char.isalpha() for char in token):
-            terms.add(cluster.strip_diacritics(token).lower())
+            term = _grounding_normalize(token)
+            if term:
+                terms.add(term)
     return terms
 
 
@@ -1231,6 +1236,30 @@ def _word_in(text: object, phrase: str) -> bool:
     if not needle:
         return False
     return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack) is not None
+
+
+def _grounding_normalize(text: object) -> str:
+    """Case-, diacritics-, apostrophe- and possessive-insensitive form.
+
+    ``cluster.match_normalize`` folds case and diacritics (its explicit map
+    covers the letters NFKD never decomposes: ł, ø, đ, ß, æ, œ), treats curly
+    and straight apostrophes alike and strips possessive "'s"/"s'". Applying it
+    to both sides of every capitalized-term match means a claim's
+    "Dawnwalker's" is grounded by a source that writes "Dawnwalker" or
+    "Dawnwalker’s".
+    """
+    return cluster.match_normalize(str(text or ""))
+
+
+def _grounding_term_in(haystack: str, term: str) -> bool:
+    """True when a normalized term sits on word boundaries in a haystack.
+
+    Both arguments come from :func:`_grounding_normalize`, so spaces are the
+    only word separators and spaced containment is exact boundary matching.
+    """
+    if not term:
+        return False
+    return f" {term} " in f" {haystack} "
 
 
 #: Month name (full or abbreviated) -> calendar month number, for parsing
@@ -1381,21 +1410,25 @@ def grounding_failure(
     claim: dict,
     source_text: object,
     *,
+    title: str = "",
     anchor: Optional[dt.date] = None,
     anchors: Optional[Iterable[dt.date]] = None,
 ) -> Optional[str]:
     """Why a claim's value or label goes beyond its source, or ``None``.
 
-    Checked against the claim's own source text, diacritics-insensitive: every
-    number in the value must appear in the text, every capitalized name or
-    acronym the value uses must appear in the text, an absolute qualifier
-    ("full", "complete") is allowed only when the text uses it, and a contrast
-    connective in the label ("and not", "rather than") is allowed only when the
-    text states it. ``anchors`` are the source's publication dates (its URL date
-    and its feed date); a single ``anchor`` is accepted for callers that have
-    only one. Figures equal to any component of an anchor (year, month, day, in
-    any common format, the month's name and abbreviation included) count as
-    grounded too, because such tokens come from the date rather than the body.
+    Checked against the claim's own source text and title: every number in the
+    value must appear in the text, every capitalized name or acronym the value
+    uses must appear in the text or title, an absolute qualifier ("full",
+    "complete") is allowed only when the text uses it, and a contrast connective
+    in the label ("and not", "rather than") is allowed only when the text states
+    it. Capitalized terms are matched after both sides share one normalization
+    (:func:`_grounding_normalize`), so possessives, curly apostrophes and
+    non-NFKD letters (ł, ø, đ, ß, æ, œ) never hide a name the source states in
+    another spelling. ``anchors`` are the source's publication dates (its URL
+    date and its feed date); a single ``anchor`` is accepted for callers that
+    have only one. Figures equal to any component of an anchor (year, month,
+    day, in any common format, the month's name and abbreviation included) count
+    as grounded too, because such tokens come from the date rather than the body.
 
     Dates are compared as calendar dates, not digit strings, so a value written
     as "2026-11-02" is grounded by a body that says "November 2", and a value's
@@ -1411,6 +1444,7 @@ def grounding_failure(
     value = str(claim.get("value") or "")
     label = str(claim.get("claim") or "")
     source = str(source_text or "")
+    haystack = _grounding_normalize(f"{source} {title}")
     anchor_figures: set[str] = set()
     anchor_terms: set[str] = set()
     for item in anchors:
@@ -1432,7 +1466,7 @@ def grounding_failure(
     for term in _capitalized_terms(value):
         if term in anchor_terms or term in month_words:
             continue
-        if not _word_in(source, term):
+        if not _grounding_term_in(haystack, term):
             return f"value names {term!r} the source never gives"
     for qualifier in _ABSOLUTE_QUALIFIERS:
         if _word_in(value, qualifier) and not _word_in(source, qualifier):
@@ -1465,6 +1499,7 @@ def ground_claims_details(
         reason = grounding_failure(
             claim,
             source.get("text") or "",
+            title=str(source.get("title") or ""),
             anchors=_source_anchors(source),
         )
         if reason is None:

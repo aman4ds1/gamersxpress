@@ -1839,6 +1839,72 @@ def test_grounding_accepts_a_date_equal_to_the_feed_anchor():
     assert facts.grounding_failure(claim_, body, anchor=dt.date(2026, 10, 11)) is None
 
 
+# --- possessive names ground against the source's bare spelling --------------
+
+
+def test_grounding_possessive_name_is_grounded_by_a_bare_source():
+    body = "A Dawnwalker sequel was announced today."
+    value = claim(claim="Sequel", value="Sequel to Dawnwalker's remake announced")
+    assert facts.grounding_failure(value, body) is None
+
+
+def test_grounding_possessive_matches_bare_and_curly_apostrophe_spellings():
+    body = "A Dawnwalker sequel was announced today."
+    curly_body = "The Dawnwalker\u2019s team confirmed it."
+    straight = claim(claim="Sequel", value="Sequel to Dawnwalker's remake announced")
+    curly = claim(claim="Sequel", value="Sequel to Dawnwalker\u2019s remake announced")
+    for value in (straight, curly):
+        assert facts.grounding_failure(value, body) is None
+        assert facts.grounding_failure(value, curly_body) is None
+
+
+def test_grounding_ubisofts_possessive_is_grounded_by_ubisoft():
+    body = "Ubisoft confirmed the port today."
+    value = claim(claim="Port", value="Port of Ubisoft's remake confirmed")
+    assert facts.grounding_failure(value, body) is None
+
+
+def test_grounding_reds_possessive_is_grounded_by_red():
+    body = "Red returns in a new saga."
+    value = claim(claim="Chapter", value="Chapter of Red's saga announced")
+    assert facts.grounding_failure(value, body) is None
+
+
+def test_grounding_folds_non_nfkd_letters_on_both_sides():
+    michal = claim(claim="Studio", value="Sequel to Michal's studio announced")
+    michal_diacritic = claim(claim="Studio", value="Sequel to Micha\u0142's studio announced")
+    assert facts.grounding_failure(michal, "Micha\u0142 confirmed the plan today.") is None
+    assert facts.grounding_failure(michal_diacritic, "Michal confirmed the plan today.") is None
+    ligature = claim(claim="Studio", value="Sequel to \u0152uvre Studio's remake announced")
+    assert facts.grounding_failure(ligature, "Oeuvre Studio confirmed a sequel today.") is None
+    slashed = claim(claim="Port", value="Port of Gr\u00f8ndal's studio confirmed")
+    assert facts.grounding_failure(slashed, "Grondal confirmed a port today.") is None
+
+
+def test_grounding_title_can_ground_a_possessive_term_the_body_never_states():
+    body = "A sequel was announced today."
+    value = claim(claim="Sequel", value="Sequel to Dawnwalker's remake announced")
+    assert facts.grounding_failure(value, body, title="Dawnwalker hits 2027") is None
+
+
+def test_grounding_still_drops_a_capitalized_term_the_source_never_mentions():
+    body = "Dawnwalker announced a sequel today."
+    value = claim(claim="Sequel", value="Sequel to Interplay's remake announced")
+    reason = facts.grounding_failure(value, body)
+    assert reason is not None
+    assert "interplay" in reason
+
+
+def test_grounding_dates_and_numbers_still_drop_when_unsupported():
+    body = "Dawnwalker announced a sequel today."
+    number_value = claim(claim="Pre-orders", value="Dawnwalker sequel reaches 368,000 pre-orders")
+    number_reason = facts.grounding_failure(number_value, body)
+    assert number_reason is not None and "368000" in number_reason
+    date_value = claim(claim="Release date", value="Dawnwalker sequel arrives on November 3")
+    date_reason = facts.grounding_failure(date_value, body)
+    assert date_reason is not None and "November 3" in date_reason
+
+
 TOKON_TITLE = (
     "Marvel Tōkon: Fighting Souls reveals its Year 1 DLC roster, "
     "starting with Phoenix Cyclops on 2nd November"
