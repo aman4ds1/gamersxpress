@@ -4,6 +4,7 @@ import pytest
 
 import dryrun
 import facts
+import gather
 import json_schema
 import seo
 import verify
@@ -14,12 +15,20 @@ def test_make_generate_answers_facts_schema():
     generation = generate("fast", "prompt", facts.CLAIM_SCHEMA)
     assert generation.family == "google"
     payload = generation.value
+    assert json_schema.schema_errors(payload, facts.CLAIM_SCHEMA) == []
+    # The mock answers with sentence ids, and every cited id resolves to a
+    # sentence of the sample prose (S0 is empty: the sample has no title).
+    numbered = [""] + gather._split_sentences(dryrun._SOURCE_PROSE)
     prose = dryrun._SOURCE_PROSE.lower()
     for claim in payload["claims"]:
         assert claim["source_url"].startswith("https://")
         assert claim["speaker_type"] in facts.SPEAKER_TYPES
-        assert claim["quote"].lower() in prose
-        assert claim["attribution_quote"].lower() in prose
+        assert claim["quote_ids"]
+        for sentence_id in claim["quote_ids"] + claim["attribution_ids"]:
+            assert isinstance(sentence_id, int)
+            assert 0 <= sentence_id < len(numbered)
+        for sentence_id in claim["quote_ids"]:
+            assert numbered[sentence_id].lower() in prose
 
 
 def test_make_generate_answers_seo_schema():

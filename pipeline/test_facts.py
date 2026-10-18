@@ -23,12 +23,13 @@ def gathered(id="story-1", sources=None):
     return {"id": id, "gathered_at": NOW.isoformat(), "sources": sources or [source()]}
 
 
-def claim(claim="Announcement happened", value="it happened", source_url="https://a.example/1", confidence=0.9, kind="confirmed", origin="test-origin", affiliation="", quote="", attribution_quote="", speaker="", speaker_type="none"):
+def claim(claim="Announcement happened", value="it happened", source_url="https://a.example/1", confidence=0.9, kind="confirmed", origin="test-origin", affiliation="", quote="", attribution_quote="", speaker="", speaker_type="none", quote_ids=(), attribution_ids=()):
     return {
         "claim": claim, "value": value, "source_url": source_url,
         "confidence": confidence, "origin": origin, "kind": kind,
         "affiliation": affiliation,
         "quote": quote, "attribution_quote": attribution_quote,
+        "quote_ids": list(quote_ids), "attribution_ids": list(attribution_ids),
         "speaker": speaker, "speaker_type": speaker_type,
     }
 
@@ -949,8 +950,19 @@ def test_build_prompt_includes_source_text_and_cap():
 def test_build_prompt_truncates_long_text():
     long_text = "word " * 6000
     prompt = facts.build_prompt("s", source(text=long_text))
-    assert "[truncated]" in prompt
     assert len(prompt) < len(long_text)
+    # The text is cut to its character cap before it is numbered, so no
+    # "[truncated]" marker appears inside the numbered block a quote is cited
+    # from.
+    assert "[truncated]" not in prompt
+
+
+def test_build_prompt_numbers_the_sentences_it_offers_for_citation():
+    text = " ".join(f"Fact {index}." for index in range(1, 121))
+    prompt = facts.build_prompt("s", source(text=text))
+    assert "S1: Fact 1." in prompt
+    assert "S80:" in prompt
+    assert "S81:" not in prompt
 
 
 def test_build_prompt_includes_headline_and_headline_claim_instruction():
@@ -3302,11 +3314,17 @@ def test_facts_records_a_corroborated_version_and_diagnostics(tmp_path):
 
 def test_claim_schema_requires_the_evidence_fields():
     item = facts.CLAIM_SCHEMA["properties"]["claims"]["items"]
-    for field in ("quote", "attribution_quote", "speaker", "speaker_type"):
+    for field in ("quote_ids", "attribution_ids", "speaker", "speaker_type"):
         assert field in item["properties"]
         assert field in item["required"]
+    assert item["properties"]["quote_ids"]["type"] == "array"
+    assert item["properties"]["quote_ids"]["items"] == {"type": "integer"}
+    assert item["properties"]["attribution_ids"]["items"] == {"type": "integer"}
     assert item["properties"]["speaker_type"]["enum"] == list(facts.SPEAKER_TYPES)
     assert item["additionalProperties"] is False
+    # The model cites evidence by sentence id; it never returns quote text.
+    assert "quote" not in item["properties"]
+    assert "attribution_quote" not in item["properties"]
 
 
 def test_validate_claims_fills_and_normalizes_evidence_fields():
@@ -3717,6 +3735,238 @@ def test_unconfirmed_sheet_carries_evidence_diagnostics(tmp_path):
     sheet = json.loads((tmp_path / "unconfirmed" / "ev-2.json").read_text(encoding="utf-8"))
     assert sheet["evidence"]
     assert sheet["claims"][0]["evidence"]
+
+
+# --- evidence cited by sentence id (stage 15b) --------------------------------
+
+
+POINTER_TEXT = (
+    "Rebel Wolves has announced that the next update adds petting. "
+    "The update arrives on November 2. "
+    "Analysts said the petting mode may expand later. "
+    "An unrelated sentence about weather patterns follows."
+)
+POINTER_TITLE = "Rebel Wolves announced a petting update"
+
+
+def pointer_sentences():
+    return facts._numbered_sentences(POINTER_TEXT, POINTER_TITLE)
+
+
+def test_numbered_sentences_numbers_the_headline_and_the_body():
+    sentences = pointer_sentences()
+    assert sentences[0] == POINTER_TITLE
+    assert sentences[1] == "Rebel Wolves has announced that the next update adds petting."
+    assert len(sentences) == 5
+
+
+def test_cited_sentence_becomes_the_quote_verbatim():
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Rebel Wolves announced a petting update",
+            value="the next update adds petting",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+            quote_ids=[3],
+            attribution_ids=[],
+        ),
+        pointer_sentences(),
+        aliases={},
+    )
+    assert cited["quote"] == "Analysts said the petting mode may expand later."
+
+
+def test_two_cited_sentences_join_in_order():
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Rebel Wolves announced a petting update",
+            value="the next update adds petting",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+            quote_ids=[2, 1],
+            attribution_ids=[],
+        ),
+        pointer_sentences(),
+        aliases={},
+    )
+    assert cited["quote"] == (
+        "The update arrives on November 2. "
+        "Rebel Wolves has announced that the next update adds petting."
+    )
+
+
+def test_sentence_ids_that_name_no_sentence_are_dropped():
+    assert facts._sentence_ids([3, 3, "x", 1, 2, 4]) == [3, 1, 2]
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Rebel Wolves announced a petting update",
+            value="the next update adds petting",
+            origin="unstated",
+            kind="reported",
+            quote_ids=[1, "S3", 3.5, 1, 99, -2],
+            attribution_ids=[99],
+        ),
+        pointer_sentences(),
+        aliases={},
+    )
+    assert cited["quote"] == pointer_sentences()[1]
+    assert cited["attribution_quote"] == ""
+
+
+def test_cited_headline_credits_the_speaker_in_the_title():
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Rebel Wolves announced a petting update",
+            value="the next update adds petting",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+            quote_ids=[1],
+            attribution_ids=[0],
+        ),
+        pointer_sentences(),
+        aliases={},
+    )
+    assert cited["attribution_quote"] == "Rebel Wolves announced"
+    result = facts.verify_evidence(
+        cited,
+        POINTER_TEXT,
+        POINTER_TITLE,
+        "Rebel Wire",
+        aliases={},
+        source_tier=1,
+        source_owner="rebel",
+    )
+    assert result["attribution_found"] is True
+    assert result["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "sentence, speaker, expected",
+    [
+        (
+            "Rebel Wolves has announced that the next update adds petting.",
+            "Rebel Wolves",
+            "Rebel Wolves has announced",
+        ),
+        ("According to MP1st, the clips show an early build.", "MP1st", "According to MP1st"),
+        (
+            "The Cyberpunk movie won't follow the game, CD Projekt chief says.",
+            "CD Projekt chief",
+            "CD Projekt chief says",
+        ),
+        ("The update adds petting mode.", "Rebel Wolves", ""),
+    ],
+)
+def test_attribution_span_is_the_shortest_cue_span_naming_the_speaker(
+    sentence, speaker, expected
+):
+    names = facts._evidence_speaker_names(speaker, {})
+    assert facts._attribution_span(sentence, names) == expected
+
+
+def test_cited_sentence_that_does_not_support_the_claim_fails():
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="PlayStation Plus adds three new monthly games",
+            value="three new monthly games",
+            origin="Sony",
+            kind="confirmed",
+            speaker="Sony",
+            speaker_type="organization",
+            quote_ids=[4],
+            attribution_ids=[],
+        ),
+        pointer_sentences(),
+        aliases={},
+    )
+    entry = facts._evidence_for_claim(
+        cited,
+        source(link="https://a.example/1", text=POINTER_TEXT, title=POINTER_TITLE),
+        aliases={},
+        entities=["Rebel Wolves"],
+    )
+    assert entry["ok"] is False
+    assert entry["reason"] == "quote does not support claim"
+
+
+def test_claim_citing_no_sentences_keeps_the_quote_missing_failure():
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Rebel Wolves announced a petting update",
+            value="the next update adds petting",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+        ),
+        pointer_sentences(),
+        aliases={},
+    )
+    assert cited["quote"] == ""
+    entry = facts._evidence_for_claim(
+        cited,
+        source(link="https://a.example/1", text=POINTER_TEXT, title=POINTER_TITLE),
+        aliases={},
+        entities=[],
+    )
+    assert entry["reason"] == "quote missing"
+
+
+def test_validate_claims_keeps_literal_quotes_of_an_older_caller():
+    raw = claim(
+        quote="Sony said the console ships in June",
+        attribution_quote="Sony said",
+        speaker="Sony",
+        speaker_type="organization",
+    )
+    validated = facts.validate_claims({"claims": [raw]})[0]
+    assert validated["quote"] == "Sony said the console ships in June"
+    assert validated["attribution_quote"] == "Sony said"
+    assert validated["quote_ids"] == []
+    assert validated["attribution_ids"] == []
+
+
+def test_facts_fills_evidence_from_the_cited_sentence_ids(tmp_path):
+    sources = [
+        source(
+            link="https://a.example/1", tier=1, name="Alpha",
+            text=POINTER_TEXT, title=POINTER_TITLE,
+        )
+    ]
+    payload = {
+        "claims": [
+            claim(
+                claim="Rebel Wolves announced a petting update",
+                value="the next update adds petting",
+                origin="Rebel Wolves",
+                kind="confirmed",
+                source_url="https://a.example/1",
+                speaker="Rebel Wolves",
+                speaker_type="organization",
+                quote_ids=[1],
+                attribution_ids=[1],
+            )
+        ]
+    }
+    sheet = facts.facts(
+        gathered("pc-1", sources),
+        id="pc-1",
+        title=POINTER_TITLE,
+        entities=["Rebel Wolves"],
+        output_dir=tmp_path,
+        now=NOW,
+        generate=make_generate(payload),
+    )
+    evidence = sheet["claims"][0]["evidence"][0]
+    assert evidence["quote"] == "Rebel Wolves has announced that the next update adds petting."
+    assert evidence["attribution_quote"] == "Rebel Wolves has announced"
+    assert evidence["ok"] is True
 
 
 # --- code-set source URLs, grouping guards and evidence confirmation --------- -
@@ -4679,11 +4929,13 @@ def test_evidence_confirmation_tier1_unrelated_speaker_is_not_first_party():
     assert result["first_party_organizations"] == []
 
 
-def test_extraction_prompt_states_the_in_sentence_attribution_rule():
-    assert facts.PROMPT_VERSION == "facts-v12"
+def test_extraction_prompt_states_the_sentence_citation_rule():
+    assert facts.PROMPT_VERSION == "facts-v13"
     instruction = facts.SYSTEM_INSTRUCTION
+    assert "Evidence is cited by numbered sentence, never copied" in instruction
     assert "Rebel Wolves has confirmed that" in instruction
-    assert "copy that phrase as attribution_quote and set speaker to the named source" in instruction
+    assert "cite that sentence in both quote_ids and attribution_ids" in instruction
+    assert "Never cite a number that is not given in the numbered text" in instruction
 
 
 # --- headline-only sources: one title claim, never a model call ---------------

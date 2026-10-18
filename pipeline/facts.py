@@ -99,6 +99,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Iterable
 
 import cluster
+import gather
+import gates
 from ingest import normalize_url
 from providers import (
     Generation,
@@ -123,6 +125,16 @@ MAX_FIELD_CHARS = 300
 MAX_QUOTE_CHARS = 300
 MAX_ATTRIBUTION_QUOTE_CHARS = 200
 EVIDENCE_FIELD_CHARS = 200
+# The extractor cites evidence by numbered-sentence pointer instead of copying
+# words: a claim names at most this many sentences for its quote and for its
+# attribution, and a source offers at most this many numbered body sentences
+# (plus S0, the title), so an id can never point past what the prompt showed.
+MAX_EVIDENCE_IDS = 3
+MAX_EVIDENCE_SENTENCES = 80
+# A cited sentence only credits its speaker when the speaker's name sits within
+# this many words of an attribution cue; the shortest span around the two
+# becomes the claim's attribution quote.
+ATTRIBUTION_SPAN_MAX_GAP_WORDS = 12
 # Extraction runs once per source; one long article may contribute at most this
 # many claims, so it cannot crowd out the story's other sources. Overridable per
 # story via `facts.max_claims_per_source` in config.yaml.
@@ -140,7 +152,7 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v12"
+PROMPT_VERSION = "facts-v13"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -486,8 +498,12 @@ CLAIM_SCHEMA: dict[str, Any] = {
                     "origin": {"type": "string"},
                     "affiliation": {"type": "string"},
                     "kind": {"type": "string", "enum": list(KIND_STRENGTH)},
-                    "quote": {"type": "string"},
-                    "attribution_quote": {"type": "string"},
+                    # Evidence is cited by numbered-sentence pointer: the ids
+                    # of the sentences stating the fact and of those attributing
+                    # it (S0 is the title; the size caps are enforced in code,
+                    # not by keywords every strict provider supports).
+                    "quote_ids": {"type": "array", "items": {"type": "integer"}},
+                    "attribution_ids": {"type": "array", "items": {"type": "integer"}},
                     "speaker": {"type": "string"},
                     "speaker_type": {"type": "string", "enum": list(SPEAKER_TYPES)},
                 },
@@ -499,8 +515,8 @@ CLAIM_SCHEMA: dict[str, Any] = {
                     "origin",
                     "affiliation",
                     "kind",
-                    "quote",
-                    "attribution_quote",
+                    "quote_ids",
+                    "attribution_ids",
                     "speaker",
                     "speaker_type",
                 ],
@@ -547,8 +563,8 @@ SYSTEM_INSTRUCTION = (
     "when the body states other facts first.\n"
     "Return each fact as an object with: claim (a short statement), value (the "
     "concrete value or a one-line summary), source_url (the exact URL given "
-    "for this source), confidence (0 to 1), origin, affiliation, kind, quote, "
-    "attribution_quote, speaker, and speaker_type.\n"
+    "for this source), confidence (0 to 1), origin, affiliation, kind, "
+    "quote_ids, attribution_ids, speaker, and speaker_type.\n"
     "origin names who produced the claim: the company or official source, or "
     "the analyst or firm the article cites (for example 'Sony', 'Sensor "
     "Tower'). When the article does not say who produced the claim, set origin "
@@ -558,33 +574,38 @@ SYSTEM_INSTRUCTION = (
     "producer). Always include the affiliation field in every claim: when the "
     "origin is a company itself, or the article names no organization, set "
     "affiliation to an empty string \"\" (never omit the key).\n"
-    "quote is the exact sentence or clause in the text that states the fact, "
-    "copied word for word: never paraphrase it, never shorten it with an "
-    "ellipsis, and never fix its spelling, its quotation marks or its dashes. "
-    "attribution_quote is the exact words in the text that attribute the fact to "
-    "its speaker (for example 'according to Epic Games' or 'Epic Games said'), "
-    "copied the same way. When a sentence names its source inside itself (for "
-    "example 'Rebel Wolves has confirmed that ...', 'Devs X claim to ...', "
-    "'according to Y'), copy that phrase as attribution_quote and set speaker to "
-    "the named source. When the attribution sits inside the sentence that "
-    "carries the claim, attribution_quote must be an exact substring of quote: "
-    "copy those words word for word and never rephrase a cue ('announced' stays "
-    "'announced', never 'confirmed'). When the article is a company's own press release or a "
-    "post on a company's own site that states the fact in the company's own "
-    "voice, set speaker to that company and speaker_type to 'organization' and "
-    "use the headline or the sentence that names the company as the announcer "
-    "(for example 'Acme Games announces ...') as the attribution_quote. When an "
-    "outlet reports a fact without attributing it to anyone, leave speaker and "
-    "attribution_quote empty and set speaker_type to 'none'. speaker is the "
-    "person, organization or outlet the fact is attributed to, spelled as the "
-    "text does; when the text attributes it to a pronoun or a common noun ('the "
-    "company', 'the studio'), resolve that to the organization the text named. "
+    "Evidence is cited by numbered sentence, never copied: the article text "
+    "below is numbered S0, S1, ... where S0 is the headline (the TITLE line) "
+    "and S1 onward are the article's sentences in order. quote_ids lists the "
+    "numbers of the sentences that state the fact, in the order they appear and "
+    "at most three (for example [3, 4] cites S3 and S4). attribution_ids lists "
+    "the numbers of the sentences that attribute the fact to its speaker; cite "
+    "a sentence there only when it actually names that speaker with an "
+    "attribution cue (for example 'said', 'announced', 'according to'). Never "
+    "cite a number that is not given in the numbered text, never cite a "
+    "sentence for a different fact, and use an empty list [] when there is "
+    "nothing to cite -- when the text states no words for the fact, names no "
+    "speaker for it, or you are unsure. When a sentence names its source "
+    "inside itself (for example 'Rebel Wolves has confirmed that ...', 'Devs X "
+    "claim to ...', 'according to Y'), cite that sentence in both quote_ids "
+    "and attribution_ids and set speaker to the named source. When the article "
+    "is a company's own press release or a post on a company's own site that "
+    "states the fact in the company's own voice, set speaker to that company "
+    "and speaker_type to 'organization' and cite the headline (S0) or the "
+    "sentence that names the company as the announcer in attribution_ids (for "
+    "example 'Acme Games announces ...'). speaker is the person, organization "
+    "or outlet the fact is attributed to, spelled as the text does; when the "
+    "text attributes it to a pronoun or a common noun ('the company', 'the "
+    "studio'), resolve that to the organization the text named. When an "
+    "outlet reports a fact without attributing it to anyone, leave speaker "
+    "empty, set speaker_type to 'none' and use [] for both id lists. "
     "speaker_type is exactly one of "
     "'organization' (a company, studio or platform holder), 'person', 'outlet' "
     "(the publishing site itself), 'anonymous' (an unnamed source such as "
-    "'people familiar with the matter') or 'none'. Use 'none' and empty strings "
-    "\"\" for quote, attribution_quote and speaker only when the text gives no "
-    "such words; never omit the keys.\n"
+    "'people familiar with the matter') or 'none'. Use 'none' and empty lists "
+    "[] for quote_ids and attribution_ids, and an empty string \"\" for "
+    "speaker, only when the text gives no such sentences; never omit the "
+    "keys.\n"
     "kind is exactly one of: 'confirmed' (the company or an official source "
     "states it, with a named origin), 'reported' (an outlet citing a named "
     "source), 'estimate' (a third-party analyst or data estimate; never label "
@@ -677,6 +698,26 @@ class UnconfirmedStory(Exception):
         self.budget_truncated = bool(budget_truncated)
 
 
+def _numbered_sentences(text: object, title: object = None) -> list[str]:
+    """The citable sentences of one source: S0 (the title) and the body's.
+
+    The body is split with the same splitter the prose measure uses
+    (:func:`gather._split_sentences`) and truncated to the extraction limit
+    first, so every sentence a claim may cite is a verbatim slice of what the
+    prompt showed the model. S0 is always the title (empty when the source has
+    none) and the body contributes at most :data:`MAX_EVIDENCE_SENTENCES`
+    sentences, so the ids stay inside the numbering the prompt printed.
+    """
+    sentences = [str(title or "").strip()]
+    body = str(text or "")[:MAX_SOURCE_CHARS]
+    sentences.extend(
+        sentence.strip()
+        for sentence in gather._split_sentences(body)
+        if sentence.strip()
+    )
+    return sentences[: 1 + MAX_EVIDENCE_SENTENCES]
+
+
 def build_prompt(
     id: str,
     source: dict,
@@ -703,16 +744,15 @@ def build_prompt(
     )
     text = (source.get("text") or "").strip()
     if text:
-        parts.append("TEXT:\n" + _truncate(text))
+        # The article's sentences, numbered S0 (the title) onward: a claim
+        # cites these numbers in quote_ids/attribution_ids and the code copies
+        # the cited sentences verbatim, so the model never transcribes a quote.
+        parts.append("SENTENCES:")
+        for index, sentence in enumerate(_numbered_sentences(text, source.get("title"))):
+            parts.append(f"S{index}: {sentence}")
     else:
         parts.append("TEXT: (no text available)")
     return "\n".join(parts)
-
-
-def _truncate(text: str, limit: int = MAX_SOURCE_CHARS) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit].rstrip() + " [truncated]"
 
 
 def build_grouping_prompt(items: list[dict]) -> str:
@@ -767,17 +807,66 @@ def _clip_field(text: str, limit: int = MAX_FIELD_CHARS) -> str:
     return text[:limit].rstrip()
 
 
+def _sentence_ids(value: object) -> list[int]:
+    """The sentence ids kept from ``value``: non-negative integers, at most
+    :data:`MAX_EVIDENCE_IDS`, duplicates dropped in order of appearance.
+
+    A model that answers a number as a string, cites the same sentence twice
+    or invents a negative index never fails the schema for it: the bad
+    entries are dropped and the rest are cited as given. Whether an id names
+    an existing sentence is decided later, where the source is at hand.
+    """
+    ids: list[int] = []
+    for entry in value if isinstance(value, list) else []:
+        if isinstance(entry, bool) or not isinstance(entry, int):
+            continue
+        if entry < 0 or entry in ids:
+            continue
+        ids.append(entry)
+        if len(ids) >= MAX_EVIDENCE_IDS:
+            break
+    return ids
+
+
+def _legacy_quotes(data: Any) -> list[tuple[str, str]]:
+    """Each claim's literal ``quote``/``attribution_quote``, in claim order.
+
+    Claims written before evidence was cited by sentence id carry their quote
+    as text (an older sheet read back, or an older caller of
+    :func:`validate_claims`). Those fields are not part of the strict schema,
+    so they travel beside it and are re-attached, clipped, by
+    :func:`validate_claims`.
+    """
+    claims = data.get("claims") if isinstance(data, dict) else None
+    if not isinstance(claims, list):
+        return []
+    return [
+        (
+            str(claim.get("quote") or "").strip(),
+            str(claim.get("attribution_quote") or "").strip(),
+        )
+        if isinstance(claim, dict)
+        else ("", "")
+        for claim in claims
+    ]
+
+
 def _with_claim_defaults(data: Any) -> Any:
     """Return ``data`` with the strict string keys filled in when omitted.
 
     Strict JSON schemas (Groq, OpenAI) require every property to appear in
-    ``required``, so the extraction prompt always returns ``affiliation``,
-    ``quote``, ``attribution_quote``, ``speaker`` and ``speaker_type`` and uses
-    ``""`` (or ``"none"`` for ``speaker_type``) when there is none, coercing a
-    ``speaker_type`` outside :data:`SPEAKER_TYPES` to ``"none"``. This keeps our
-    own reader tolerant of an output that nevertheless omits a key -- the empty
-    value and a missing key are the same -- or misspells the type, and of an
-    older sheet written before these fields existed. Anything not shaped like a claims payload is
+    ``required``, so the extraction prompt always returns ``quote_ids``,
+    ``attribution_ids``, ``affiliation``, ``speaker`` and ``speaker_type`` and
+    uses ``[]`` (or ``""`` / ``"none"`` as appropriate) when there is none,
+    coercing a ``speaker_type`` outside :data:`SPEAKER_TYPES` to ``"none"``.
+    Sentence ids are cleaned here (integers only, at most
+    :data:`MAX_EVIDENCE_IDS`, duplicates dropped) so a stray string id never
+    fails schema validation, and an older caller's literal ``quote`` /
+    ``attribution_quote`` fields (remembered by :func:`_legacy_quotes` in
+    :func:`validate_claims`) are removed from the strict payload. This keeps
+    our own reader tolerant of an output that nevertheless omits a key -- the
+    empty value and a missing key are the same -- or misspells the type, and of an
+    older sheet written before evidence was cited by id. Anything not shaped like a claims payload is
     returned untouched and left to :func:`schema_errors` to reject.
     """
     if not isinstance(data, dict):
@@ -785,19 +874,20 @@ def _with_claim_defaults(data: Any) -> Any:
     claims = data.get("claims")
     if not isinstance(claims, list):
         return data
-    normalized = [
-        {
-            **claim,
-            "affiliation": claim.get("affiliation", ""),
-            "quote": claim.get("quote", ""),
-            "attribution_quote": claim.get("attribution_quote", ""),
-            "speaker": claim.get("speaker", ""),
-            "speaker_type": _normalize_speaker_type(claim.get("speaker_type")),
-        }
-        if isinstance(claim, dict)
-        else claim
-        for claim in claims
-    ]
+    normalized: list[Any] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            normalized.append(claim)
+            continue
+        item = dict(claim)
+        item.pop("quote", None)
+        item.pop("attribution_quote", None)
+        item["affiliation"] = claim.get("affiliation", "")
+        item["quote_ids"] = _sentence_ids(claim.get("quote_ids"))
+        item["attribution_ids"] = _sentence_ids(claim.get("attribution_ids"))
+        item["speaker"] = claim.get("speaker", "")
+        item["speaker_type"] = _normalize_speaker_type(claim.get("speaker_type"))
+        normalized.append(item)
     return {**data, "claims": normalized}
 
 
@@ -818,17 +908,21 @@ def validate_claims(data: Any, *, source_url: str | None = None) -> list[dict]:
     but a misspelled or truncated one must never reach the sheet, so the code
     sets it. Without an override the model's URL is kept and must be http(s).
 
-    The evidence fields are kept verbatim but bounded: ``quote`` and
-    ``attribution_quote`` are trimmed and clipped to
-    :data:`MAX_QUOTE_CHARS` / :data:`MAX_ATTRIBUTION_QUOTE_CHARS`, ``speaker``
-    is trimmed, and ``speaker_type`` falls back to ``"none"`` when it is not one
-    of :data:`SPEAKER_TYPES`. Nothing here is lowercased: the quotes are matched
+    The evidence fields are handled differently: the model cites its evidence
+    by sentence id (``quote_ids`` / ``attribution_ids``, kept as cleaned
+    integer lists), while the literal ``quote`` / ``attribution_quote`` fields
+    of an older sheet or caller ride along unchanged -- trimmed and clipped to
+    :data:`MAX_QUOTE_CHARS` / :data:`MAX_ATTRIBUTION_QUOTE_CHARS` -- and become
+    the claim's evidence when it cites no ids. ``speaker`` is trimmed, and
+    ``speaker_type`` falls back to ``"none"`` when it is not one of
+    :data:`SPEAKER_TYPES`. Nothing here is lowercased: the quotes are matched
     case-insensitively by :func:`verify_evidence`, which normalizes both sides.
 
     A missing ``affiliation`` (or evidence) key is treated exactly like an empty
     string before validation, so a model that omits the (now strictly required)
     keys still yields a valid claim.
     """
+    legacy = _legacy_quotes(data)
     data = _with_claim_defaults(data)
     errors = schema_errors(data, CLAIM_SCHEMA)
     if errors:
@@ -844,6 +938,7 @@ def validate_claims(data: Any, *, source_url: str | None = None) -> list[dict]:
         kind = claim["kind"]
         if origin == UNSTATED_ORIGIN and kind in ("confirmed", "estimate"):
             kind = "reported"
+        legacy_quote, legacy_attribution = legacy[index]
         clipped.append(
             _normalize_absence_claim(
                 {
@@ -854,15 +949,14 @@ def validate_claims(data: Any, *, source_url: str | None = None) -> list[dict]:
                     "origin": origin,
                     "affiliation": _normalize_affiliation(claim.get("affiliation")),
                     "kind": kind,
-                    "quote": _clip_field(
-                        str(claim.get("quote") or "").strip(), MAX_QUOTE_CHARS
-                    ),
+                    "quote": _clip_field(legacy_quote, MAX_QUOTE_CHARS),
                     "attribution_quote": _clip_field(
-                        str(claim.get("attribution_quote") or "").strip(),
-                        MAX_ATTRIBUTION_QUOTE_CHARS,
+                        legacy_attribution, MAX_ATTRIBUTION_QUOTE_CHARS
                     ),
                     "speaker": str(claim.get("speaker") or "").strip(),
                     "speaker_type": _normalize_speaker_type(claim.get("speaker_type")),
+                    "quote_ids": list(claim.get("quote_ids") or []),
+                    "attribution_ids": list(claim.get("attribution_ids") or []),
                 }
             )
         )
@@ -5038,6 +5132,139 @@ def _grounding_entry(entry: dict) -> dict:
     return row
 
 
+# --- evidence by cited sentence id -------------------------------------------
+
+
+def _cited_sentences(ids: object, sentences: list[str]) -> list[str]:
+    """The cited sentences in id order, dropping ids that name no sentence."""
+    cited: list[str] = []
+    for index in _sentence_ids(ids):
+        if 0 <= index < len(sentences) and sentences[index]:
+            cited.append(sentences[index])
+    return cited
+
+
+def _attribution_span(sentence: str, names: set[str]) -> str:
+    """The shortest span of ``sentence`` naming the speaker next to a cue.
+
+    The span covers one occurrence of the speaker's name plus the nearest
+    attribution cue within :data:`ATTRIBUTION_SPAN_MAX_GAP_WORDS` words before
+    or after it ("Rebel Wolves has announced", "According to MP1st", "CD
+    Projekt chief says"), so the words that credit the speaker become the
+    claim's attribution quote verbatim. Empty when the sentence names no
+    speaker or carries no cue; whether the span is affirmative is left to
+    :func:`verify_evidence`.
+    """
+    if not sentence or not names:
+        return ""
+    tokens = list(re.finditer(r"[\w']+", sentence))
+    if not tokens:
+        return ""
+    folded = [_normalize_evidence(match.group(0)) for match in tokens]
+    cues = [cue for cue in (_normalize_evidence(cue) for cue in attribution_cues()) if cue]
+    longest = max((len(cue.split()) for cue in cues), default=0)
+    cue_set = set(cues)
+    cue_spans: list[tuple[int, int]] = []
+    for start in range(len(folded)):
+        for length in range(1, longest + 1):
+            if " ".join(folded[start : start + length]) in cue_set:
+                cue_spans.append((start, start + length - 1))
+    if not cue_spans:
+        return ""
+    for name in sorted(names, key=len, reverse=True):
+        words = name.split()
+        if not words:
+            continue
+        size = len(words)
+        for start in range(len(folded) - size + 1):
+            if " ".join(folded[start : start + size]) != name:
+                continue
+            end = start + size - 1
+            best: tuple[tuple[int, int], int, int] | None = None
+            for cue_start, cue_end in cue_spans:
+                if cue_start > end:
+                    gap = cue_start - end - 1
+                elif cue_end < start:
+                    gap = start - cue_end - 1
+                else:
+                    gap = 0
+                if gap > ATTRIBUTION_SPAN_MAX_GAP_WORDS:
+                    continue
+                # The nearest cue wins; a cue after the name ties ahead of one
+                # before it ("Acme said" reads as the attribution, not "said").
+                key = (gap, 0 if cue_start > end else 1)
+                if best is None or key < best[0]:
+                    best = (key, min(start, cue_start), max(end, cue_end))
+            if best is not None:
+                span = sentence[tokens[best[1]].start() : tokens[best[2]].end()]
+                return span.strip().rstrip(" \t.,;:!?").strip()
+    return ""
+
+
+def _cite_claim_evidence(
+    claim: dict,
+    sentences: list[str],
+    *,
+    aliases: dict[str, str],
+) -> dict:
+    """Fill a claim's quote fields from the sentences it cites by id.
+
+    ``quote`` joins the sentences ``quote_ids`` cites, verbatim and in order,
+    clipped to :data:`MAX_QUOTE_CHARS`; ``attribution_quote`` is the shortest
+    span naming the speaker next to a cue in the sentences ``attribution_ids``
+    cites, falling back to the quoted sentences when no attribution sentence
+    is cited (the in-sentence case: "Rebel Wolves has announced that ...").
+    A claim that cites no ids keeps its literal quotes (an older sheet), and
+    ids that name no sentence are dropped.
+    """
+    quote_ids = _sentence_ids(claim.get("quote_ids"))
+    attribution_ids = _sentence_ids(claim.get("attribution_ids"))
+    if not quote_ids and not attribution_ids:
+        return claim
+    quote = " ".join(_cited_sentences(quote_ids, sentences))
+    attributed = _cited_sentences(attribution_ids, sentences) or _cited_sentences(
+        quote_ids, sentences
+    )
+    speaker = str(claim.get("speaker") or "").strip()
+    names = _evidence_speaker_names(speaker, aliases) if speaker else set()
+    attribution = ""
+    for sentence in attributed:
+        attribution = _attribution_span(sentence, names)
+        if attribution:
+            break
+    return {
+        **claim,
+        "quote": _clip_field(quote, MAX_QUOTE_CHARS),
+        "attribution_quote": _clip_field(attribution, MAX_ATTRIBUTION_QUOTE_CHARS),
+    }
+
+
+def _quote_supports_claim(
+    quote: object,
+    claim: dict,
+    entities: list[str] | None,
+) -> bool:
+    """True when the cited quote is about the claim it is cited for.
+
+    A cited sentence must name one of the story's primary entities or share at
+    least two content words (the publish gates' stopword list, via
+    :func:`gates._content_words`) with the claim's label and value, so an id
+    pointing at an unrelated sentence never becomes a claim's evidence.
+    """
+    text = _grounding_normalize(quote)
+    if not text:
+        return False
+    for entity in entities or []:
+        folded = _grounding_normalize(entity)
+        if folded and _grounding_term_in(text, folded):
+            return True
+    label = _grounding_normalize(
+        f"{claim.get('claim', '')} {claim.get('value', '')}"
+    )
+    shared = gates._content_words(label) & gates._content_words(str(quote or ""))
+    return len(shared) >= 2
+
+
 def _evidence_field(value: object, limit: int = EVIDENCE_FIELD_CHARS) -> str:
     return str(value or "").strip()[:limit]
 
@@ -5049,7 +5276,13 @@ def _evidence_for_claim(
     aliases: dict[str, str],
     entities: list[str] | None,
 ) -> dict:
-    """Verify one claim against its own source and tag the result with the URL."""
+    """Verify one claim against its own source and tag the result with the URL.
+
+    The claim's quote fields are the sentences it cited (filled in by
+    :func:`_cite_claim_evidence` before anything else read them); on top of
+    the verbatim checks, the cited quote must be about the claim it is cited
+    for (:func:`_quote_supports_claim`), else the entry fails with that reason.
+    """
     result = verify_evidence(
         claim,
         source.get("text") or "",
@@ -5060,6 +5293,11 @@ def _evidence_for_claim(
         source_tier=source.get("tier"),
         source_owner=source.get("owner"),
     )
+    if claim.get("quote") and not _quote_supports_claim(
+        claim.get("quote"), claim, entities
+    ):
+        result["ok"] = False
+        result["reason"] = "quote does not support claim"
     return {
         "source_url": claim.get("source_url"),
         "speaker": _evidence_field(claim.get("speaker")),
@@ -5227,6 +5465,8 @@ def _headline_only_claim(source: dict, aliases: dict[str, str]) -> dict:
         "kind": "confirmed" if announces else "reported",
         "quote": "",
         "attribution_quote": "",
+        "quote_ids": [],
+        "attribution_ids": [],
         "speaker": str(owner or source_name or ""),
         "speaker_type": "organization",
         "headline_only": True,
@@ -5360,6 +5600,16 @@ def facts(
         # The extraction call's own URL is authoritative: the model is asked to
         # echo it, but a misspelled or truncated URL must never reach the sheet.
         part = validate_claims(generation.value, source_url=source.get("link"))
+
+        # The model cites evidence by numbered sentence; the cited words
+        # become the claim's own verbatim quote and attribution here, before
+        # origin resolution and merging read those fields. Ids that name no
+        # sentence are dropped, and a claim citing nothing keeps whatever
+        # literal quote an older payload gave it.
+        sentences = _numbered_sentences(text, source.get("title"))
+        part = [
+            _cite_claim_evidence(item, sentences, aliases=aliases) for item in part
+        ]
 
         if len(part) > max_claims:
             logger.warning(

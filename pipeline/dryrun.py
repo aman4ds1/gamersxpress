@@ -152,9 +152,10 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
     The readiness check (pipeline/run.py) needs at least ``readiness.min_claims``
     claims of kind confirmed/reported/estimate/statement, so the sample story
     carries six. Every value stays inside ``_SOURCE_PROSE`` (no numbers, no names
-    the prose does not use) so grounding never drops a claim. Every claim also
-    carries the evidence fields with plausible values drawn from the prose, so
-    the evidence diagnostic exercises the whole path in a dry run.
+    the prose does not use) so grounding never drops a claim. Every claim cites
+    the numbered sentences of ``_SOURCE_PROSE`` by id (S0 is empty: the sample
+    has no title, so the prose sentences are S1..S3), so the evidence
+    diagnostic exercises the whole citation path in a dry run.
     """
     specs = [
         (
@@ -163,8 +164,8 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
             "nvidia",
             "confirmed",
             0.9,
-            "Nvidia outlined its plans during a briefing with regional partners",
-            "According to people familiar with the matter, Nvidia",
+            [1],
+            [1],
             "Nvidia",
             "organization",
         ),
@@ -174,8 +175,8 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
             "unstated",
             "reported",
             0.8,
-            "Nvidia outlined its plans during a briefing with regional partners",
-            "Nvidia outlined its plans",
+            [1],
+            [],
             "Nvidia",
             "organization",
         ),
@@ -185,8 +186,8 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
             "unstated",
             "statement",
             0.7,
-            "Representatives declined to comment on unannounced products",
-            "Representatives declined to comment",
+            [2],
+            [],
             "Nvidia",
             "organization",
         ),
@@ -196,8 +197,8 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
             "unstated",
             "estimate",
             0.6,
-            "analysts noted that supply and retail availability remain uncertain",
-            "analysts noted that supply and retail",
+            [2],
+            [2],
             "analysts",
             "person",
         ),
@@ -207,8 +208,8 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
             "nvidia",
             "confirmed",
             0.7,
-            "The full announcement is expected alongside the company's next scheduled event",
-            "The full announcement is expected",
+            [3],
+            [],
             "Nvidia",
             "organization",
         ),
@@ -218,8 +219,8 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
             "unstated",
             "reported",
             0.6,
-            "retailers have reportedly begun preparing internal listings ahead of time",
-            "retailers have reportedly begun",
+            [3],
+            [],
             "retailers",
             "organization",
         ),
@@ -234,8 +235,8 @@ def _claims_json(source_url: str = "https://a.example/1") -> dict:
                 "origin": spec[2],
                 "kind": spec[3],
                 "affiliation": "",
-                "quote": spec[5],
-                "attribution_quote": spec[6],
+                "quote_ids": spec[5],
+                "attribution_ids": spec[6],
                 "speaker": spec[7],
                 "speaker_type": spec[8],
             }
