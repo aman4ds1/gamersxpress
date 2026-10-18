@@ -152,7 +152,7 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v13"
+PROMPT_VERSION = "facts-v14"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -578,11 +578,18 @@ SYSTEM_INSTRUCTION = (
     "below is numbered S0, S1, ... where S0 is the headline (the TITLE line) "
     "and S1 onward are the article's sentences in order. quote_ids lists the "
     "numbers of the sentences that state the fact, in the order they appear and "
-    "at most three (for example [3, 4] cites S3 and S4). attribution_ids lists "
-    "the numbers of the sentences that attribute the fact to its speaker; cite "
-    "a sentence there only when it actually names that speaker with an "
-    "attribution cue (for example 'said', 'announced', 'according to'). Never "
-    "cite a number that is not given in the numbered text, never cite a "
+    "at most three (for example [3, 4] cites S3 and S4); quote_ids cites body "
+    "sentences only, S1 onward -- never 0, the headline is not a quote. "
+    "attribution_ids lists the numbers of the sentences that attribute the "
+    "fact to its speaker; cite a sentence there only when it actually names "
+    "that speaker with an attribution cue (for example 'said', 'announced', "
+    "'according to'), and never cite an attribution sentence that does not "
+    "name its speaker with a cue. When a claim is a detail of an announcement "
+    "that an earlier sentence attributes to the speaker (for example 'Rebel "
+    "Wolves has announced that the next update will introduce ...'), cite "
+    "that earlier sentence in attribution_ids while the claim's own sentence "
+    "stays in quote_ids. Never cite a number that is not given in the "
+    "numbered text, never cite a "
     "sentence for a different fact, and use an empty list [] when there is "
     "nothing to cite -- when the text states no words for the fact, names no "
     "speaker for it, or you are unsure. When a sentence names its source "
@@ -591,7 +598,8 @@ SYSTEM_INSTRUCTION = (
     "and attribution_ids and set speaker to the named source. When the article "
     "is a company's own press release or a post on a company's own site that "
     "states the fact in the company's own voice, set speaker to that company "
-    "and speaker_type to 'organization' and cite the headline (S0) or the "
+    "and speaker_type to 'organization' and cite the headline (S0) in "
+    "attribution_ids only -- never in quote_ids -- or the "
     "sentence that names the company as the announcer in attribution_ids (for "
     "example 'Acme Games announces ...'). speaker is the person, organization "
     "or outlet the fact is attributed to, spelled as the text does; when the "
@@ -706,16 +714,24 @@ def _numbered_sentences(text: object, title: object = None) -> list[str]:
     first, so every sentence a claim may cite is a verbatim slice of what the
     prompt showed the model. S0 is always the title (empty when the source has
     none) and the body contributes at most :data:`MAX_EVIDENCE_SENTENCES`
-    sentences, so the ids stay inside the numbering the prompt printed.
+    sentences, so the ids stay inside the numbering the prompt printed. A body
+    sentence that repeats the headline after
+    :func:`_grounding_normalize` (a page header) is dropped: S0 already cites
+    those words, and the copy would make them citeable under two ids.
     """
     sentences = [str(title or "").strip()]
+    heading = _grounding_normalize(sentences[0])
     body = str(text or "")[:MAX_SOURCE_CHARS]
-    sentences.extend(
-        sentence.strip()
-        for sentence in gather._split_sentences(body)
-        if sentence.strip()
-    )
-    return sentences[: 1 + MAX_EVIDENCE_SENTENCES]
+    for sentence in gather._split_sentences(body):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if heading and _grounding_normalize(sentence) == heading:
+            continue
+        sentences.append(sentence)
+        if len(sentences) > MAX_EVIDENCE_SENTENCES:
+            break
+    return sentences
 
 
 def build_prompt(
@@ -2785,7 +2801,12 @@ def _attribution_names_speaker(attribution: str, names: set[str]) -> bool:
     """
     if not attribution:
         return False
-    if any(_contains_name(attribution, name) for name in names):
+    # The haystack is ground-folded so a speaker spelled with diacritics
+    # ("Michał Nowakowski") is found wherever the text writes it ("Michal
+    # Nowakowski"); the names themselves are already match keys.
+    if any(
+        _contains_name(_grounding_normalize(attribution), name) for name in names
+    ):
         return True
     cue = _attribution_cue_match(attribution)
     subject = attribution[: cue.start()] if cue is not None else attribution
@@ -2798,31 +2819,48 @@ def _attribution_from_quote(quote: str, names: set[str]) -> str:
     Used when the model paraphrased the cue ("has confirmed that" where the
     source says "has announced that"): the shortest substring of the found
     quote that contains the speaker's name and an attribution cue becomes the
-    attribution quote. Empty when the quote names no speaker, carries no cue,
-    or the window is negated -- a negated phrase never credits a speaker.
+    attribution quote. The name is matched on ground-folded word tokens so a
+    speaker spelled with diacritics is found wherever the text writes it
+    ("Michal Nowakowski" matches "Michał Nowakowski"), while the window itself
+    stays the source's original words. Empty when the quote names no speaker,
+    carries no cue, or the window is negated -- a negated phrase never
+    credits a speaker.
     """
     if not quote or not names:
         return ""
     pattern = _attribution_cue_pattern()
     if pattern is None:
         return ""
-    name_match = None
-    for name in names:
-        match = re.search(rf"\b{re.escape(name)}\b", quote)
-        if match and (name_match is None or match.start() < name_match.start()):
-            name_match = match
-    if name_match is None:
+    tokens = list(re.finditer(r"[\w']+", quote))
+    if not tokens:
         return ""
+    folded = [_grounding_normalize(match.group(0)) for match in tokens]
+    name_at: tuple[int, int] | None = None
+    for name in names:
+        words = name.split()
+        if not words:
+            continue
+        size = len(words)
+        for start in range(len(folded) - size + 1):
+            if " ".join(folded[start : start + size]) != name:
+                continue
+            if name_at is None or start < name_at[0]:
+                name_at = (start, start + size - 1)
+            break
+    if name_at is None:
+        return ""
+    name_start = tokens[name_at[0]].start()
+    name_end = tokens[name_at[1]].end()
     cues = list(pattern.finditer(quote))
-    after = [match for match in cues if match.start() >= name_match.start()]
-    before = [match for match in cues if match.end() <= name_match.start()]
+    after = [match for match in cues if match.start() >= name_start]
+    before = [match for match in cues if match.end() <= name_start]
     if after:
         cue_match = after[0]
     elif before:
         cue_match = before[-1]
     else:
         return ""
-    window = quote[min(name_match.start(), cue_match.start()): max(name_match.end(), cue_match.end())]
+    window = quote[min(name_start, cue_match.start()): max(name_end, cue_match.end())]
     if _attribution_is_negated(window):
         return ""
     return window
@@ -2852,9 +2890,16 @@ def _evidence_speaker_grounded(
     """
     if not names:
         return False
-    if attribution and any(_contains_name(attribution, name) for name in names):
+    # Ground-folded haystacks so a diacritic speaker name is found whether the
+    # text keeps the diacritics or not; the windows stay verbatim for the
+    # containment check below.
+    if attribution and any(
+        _contains_name(_grounding_normalize(attribution), name) for name in names
+    ):
         return True
-    if headline and any(_contains_name(headline, name) for name in names):
+    if headline and any(
+        _contains_name(_grounding_normalize(headline), name) for name in names
+    ):
         return True
     if not attribution:
         return False
@@ -2868,7 +2913,10 @@ def _evidence_speaker_grounded(
         window = [
             text for (p, s), text in normalized.items() if p == pi and si - 3 <= s <= si - 1
         ]
-        return any(any(_contains_name(text, name) for name in names) for text in window)
+        return any(
+            any(_contains_name(_grounding_normalize(text), name) for name in names)
+            for text in window
+        )
     return False
 
 
@@ -2902,11 +2950,16 @@ def _headline_announces_speaker(headline: str, names: set[str]) -> bool:
     """
     if not headline or not names:
         return False
+    # Ground-folded so a diacritic name matches the headline's spelling, and
+    # so punctuation between the name and the verb never blocks the match.
+    text = _grounding_normalize(headline)
+    if not text:
+        return False
     verb_re = "|".join(sorted(set(_HEADLINE_ANNOUNCEMENT_VERBS), key=len, reverse=True))
     for name in names:
         if re.search(
             rf"\b{re.escape(name)}\b(?:\s+[a-z]+){{0,2}}\s+(?:{verb_re})\b",
-            headline,
+            text,
         ):
             return True
     return False
@@ -3032,7 +3085,25 @@ def verify_evidence(
     names = _evidence_speaker_names(speaker, aliases) if speaker else set()
     absence = is_absence_claim(claim)
 
-    quote_found = bool(quote) and quote in text
+    # The claim's cited ids name this source's numbered sentences: every
+    # cited body sentence must occur in the source text and a cited S0 in its
+    # title, each checked separately so non-adjacent citations never need to
+    # be contiguous. An older claim that cites no ids is checked as the
+    # whole literal quote it stored.
+    cited_ids = _sentence_ids(claim.get("quote_ids"))
+    if cited_ids:
+        numbered = _numbered_sentences(source_text, source_title)
+        quote_found = bool(quote)
+        for index in cited_ids:
+            if not (0 <= index < len(numbered)) or not numbered[index]:
+                quote_found = False
+                break
+            sentence = _normalize_evidence(numbered[index])
+            if not sentence or sentence not in (headline if index == 0 else text):
+                quote_found = False
+                break
+    else:
+        quote_found = bool(quote) and quote in text
     attribution_found = bool(attribution) and (attribution in text or attribution in headline)
     # Paraphrase repair: when the model's attribution quote is not in the
     # source but the found quote itself names the speaker and carries a cue
@@ -5160,8 +5231,8 @@ def _attribution_span(sentence: str, names: set[str]) -> str:
     tokens = list(re.finditer(r"[\w']+", sentence))
     if not tokens:
         return ""
-    folded = [_normalize_evidence(match.group(0)) for match in tokens]
-    cues = [cue for cue in (_normalize_evidence(cue) for cue in attribution_cues()) if cue]
+    folded = [_grounding_normalize(match.group(0)) for match in tokens]
+    cues = [cue for cue in (_grounding_normalize(cue) for cue in attribution_cues()) if cue]
     longest = max((len(cue.split()) for cue in cues), default=0)
     cue_set = set(cues)
     cue_spans: list[tuple[int, int]] = []
@@ -5201,11 +5272,61 @@ def _attribution_span(sentence: str, names: set[str]) -> str:
     return ""
 
 
+def _names_primary_entity(text: object, entities: list[str] | None) -> bool:
+    """True when ``text`` names one of the story's primary entities."""
+    folded = _grounding_normalize(text)
+    if not folded:
+        return False
+    return any(
+        (term := _grounding_normalize(entity)) and _grounding_term_in(folded, term)
+        for entity in entities or []
+    )
+
+
+#: How many content words an S0-remapped body sentence must share with the
+#: claim whose headline-only citation it replaces.
+_REMAP_MIN_SHARED_WORDS = 3
+
+
+def _best_body_sentence_for(
+    claim: dict, sentences: list[str], entities: list[str] | None
+) -> int | None:
+    """The body sentence that best supports an S0-only citation, when any.
+
+    The headline is not a quote, so a claim citing only S0 (id 0) is remapped
+    to the body sentence sharing at least :data:`_REMAP_MIN_SHARED_WORDS`
+    content words with the claim's label and value that also names a primary
+    entity; the earliest of the best-scoring sentences wins. ``None`` keeps
+    the title citation, which verification then judges as before.
+    """
+    label = _grounding_normalize(
+        f"{claim.get('claim', '')} {claim.get('value', '')}"
+    )
+    label_words = gates._content_words(label)
+    if not label_words:
+        return None
+    best_index: int | None = None
+    best_shared = 0
+    for index in range(1, len(sentences)):
+        sentence = sentences[index]
+        if not sentence:
+            continue
+        shared = label_words & gates._content_words(_grounding_normalize(sentence))
+        if len(shared) < _REMAP_MIN_SHARED_WORDS:
+            continue
+        if not _names_primary_entity(sentence, entities):
+            continue
+        if len(shared) > best_shared:
+            best_index, best_shared = index, len(shared)
+    return best_index
+
+
 def _cite_claim_evidence(
     claim: dict,
     sentences: list[str],
     *,
     aliases: dict[str, str],
+    entities: list[str] | None = None,
 ) -> dict:
     """Fill a claim's quote fields from the sentences it cites by id.
 
@@ -5214,17 +5335,37 @@ def _cite_claim_evidence(
     span naming the speaker next to a cue in the sentences ``attribution_ids``
     cites, falling back to the quoted sentences when no attribution sentence
     is cited (the in-sentence case: "Rebel Wolves has announced that ...").
-    A claim that cites no ids keeps its literal quotes (an older sheet), and
-    ids that name no sentence are dropped.
+    A claim whose only citation is the headline (S0) is remapped to the body
+    sentence that best supports it (:func:`_best_body_sentence_for`), keeping
+    the title citation when no body sentence qualifies; a cited attribution
+    sentence outside the claim's own quote must name a primary entity, else
+    no attribution is taken from it. A claim that cites no ids keeps its
+    literal quotes (an older sheet), and ids that name no sentence are
+    dropped.
     """
     quote_ids = _sentence_ids(claim.get("quote_ids"))
     attribution_ids = _sentence_ids(claim.get("attribution_ids"))
     if not quote_ids and not attribution_ids:
         return claim
-    quote = " ".join(_cited_sentences(quote_ids, sentences))
-    attributed = _cited_sentences(attribution_ids, sentences) or _cited_sentences(
-        quote_ids, sentences
-    )
+    if quote_ids == [0]:
+        best = _best_body_sentence_for(claim, sentences, entities)
+        if best is not None:
+            quote_ids = [best]
+            claim = {**claim, "quote_ids": [best], "remapped_from_title": True}
+    quoted = _cited_sentences(quote_ids, sentences)
+    cited_attribution = _cited_sentences(attribution_ids, sentences)
+    if cited_attribution:
+        # An attribution sentence outside the claim's own quote must name a
+        # primary entity of the story: an unrelated sentence never credits a
+        # speaker, and -- unlike a citation that names no sentence at all --
+        # it is dropped rather than replaced by the quote.
+        attributed = [
+            sentence
+            for sentence in cited_attribution
+            if sentence in quoted or _names_primary_entity(sentence, entities)
+        ]
+    else:
+        attributed = quoted
     speaker = str(claim.get("speaker") or "").strip()
     names = _evidence_speaker_names(speaker, aliases) if speaker else set()
     attribution = ""
@@ -5234,7 +5375,7 @@ def _cite_claim_evidence(
             break
     return {
         **claim,
-        "quote": _clip_field(quote, MAX_QUOTE_CHARS),
+        "quote": _clip_field(" ".join(quoted), MAX_QUOTE_CHARS),
         "attribution_quote": _clip_field(attribution, MAX_ATTRIBUTION_QUOTE_CHARS),
     }
 
@@ -5254,10 +5395,8 @@ def _quote_supports_claim(
     text = _grounding_normalize(quote)
     if not text:
         return False
-    for entity in entities or []:
-        folded = _grounding_normalize(entity)
-        if folded and _grounding_term_in(text, folded):
-            return True
+    if _names_primary_entity(quote, entities):
+        return True
     label = _grounding_normalize(
         f"{claim.get('claim', '')} {claim.get('value', '')}"
     )
@@ -5298,7 +5437,7 @@ def _evidence_for_claim(
     ):
         result["ok"] = False
         result["reason"] = "quote does not support claim"
-    return {
+    entry = {
         "source_url": claim.get("source_url"),
         "speaker": _evidence_field(claim.get("speaker")),
         "speaker_type": _normalize_speaker_type(claim.get("speaker_type")),
@@ -5306,6 +5445,9 @@ def _evidence_for_claim(
         "attribution_quote": _evidence_field(claim.get("attribution_quote")),
         **result,
     }
+    if claim.get("remapped_from_title"):
+        entry["remapped_from_title"] = True
+    return entry
 
 
 def _merge_evidence(group: list[dict]) -> list[dict]:
@@ -5608,7 +5750,8 @@ def facts(
         # literal quote an older payload gave it.
         sentences = _numbered_sentences(text, source.get("title"))
         part = [
-            _cite_claim_evidence(item, sentences, aliases=aliases) for item in part
+            _cite_claim_evidence(item, sentences, aliases=aliases, entities=entities)
+            for item in part
         ]
 
         if len(part) > max_claims:

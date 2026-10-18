@@ -3831,6 +3831,9 @@ def test_cited_headline_credits_the_speaker_in_the_title():
         ),
         pointer_sentences(),
         aliases={},
+        # The headline sits outside the claim's quote, so the attribution
+        # guard now needs the story's entities to accept it as the speaker's.
+        entities=["Rebel Wolves"],
     )
     assert cited["attribution_quote"] == "Rebel Wolves announced"
     result = facts.verify_evidence(
@@ -3916,6 +3919,230 @@ def test_claim_citing_no_sentences_keeps_the_quote_missing_failure():
         entities=[],
     )
     assert entry["reason"] == "quote missing"
+
+
+# --- per-sentence verification, title dedup and the S0 remap -----------------
+
+
+def test_non_adjacent_cited_sentences_verify_separately():
+    text = (
+        "Rebel Wolves announced the petting update today. "
+        "The studio set a release window for it. "
+        "Analysts said the petting mode may expand later. "
+        "An unrelated sentence about weather patterns follows. "
+        "Pre-orders open on November 2, 2026."
+    )
+    sentences = facts._numbered_sentences(text, "")
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="The petting mode may expand later",
+            value="expand later",
+            origin="Analysts",
+            kind="estimate",
+            quote_ids=[3, 5],
+        ),
+        sentences,
+        aliases={},
+    )
+    assert cited["quote"] == sentences[3] + " " + sentences[5]
+    result = facts.verify_evidence(cited, text, "", "Alpha", aliases={})
+    # The joined quote is not contiguous in the source (S4 sits between S3
+    # and S5), yet each cited sentence is checked on its own.
+    assert result["quote_found"] is True
+
+
+def test_a_cited_sentence_absent_from_the_source_fails():
+    # The stored quote itself occurs in the source, so only the id rule can
+    # fail this: id 99 names no sentence of the source.
+    cited = claim(
+        claim="Rebel Wolves announced a petting update",
+        value="the next update adds petting",
+        origin="Rebel Wolves",
+        kind="confirmed",
+        speaker="Rebel Wolves",
+        speaker_type="organization",
+        quote="The update arrives on November 2.",
+        quote_ids=[99],
+    )
+    result = facts.verify_evidence(cited, POINTER_TEXT, POINTER_TITLE, "Alpha", aliases={})
+    assert result["quote_found"] is False
+    assert result["reason"] == "quote not found"
+
+
+def test_title_repeated_as_the_first_body_sentence_verifies_after_dedup():
+    title = "Rebel Wolves announced a petting update"
+    text = (
+        "Rebel Wolves announced a petting update. "
+        "The update arrives on November 2. "
+        "Analysts said the petting mode may expand later."
+    )
+    sentences = facts._numbered_sentences(text, title)
+    # The body's copy of the headline is dropped, so S1 is the next sentence.
+    assert sentences == [
+        title,
+        "The update arrives on November 2.",
+        "Analysts said the petting mode may expand later.",
+    ]
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Rebel Wolves announced a petting update",
+            value="the next update adds petting",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+            quote_ids=[0, 1],
+        ),
+        sentences,
+        aliases={},
+    )
+    assert cited["quote"] == title + " The update arrives on November 2."
+    result = facts.verify_evidence(cited, text, title, "Alpha", aliases={})
+    assert result["quote_found"] is True
+
+
+def test_s0_only_citation_remaps_to_the_best_body_sentence():
+    sentences = facts._numbered_sentences(POINTER_TEXT, POINTER_TITLE)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Rebel Wolves announced a petting update",
+            value="the next update adds petting",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+            quote_ids=[0],
+        ),
+        sentences,
+        aliases={},
+        entities=["Rebel Wolves"],
+    )
+    assert cited["remapped_from_title"] is True
+    assert cited["quote_ids"] == [1]
+    assert cited["quote"] == sentences[1]
+    entry = facts._evidence_for_claim(
+        cited,
+        source(link="https://a.example/1", text=POINTER_TEXT, title=POINTER_TITLE),
+        aliases={},
+        entities=["Rebel Wolves"],
+    )
+    assert entry["remapped_from_title"] is True
+    assert entry["ok"] is True
+
+
+def test_s0_only_citation_keeps_the_title_and_fails_when_nothing_supports_it():
+    title = "Summer sale announced for July"
+    text = (
+        "Summer sale announced for July. "
+        "Acme Games will discount older releases during it. "
+        "The sale runs from July 1 to July 15."
+    )
+    sentences = facts._numbered_sentences(text, title)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Microsoft raises the Game Pass price",
+            value="a Game Pass price increase",
+            origin="Microsoft",
+            kind="confirmed",
+            speaker="Microsoft",
+            speaker_type="organization",
+            quote_ids=[0],
+        ),
+        sentences,
+        aliases={},
+        entities=["Acme Games"],
+    )
+    # No body sentence names the entity while sharing enough content words,
+    # so the claim keeps the title citation and carries no remap flag.
+    assert cited["quote_ids"] == [0]
+    assert "remapped_from_title" not in cited
+    assert cited["quote"] == title
+    entry = facts._evidence_for_claim(
+        cited,
+        source(link="https://a.example/1", text=text, title=title),
+        aliases={},
+        entities=["Acme Games"],
+    )
+    assert entry["ok"] is False
+    assert entry["reason"] == "quote does not support claim"
+    assert "remapped_from_title" not in entry
+
+
+# --- diacritic speakers in attribution spans ---------------------------------
+
+
+def test_attribution_span_credits_a_diacritic_speaker_next_to_a_cue():
+    names = facts._evidence_speaker_names("Michał Nowakowski", {})
+    assert (
+        facts._attribution_span("co-CEO Michał Nowakowski told Polish PAP Biznes.", names)
+        == "Michał Nowakowski told"
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker, sentence, expected",
+    [
+        ("Michał Nowakowski", "Michal Nowakowski told PAP Biznes the studio delayed it.", "Michal Nowakowski told"),
+        ("Michal Nowakowski", "Michał Nowakowski told PAP Biznes the studio delayed it.", "Michał Nowakowski told"),
+    ],
+)
+def test_attribution_span_finds_a_diacritic_speaker_across_spellings(
+    speaker, sentence, expected
+):
+    names = facts._evidence_speaker_names(speaker, {})
+    assert facts._attribution_span(sentence, names) == expected
+
+
+# --- attribution sentences and the primary-entity guard ----------------------
+
+
+def test_detail_claim_cites_the_earlier_attributing_sentence():
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="The update arrives on November 2",
+            value="November 2",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+            quote_ids=[2],
+            attribution_ids=[1],
+        ),
+        pointer_sentences(),
+        aliases={},
+        entities=["Rebel Wolves"],
+    )
+    assert cited["quote"] == "The update arrives on November 2."
+    assert cited["attribution_quote"] == "Rebel Wolves has announced"
+
+
+def test_an_attribution_sentence_sharing_no_entity_grants_no_attribution():
+    text = (
+        "Rebel Wolves delayed the petting update. "
+        "Michał Nowakowski told Polish PAP Biznes that the studio needs more time."
+    )
+    sentences = facts._numbered_sentences(text)
+    # The span alone would credit the speaker -- the sentence names him next
+    # to a cue -- but it names no primary entity of the story, so the guard
+    # keeps the attribution empty.
+    names = facts._evidence_speaker_names("Michał Nowakowski", {})
+    assert facts._attribution_span(sentences[2], names) == "Michał Nowakowski told"
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Rebel Wolves delayed the petting update",
+            value="the petting update",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Michał Nowakowski",
+            speaker_type="person",
+            quote_ids=[1],
+            attribution_ids=[2],
+        ),
+        sentences,
+        aliases={},
+        entities=["Rebel Wolves"],
+    )
+    assert cited["attribution_quote"] == ""
 
 
 def test_validate_claims_keeps_literal_quotes_of_an_older_caller():
@@ -4930,12 +5157,19 @@ def test_evidence_confirmation_tier1_unrelated_speaker_is_not_first_party():
 
 
 def test_extraction_prompt_states_the_sentence_citation_rule():
-    assert facts.PROMPT_VERSION == "facts-v13"
+    # v14: quote_ids cite body sentences only, detail claims cite their
+    # earlier attributing sentence, and S0 is attribution-only.
+    assert facts.PROMPT_VERSION == "facts-v14"
     instruction = facts.SYSTEM_INSTRUCTION
     assert "Evidence is cited by numbered sentence, never copied" in instruction
     assert "Rebel Wolves has confirmed that" in instruction
     assert "cite that sentence in both quote_ids and attribution_ids" in instruction
     assert "Never cite a number that is not given in the numbered text" in instruction
+    assert "quote_ids cites body sentences only, S1 onward" in instruction
+    assert "never 0, the headline is not a quote" in instruction
+    assert "never cite an attribution sentence that does not name its speaker" in instruction
+    assert "cite that earlier sentence in attribution_ids" in instruction
+    assert "cite the headline (S0) in attribution_ids only" in instruction
 
 
 # --- headline-only sources: one title claim, never a model call ---------------
