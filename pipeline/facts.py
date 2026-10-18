@@ -152,7 +152,7 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v14"
+PROMPT_VERSION = "facts-v15"
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -579,7 +579,10 @@ SYSTEM_INSTRUCTION = (
     "and S1 onward are the article's sentences in order. quote_ids lists the "
     "numbers of the sentences that state the fact, in the order they appear and "
     "at most three (for example [3, 4] cites S3 and S4); quote_ids cites body "
-    "sentences only, S1 onward -- never 0, the headline is not a quote. "
+    "sentences, S1 onward. The one exception is a claim that only restates the "
+    "headline and states nothing else: it cites the headline alone as [0]. Never "
+    "cite 0 together with body sentences and never cite the headline for a "
+    "detail claim. "
     "attribution_ids lists the numbers of the sentences that attribute the "
     "fact to its speaker; cite a sentence there only when it actually names "
     "that speaker with an attribution cue (for example 'said', 'announced', "
@@ -607,6 +610,9 @@ SYSTEM_INSTRUCTION = (
     "studio'), resolve that to the organization the text named. When an "
     "outlet reports a fact without attributing it to anyone, leave speaker "
     "empty, set speaker_type to 'none' and use [] for both id lists. "
+    "A speaker is never the game, product or platform the story is about: never "
+    "set speaker to a game title or a console. Only a person, an organization "
+    "or the outlet itself can be a speaker. "
     "speaker_type is exactly one of "
     "'organization' (a company, studio or platform holder), 'person', 'outlet' "
     "(the publishing site itself), 'anonymous' (an unnamed source such as "
@@ -732,6 +738,46 @@ def _numbered_sentences(text: object, title: object = None) -> list[str]:
         if len(sentences) > MAX_EVIDENCE_SENTENCES:
             break
     return sentences
+
+
+def _sentence_paragraphs(text: object, sentences: list[str]) -> list[int]:
+    """The paragraph each citable sentence sits in, aligned with ``sentences``.
+
+    Paragraphs are the blank-line blocks of the same truncated body
+    :func:`_numbered_sentences` splits, numbered from 0; S0 (the title) is -1.
+    The walk reuses the splitter's own break rules
+    (:data:`gather._SENTENCE_BREAK_RE` and :data:`gather._ABBREVIATIONS`) and
+    records where each sentence starts, so index i names the same sentence in
+    both lists.
+    """
+    paragraphs = [-1]
+    body = str(text or "")[:MAX_SOURCE_CHARS]
+    heading = _grounding_normalize(sentences[0] if sentences else "")
+    breaks = [match.start() for match in re.finditer(r"\n\s*\n", body)]
+    start = 0
+    for match in gather._SENTENCE_BREAK_RE.finditer(body):
+        if len(paragraphs) >= len(sentences):
+            return paragraphs
+        if body[match.start()] == "." and body[:match.start()].split():
+            if body[:match.start()].split()[-1].lower() in gather._ABBREVIATIONS:
+                continue
+        sentence = body[start:match.end()].strip()
+        # Count the paragraph breaks before the sentence's first word, not
+        # before its leading whitespace (which sits on the break itself).
+        content = body[start:].lstrip()
+        sentence_start = len(body) - len(content)
+        start = match.end()
+        if not sentence or (heading and _grounding_normalize(sentence) == heading):
+            continue
+        paragraphs.append(sum(1 for boundary in breaks if boundary < sentence_start))
+    tail = body[start:].strip()
+    if len(paragraphs) < len(sentences) and tail:
+        if not heading or _grounding_normalize(tail) != heading:
+            content = body[start:].lstrip()
+            paragraphs.append(
+                sum(1 for boundary in breaks if boundary < len(body) - len(content))
+            )
+    return paragraphs
 
 
 def build_prompt(
@@ -2575,6 +2621,77 @@ def _is_product_origin(value: object, entities: list[str] | None) -> bool:
     return False
 
 
+_PRODUCT_NAMES_CACHE: tuple[tuple[int, int] | None, frozenset[str]] | None = None
+
+
+def _product_entity_names(path: str | Path | None = None) -> frozenset[str]:
+    """Ground-folded canonical names and aliases from ``data/entities.json``.
+
+    Consoles, chip makers and the other entries of the shared entity file: a
+    name from here may be the subject of a story but is not a speaker by
+    itself. Cached by file mtime/size; a missing file yields an empty set.
+    """
+    global _PRODUCT_NAMES_CACHE
+    resolved = Path(path) if path else cluster.DEFAULT_ENTITIES_PATH
+    try:
+        stat = resolved.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        _PRODUCT_NAMES_CACHE = (None, frozenset())
+        return frozenset()
+    if _PRODUCT_NAMES_CACHE is not None and _PRODUCT_NAMES_CACHE[0] == stamp:
+        return _PRODUCT_NAMES_CACHE[1]
+    names = frozenset(
+        folded
+        for name in cluster.load_known_names(resolved)
+        if (folded := _grounding_normalize(name))
+    )
+    _PRODUCT_NAMES_CACHE = (stamp, names)
+    return names
+
+
+def _is_cue_subject(text: object, name: object) -> bool:
+    """True when ``name`` is the grammatical subject of an attribution cue in ``text``.
+
+    "Rebel Wolves has announced" makes Rebel Wolves the subject of an
+    announcement cue, so the sentence itself proves the name speaks;
+    "according to Rebel Wolves" does not (a lead cue's source is its object).
+    """
+    key = _origin_key(name)
+    haystack = str(text or "")
+    if not key or not haystack:
+        return False
+    return any(
+        _origin_key(match.group("origin")) == key
+        for match in _SUBJECT_CUE_RE.finditer(haystack)
+    )
+
+
+def _speaker_is_product(
+    speaker: object,
+    entities: list[str] | None,
+    attribution: object,
+) -> bool:
+    """True when the speaker names the story's lead entity or a known product.
+
+    A game title, console or piece of hardware names the subject of the story,
+    never a speaker, however the model labelled it. Two names keep the speaker:
+    a known organization (``data/orgs.json``) -- Sony and Valve lead stories of
+    their own -- and a name that is the subject of an attribution cue inside
+    the claim's own attribution quote ("Rebel Wolves has announced"), where the
+    sentence itself proves the name speaks.
+    """
+    key = _grounding_normalize(speaker)
+    if not key:
+        return False
+    lead = _grounding_normalize((entities or [""])[0])
+    if key != lead and key not in _product_entity_names():
+        return False
+    if _origin_key(speaker) in load_organizations():
+        return False
+    return not _is_cue_subject(attribution, speaker)
+
+
 #: Corporate suffixes: a name whose last word is one of these is an organization
 #: even when it is not in ``data/orgs.json`` ("Some New Studio", "Foo Games").
 _CORPORATE_SUFFIXES = frozenset({
@@ -3155,10 +3272,19 @@ def verify_evidence(
     )
     product = (
         bool(speaker)
-        and speaker_type not in ("organization", "person")
         and (
-            _is_document_or_product(_origin_key(speaker))
-            or _is_product_origin(speaker, entities)
+            (
+                speaker_type not in ("organization", "person")
+                and (
+                    _is_document_or_product(_origin_key(speaker))
+                    or _is_product_origin(speaker, entities)
+                )
+            )
+            # Even labelled an organization, a speaker that names the story's
+            # lead entity or a known product names the subject, not a voice.
+            or _speaker_is_product(
+                speaker, entities, claim.get("attribution_quote")
+            )
         )
     )
     if mode == "first_party_site":
@@ -4490,26 +4616,96 @@ def _claim_primary_entities(claim: dict, entities: list[str] | None) -> set[str]
     return {entity for entity in (entities or []) if _claim_names_entity(text, entity)}
 
 
-def group_reason(members: list[dict], entities: list[str] | None) -> str:
+#: Content words a cross-source pair must share before a member that omits
+#: the story's entity inherits it from the members that name it.
+_GROUP_MIN_SHARED_WORDS = 3
+
+
+def _member_entity_support(
+    claim: dict,
+    members: list[dict],
+    entities: list[str] | None,
+    source_titles: dict[str, str] | None,
+) -> set[str]:
+    """The primary entities that support this member of a group.
+
+    A member is supported by an entity when (a) its label or value names the
+    entity, (b) the title of its own source names it -- the same rule
+    coherence applies to a claim from an on-topic source, so a claim about
+    "the update" stays on-topic when its article is about the game -- or
+    (c) another member names the entity and some pair of members from
+    different sources shares at least three content words.
+    """
+    text = f"{claim.get('claim', '')} {claim.get('value', '')}"
+    supported = {
+        entity for entity in (entities or []) if _claim_names_entity(text, entity)
+    }
+    remaining = [entity for entity in (entities or []) if entity not in supported]
+    if not remaining:
+        return supported
+    title = (source_titles or {}).get(_source_url_key(claim.get("source_url")), "")
+    if title:
+        supported.update(
+            entity for entity in remaining if _claim_names_entity(title, entity)
+        )
+        remaining = [entity for entity in remaining if entity not in supported]
+    if not remaining:
+        return supported
+    named_elsewhere = {
+        entity
+        for entity in remaining
+        if any(
+            _claim_names_entity(f"{m.get('claim', '')} {m.get('value', '')}", entity)
+            for m in members
+            if m is not claim
+        )
+    }
+    if not named_elsewhere:
+        return supported
+    word_sets = [
+        (
+            _source_url_key(m.get("source_url")),
+            gates._content_words(
+                _grounding_normalize(f"{m.get('claim', '')} {m.get('value', '')}")
+            ),
+        )
+        for m in members
+    ]
+    cross_source_overlap = any(
+        len(first_words & second_words) >= _GROUP_MIN_SHARED_WORDS
+        for index, (first_key, first_words) in enumerate(word_sets)
+        for second_key, second_words in word_sets[index + 1:]
+        if first_key != second_key
+    )
+    if cross_source_overlap:
+        supported.update(named_elsewhere)
+    return supported
+
+
+def group_reason(
+    members: list[dict],
+    entities: list[str] | None,
+    source_titles: dict[str, str] | None = None,
+) -> str:
     """Why a returned group is not an accepted cross-source restatement.
 
     Empty string means the group passes every guard: at least two claims from
-    two different sources, a shared primary entity, no contradicting figures or
-    dates, and no rumor/opinion mixed with a confirmed claim.
+    two different sources, every member supported by a primary entity (its own
+    label or value names it, its source's title names it, or another member
+    names it while the group shares enough content words across sources),
+    no contradicting figures or dates, and no rumor/opinion mixed with a
+    confirmed claim.
     """
     if len(members) < 2:
         return "fewer than two claims"
     sources = {_source_url_key(claim.get("source_url")) for claim in members}
     if len(sources) < 2:
         return "all claims come from one source"
-    shared: set[str] | None = None
     for claim in members:
-        named = _claim_primary_entities(claim, entities)
-        shared = named if shared is None else (shared & named)
-    if not shared:
-        return "the claims name no shared primary entity"
+        if not _member_entity_support(claim, members, entities, source_titles):
+            return "the claims name no shared primary entity"
     for index, first in enumerate(members):
-        for second in members[index + 1:]:
+        for second in members[index + 1 :]:
             if _claims_conflict(first, second):
                 return "the claims state conflicting figures or dates"
     kinds = {str(claim.get("kind")) for claim in members}
@@ -4522,6 +4718,7 @@ def apply_group_guards(
     groups: list[list[str]],
     items: list[dict],
     entities: list[str] | None,
+    source_titles: dict[str, str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Validate the model's id groups in code, returning (accepted, dropped).
 
@@ -4541,7 +4738,7 @@ def apply_group_guards(
                 dropped.append({"ids": known, "reason": "fewer than two usable claims"})
             continue
         members = [item_by_id[identifier]["claim"] for identifier in unique]
-        reason = group_reason(members, entities)
+        reason = group_reason(members, entities, source_titles)
         if reason:
             dropped.append({"ids": unique, "reason": reason})
             continue
@@ -4606,7 +4803,13 @@ def group_facts(
         record["failed"] = f"grouping response invalid: {exc}"
         logger.warning("story grouping response invalid: %s", exc)
         return record
-    record["groups"], record["dropped"] = apply_group_guards(groups, items, entities)
+    source_titles = {
+        _source_url_key(source.get("link")): str(source.get("title") or "")
+        for source in sources or []
+    }
+    record["groups"], record["dropped"] = apply_group_guards(
+        groups, items, entities, source_titles
+    )
     return record
 
 
@@ -5287,6 +5490,13 @@ def _names_primary_entity(text: object, entities: list[str] | None) -> bool:
 #: claim whose headline-only citation it replaces.
 _REMAP_MIN_SHARED_WORDS = 3
 
+#: How many sentences before a claim's quote sentence may still carry its
+#: attribution without any other support (a different paragraph is fine).
+_ATTRIBUTION_MAX_SENTENCES_BEFORE = 6
+#: Shared content words an out-of-quote attribution sentence needs to count
+#: as being about the claim when it sits far from the quoted sentence.
+_ATTRIBUTION_MIN_SHARED_WORDS = 2
+
 
 def _best_body_sentence_for(
     claim: dict, sentences: list[str], entities: list[str] | None
@@ -5321,12 +5531,56 @@ def _best_body_sentence_for(
     return best_index
 
 
+def _attribution_sentence_granted(
+    sentence: str,
+    index: int,
+    claim: dict,
+    quote_ids: list[int],
+    paragraphs: list[int] | None,
+    names: set[str],
+    entities: list[str] | None,
+) -> bool:
+    """True when a cited attribution sentence outside the quote credits the speaker.
+
+    The sentence must name the claim's own speaker next to an attribution cue
+    (:func:`_attribution_span`), and either sit near a quoted sentence -- in
+    the same paragraph or at most :data:`_ATTRIBUTION_MAX_SENTENCES_BEFORE`
+    sentences before it -- or be about the claim itself, sharing one of the
+    story's primary entities with it or at least
+    :data:`_ATTRIBUTION_MIN_SHARED_WORDS` content words with its label and
+    value. An unrelated sentence, however well it names the speaker, never
+    credits a claim.
+    """
+    if not _attribution_span(sentence, names):
+        return False
+    for quoted_id in quote_ids:
+        if 0 < quoted_id - index <= _ATTRIBUTION_MAX_SENTENCES_BEFORE:
+            return True
+    if paragraphs:
+        for quoted_id in quote_ids:
+            if not 0 <= index < len(paragraphs) or not 0 <= quoted_id < len(paragraphs):
+                continue
+            if paragraphs[quoted_id] >= 0 and paragraphs[quoted_id] == paragraphs[index]:
+                return True
+    label = _grounding_normalize(
+        f"{claim.get('claim', '')} {claim.get('value', '')}"
+    )
+    folded = _grounding_normalize(sentence)
+    shared_label = gates._content_words(label) & gates._content_words(folded)
+    if len(shared_label) >= _ATTRIBUTION_MIN_SHARED_WORDS:
+        return True
+    return _names_primary_entity(label, entities) and _names_primary_entity(
+        sentence, entities
+    )
+
+
 def _cite_claim_evidence(
     claim: dict,
     sentences: list[str],
     *,
     aliases: dict[str, str],
     entities: list[str] | None = None,
+    paragraphs: list[int] | None = None,
 ) -> dict:
     """Fill a claim's quote fields from the sentences it cites by id.
 
@@ -5337,11 +5591,14 @@ def _cite_claim_evidence(
     is cited (the in-sentence case: "Rebel Wolves has announced that ...").
     A claim whose only citation is the headline (S0) is remapped to the body
     sentence that best supports it (:func:`_best_body_sentence_for`), keeping
-    the title citation when no body sentence qualifies; a cited attribution
-    sentence outside the claim's own quote must name a primary entity, else
-    no attribution is taken from it. A claim that cites no ids keeps its
-    literal quotes (an older sheet), and ids that name no sentence are
-    dropped.
+    the title citation when no body sentence qualifies. A cited attribution
+    sentence outside the claim's own quote must name the speaker next to a cue
+    and either sit near the quoted sentence (same paragraph, or at most
+    :data:`_ATTRIBUTION_MAX_SENTENCES_BEFORE` sentences before it) or be
+    about the claim itself (shared primary entity or shared content words,
+    :func:`_attribution_sentence_granted`), else no attribution is taken from
+    it. A claim that cites no ids keeps its literal quotes (an older sheet),
+    and ids that name no sentence are dropped.
     """
     quote_ids = _sentence_ids(claim.get("quote_ids"))
     attribution_ids = _sentence_ids(claim.get("attribution_ids"))
@@ -5353,21 +5610,24 @@ def _cite_claim_evidence(
             quote_ids = [best]
             claim = {**claim, "quote_ids": [best], "remapped_from_title": True}
     quoted = _cited_sentences(quote_ids, sentences)
-    cited_attribution = _cited_sentences(attribution_ids, sentences)
-    if cited_attribution:
-        # An attribution sentence outside the claim's own quote must name a
-        # primary entity of the story: an unrelated sentence never credits a
-        # speaker, and -- unlike a citation that names no sentence at all --
-        # it is dropped rather than replaced by the quote.
-        attributed = [
-            sentence
-            for sentence in cited_attribution
-            if sentence in quoted or _names_primary_entity(sentence, entities)
-        ]
-    else:
-        attributed = quoted
     speaker = str(claim.get("speaker") or "").strip()
     names = _evidence_speaker_names(speaker, aliases) if speaker else set()
+    cited_attribution = _cited_sentences(attribution_ids, sentences)
+    if cited_attribution:
+        # An attribution sentence outside the claim's own quote credits the
+        # speaker only when it is near or about the claim; an unrelated
+        # sentence is dropped rather than replaced by the quote.
+        attributed: list[str] = []
+        for index in _sentence_ids(attribution_ids):
+            if not 0 <= index < len(sentences) or not sentences[index]:
+                continue
+            sentence = sentences[index]
+            if sentence in quoted or _attribution_sentence_granted(
+                sentence, index, claim, quote_ids, paragraphs, names, entities
+            ):
+                attributed.append(sentence)
+    else:
+        attributed = quoted
     attribution = ""
     for sentence in attributed:
         attribution = _attribution_span(sentence, names)
@@ -5749,8 +6009,11 @@ def facts(
         # sentence are dropped, and a claim citing nothing keeps whatever
         # literal quote an older payload gave it.
         sentences = _numbered_sentences(text, source.get("title"))
+        paragraphs = _sentence_paragraphs(text, sentences)
         part = [
-            _cite_claim_evidence(item, sentences, aliases=aliases, entities=entities)
+            _cite_claim_evidence(
+                item, sentences, aliases=aliases, entities=entities, paragraphs=paragraphs
+            )
             for item in part
         ]
 

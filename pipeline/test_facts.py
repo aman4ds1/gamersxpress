@@ -4145,6 +4145,237 @@ def test_an_attribution_sentence_sharing_no_entity_grants_no_attribution():
     assert cited["attribution_quote"] == ""
 
 
+# --- v15: product speakers and the attribution proximity rule ----------------
+
+
+def test_a_speaker_naming_the_story_lead_entity_is_rejected_even_as_an_organization():
+    result = facts.verify_evidence(
+        claim(
+            quote="dawnwalker launches on playstation 5 today",
+            attribution_quote="",
+            speaker="Dawnwalker",
+            speaker_type="organization",
+        ),
+        "Dawnwalker launches on PlayStation 5 today.",
+        entities=["Dawnwalker"],
+    )
+    assert result["product"] is True
+    assert result["ok"] is False
+    assert result["reason"] == "speaker is a product"
+
+
+def test_a_speaker_naming_a_known_console_is_rejected_even_as_an_organization():
+    result = facts.verify_evidence(
+        claim(
+            quote="the handheld ships next month",
+            attribution_quote="the launcher client said",
+            speaker="Steam Deck",
+            speaker_type="organization",
+        ),
+        "The handheld ships next month, the launcher client said.",
+        entities=[],
+    )
+    assert result["product"] is True
+    assert result["reason"] == "speaker is a product"
+
+
+def test_a_lead_entity_speaker_that_owns_an_attribution_cue_is_accepted():
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="The petting update arrives on November 2",
+            value="November 2",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+            quote_ids=[1],
+            attribution_ids=[1],
+        ),
+        pointer_sentences(),
+        aliases={},
+        entities=["Rebel Wolves"],
+    )
+    result = facts.verify_evidence(
+        cited, POINTER_TEXT, POINTER_TITLE, "Alpha", aliases={}, entities=["Rebel Wolves"]
+    )
+    assert result["product"] is False
+    assert result["ok"] is True
+
+
+def test_a_known_organization_keeps_its_leading_role_speaker():
+    text = "According to Valve, the handheld ships next month."
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="The handheld ships next month",
+            value="next month",
+            origin="Valve",
+            kind="confirmed",
+            speaker="Valve",
+            speaker_type="organization",
+            quote_ids=[1],
+            attribution_ids=[1],
+        ),
+        facts._numbered_sentences(text),
+        aliases={},
+        entities=["Valve"],
+    )
+    result = facts.verify_evidence(
+        cited, text, "", "Alpha", aliases={}, entities=["Valve"]
+    )
+    assert result["product"] is False
+    assert result["ok"] is True
+
+
+def test_an_attribution_sentence_in_the_same_paragraph_grants_attribution():
+    text = "The patch ships in December. Rebel Wolves has announced the delay."
+    sentences = facts._numbered_sentences(text)
+    paragraphs = facts._sentence_paragraphs(text, sentences)
+    assert paragraphs == [-1, 0, 0]
+    base = claim(
+        claim="The patch ships in December",
+        value="in December",
+        origin="Rebel Wolves",
+        kind="confirmed",
+        speaker="Rebel Wolves",
+        speaker_type="organization",
+        quote_ids=[1],
+        attribution_ids=[2],
+    )
+    # The attribution sentence follows the quote, shares no entity with the
+    # claim and no two content words: only the shared paragraph credits it.
+    granted = facts._cite_claim_evidence(
+        base, sentences, aliases={}, entities=["Rebel Wolves"], paragraphs=paragraphs
+    )
+    assert granted["attribution_quote"] == "Rebel Wolves has announced"
+    denied = facts._cite_claim_evidence(
+        base,
+        sentences,
+        aliases={},
+        entities=["Rebel Wolves"],
+        paragraphs=[-1, 0, 1],
+    )
+    assert denied["attribution_quote"] == ""
+
+
+def test_an_attribution_sentence_three_before_the_quote_grants_attribution():
+    text = (
+        "Rebel Wolves has announced the delay.\n\n"
+        "A retailer listing slipped out early.\n\n"
+        "The console exclusive missed its date.\n\n"
+        "The patch ships in December."
+    )
+    sentences = facts._numbered_sentences(text)
+    paragraphs = facts._sentence_paragraphs(text, sentences)
+    assert paragraphs == [-1, 0, 1, 2, 3]
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="The patch ships in December",
+            value="in December",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+            quote_ids=[4],
+            attribution_ids=[1],
+        ),
+        sentences,
+        aliases={},
+        entities=["Rebel Wolves"],
+        paragraphs=paragraphs,
+    )
+    assert cited["attribution_quote"] == "Rebel Wolves has announced"
+
+
+def test_an_attribution_sentence_twelve_before_the_quote_grants_none():
+    fillers = "\n\n".join(
+        f"Sentence number {number} about unrelated matters."
+        for number in range(1, 12)
+    )
+    text = (
+        "Rebel Wolves has announced the delay.\n\n"
+        f"{fillers}\n\n"
+        "The patch ships in December."
+    )
+    sentences = facts._numbered_sentences(text)
+    paragraphs = facts._sentence_paragraphs(text, sentences)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="The patch ships in December",
+            value="in December",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+            quote_ids=[13],
+            attribution_ids=[1],
+        ),
+        sentences,
+        aliases={},
+        entities=["Rebel Wolves"],
+        paragraphs=paragraphs,
+    )
+    assert cited["attribution_quote"] == ""
+
+
+def test_an_attribution_sentence_naming_a_different_speaker_grants_none():
+    text = (
+        "Rebel Wolves announced the delay today. "
+        "Sony said the console ships in June."
+    )
+    sentences = facts._numbered_sentences(text)
+    paragraphs = facts._sentence_paragraphs(text, sentences)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Rebel Wolves announced the delay",
+            value="the delay",
+            origin="Rebel Wolves",
+            kind="confirmed",
+            speaker="Rebel Wolves",
+            speaker_type="organization",
+            quote_ids=[1],
+            attribution_ids=[2],
+        ),
+        sentences,
+        aliases={},
+        entities=["Rebel Wolves"],
+        paragraphs=paragraphs,
+    )
+    assert cited["attribution_quote"] == ""
+
+
+def test_a_headline_restating_claim_citing_s0_verifies_after_the_remapped_quote():
+    title = "Acme Games announced a space RPG today"
+    text = (
+        "Acme Games announced a space RPG today. "
+        "Acme Games has confirmed that the space RPG launches next spring."
+    )
+    sentences = facts._numbered_sentences(text, title)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="Acme Games announced a space RPG",
+            value="the space RPG launches next spring",
+            origin="Acme Games",
+            kind="confirmed",
+            speaker="Acme Games",
+            speaker_type="organization",
+            quote_ids=[0],
+        ),
+        sentences,
+        aliases={},
+        entities=["Acme Games"],
+    )
+    assert cited["remapped_from_title"] is True
+    assert cited["quote_ids"] == [1]
+    entry = facts._evidence_for_claim(
+        cited,
+        source(link="https://a.example/1", text=text, title=title),
+        aliases={},
+        entities=["Acme Games"],
+    )
+    assert entry["remapped_from_title"] is True
+    assert entry["ok"] is True
+
+
 def test_validate_claims_keeps_literal_quotes_of_an_older_caller():
     raw = claim(
         quote="Sony said the console ships in June",
@@ -4348,9 +4579,74 @@ def test_group_reason_drops_a_single_source_group():
     assert "one source" in facts.group_reason([a, b], ACME_ENTITIES)
 
 
-def test_group_reason_drops_a_group_with_no_shared_entity():
-    a = acme_claim("https://a.example/1", claim="hmm", value="hmm")
-    b = acme_claim("https://b.example/1", claim="hmm", value="hmm")
+def test_group_reason_keeps_a_group_when_a_source_title_names_the_entity():
+    a = acme_claim("https://a.example/1")
+    b = acme_claim(
+        "https://b.example/1",
+        claim="The studio opens its doors this year",
+        value="opens its doors",
+    )
+    items = facts.grouping_items([a, b], [source(link="https://a.example/1"), source(link="https://b.example/1")])
+    accepted, dropped = facts.apply_group_guards(
+        [["c0", "c1"]],
+        items,
+        ACME_ENTITIES,
+        {"https://a.example/1": "", "https://b.example/1": "Acme Arena opens its doors"},
+    )
+    assert [group["ids"] for group in accepted] == [["c0", "c1"]]
+    assert dropped == []
+
+
+def test_group_reason_drops_when_no_title_supports_the_omitting_member():
+    a = acme_claim("https://a.example/1")
+    b = acme_claim(
+        "https://b.example/1",
+        claim="The studio opens its doors this year",
+        value="opens its doors",
+    )
+    items = facts.grouping_items([a, b], [source(link="https://a.example/1"), source(link="https://b.example/1")])
+    accepted, dropped = facts.apply_group_guards(
+        [["c0", "c1"]],
+        items,
+        ACME_ENTITIES,
+        {"https://a.example/1": "", "https://b.example/1": "Doors open this week"},
+    )
+    assert accepted == []
+    assert dropped == [{"ids": ["c0", "c1"], "reason": "the claims name no shared primary entity"}]
+
+
+def test_group_reason_keeps_a_member_omitting_the_name_when_others_share_words():
+    a = acme_claim(
+        "https://a.example/1",
+        claim="Acme Arena opens a new fantasy arena this year",
+        value="a new fantasy arena",
+    )
+    b = acme_claim(
+        "https://b.example/1",
+        claim="New fantasy arena opens its doors this year",
+        value="opens its doors",
+    )
+    assert facts.group_reason([a, b], ACME_ENTITIES) == ""
+
+
+def test_group_reason_drops_two_different_facts_sharing_fewer_than_three_words():
+    a = acme_claim(
+        "https://a.example/1",
+        claim="Acme Arena sold 2 million copies",
+        value="2 million copies",
+    )
+    b = acme_claim(
+        "https://b.example/1",
+        claim="The publisher lays off 300 staff worldwide",
+        value="300 staff worldwide",
+    )
+    assert "shared primary entity" in facts.group_reason([a, b], ACME_ENTITIES)
+
+
+def test_group_reason_drops_a_group_where_no_member_is_supported_by_any_path():
+    a = acme_claim("https://a.example/1", claim="A quiet week in the industry", value="a quiet week")
+    b = acme_claim("https://b.example/1", value="another quiet week")
+    b = {**b, "claim": "Another quiet week elsewhere"}
     assert "shared primary entity" in facts.group_reason([a, b], ACME_ENTITIES)
 
 
@@ -5157,19 +5453,22 @@ def test_evidence_confirmation_tier1_unrelated_speaker_is_not_first_party():
 
 
 def test_extraction_prompt_states_the_sentence_citation_rule():
-    # v14: quote_ids cite body sentences only, detail claims cite their
-    # earlier attributing sentence, and S0 is attribution-only.
-    assert facts.PROMPT_VERSION == "facts-v14"
+    # v15: quote_ids cite body sentences; only a headline-restating claim may
+    # cite S0 alone, and a speaker is never the game, product or platform.
+    assert facts.PROMPT_VERSION == "facts-v15"
     instruction = facts.SYSTEM_INSTRUCTION
     assert "Evidence is cited by numbered sentence, never copied" in instruction
     assert "Rebel Wolves has confirmed that" in instruction
     assert "cite that sentence in both quote_ids and attribution_ids" in instruction
     assert "Never cite a number that is not given in the numbered text" in instruction
-    assert "quote_ids cites body sentences only, S1 onward" in instruction
-    assert "never 0, the headline is not a quote" in instruction
+    assert "quote_ids cites body sentences, S1 onward" in instruction
+    assert "it cites the headline alone as [0]" in instruction
+    assert "Never cite 0 together with body sentences" in instruction
+    assert "never cite the headline for a detail claim" in instruction
     assert "never cite an attribution sentence that does not name its speaker" in instruction
     assert "cite that earlier sentence in attribution_ids" in instruction
     assert "cite the headline (S0) in attribution_ids only" in instruction
+    assert "A speaker is never the game, product or platform the story is about" in instruction
 
 
 # --- headline-only sources: one title claim, never a model call ---------------
