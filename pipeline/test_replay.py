@@ -1,5 +1,8 @@
 import datetime as dt
+import io
 import json
+import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -124,6 +127,46 @@ def many_claims_generate(count: int = len(WORDS)):
     return generate
 
 
+def report_dict(
+    sheet_path: Path | None = None,
+    output_dir: Path | None = None,
+    *,
+    cluster_id: str = "abc",
+    title: str = "A title",
+    label: str = "Nvidia confirmed it",
+    quote: str = "says nvidia",
+) -> dict:
+    """A finished replay report, as ``run`` would return it."""
+    return {
+        "cluster_id": cluster_id,
+        "title": title,
+        "entities": ["Nvidia"],
+        "model_calls": 3,
+        "confirmation": {"rule": "tier1", "confirmed": True, "reason": "confirmed"},
+        "fact_groups": {"accepted": 2, "dropped": 1},
+        "claims": [
+            {
+                "label": label,
+                "kind": "confirmed",
+                "central": True,
+                "evidence": [
+                    {
+                        "ok": True,
+                        "reason": None,
+                        "speaker": "Nvidia",
+                        "attribution_mode": "explicit",
+                        "attribution_quote": quote,
+                    }
+                ],
+            }
+        ],
+        "claims_total": 1,
+        "sheet_path": str(sheet_path) if sheet_path is not None else None,
+        "output_dir": str(output_dir) if output_dir is not None else None,
+    }
+
+
+
 # --- replay report -----------------------------------------------------------
 
 
@@ -160,34 +203,9 @@ def test_replay_loads_gathered_and_sheet_title_and_prints_fields(tmp_path, monke
     assert "claim 1:" in printed
 
 
-def test_replay_main_prints_the_report(monkeypatch, capsys):
-    report = {
-        "cluster_id": "abc",
-        "title": "A title",
-        "entities": ["Nvidia"],
-        "model_calls": 3,
-        "confirmation": {"rule": "tier1", "confirmed": True, "reason": "confirmed"},
-        "fact_groups": {"accepted": 2, "dropped": 1},
-        "claims": [
-            {
-                "label": "Nvidia confirmed it",
-                "kind": "confirmed",
-                "central": True,
-                "evidence": [
-                    {
-                        "ok": True,
-                        "reason": None,
-                        "speaker": "Nvidia",
-                        "attribution_mode": "explicit",
-                        "attribution_quote": "says nvidia",
-                    }
-                ],
-            }
-        ],
-        "claims_total": 1,
-        "sheet_path": "/tmp/abc.json",
-    }
-    monkeypatch.setattr(replay, "run", lambda *args, **kwargs: report)
+def test_replay_main_prints_the_report(tmp_path, monkeypatch, capsys):
+    sheet_path = tmp_path / "abc.json"
+    monkeypatch.setattr(replay, "run", lambda *args, **kwargs: report_dict(sheet_path))
 
     code = replay.main(["abc"])
     captured = capsys.readouterr()
@@ -198,6 +216,10 @@ def test_replay_main_prints_the_report(monkeypatch, capsys):
     assert "fact_groups: accepted=2 dropped=1" in captured.out
     assert "claim 1:" in captured.out
     assert "attribution_mode=explicit" in captured.out
+    assert captured.out.strip().splitlines()[-1] == (
+        f"report: {sheet_path.parent / (sheet_path.stem + '-report.txt')} sheet: {sheet_path}"
+    )
+
 
 
 # --- isolation: no writes to the data tree, no breaker -----------------------
@@ -311,3 +333,93 @@ def test_replay_prints_at_most_eight_claims(tmp_path, monkeypatch):
     printed = replay.render_report(report)
     assert "claim 8:" in printed
     assert "claim 9:" not in printed
+
+
+# --- console safety: a Windows code page must not kill a finished run --------
+
+
+def cp932_console():
+    """A stdout that encodes to cp932 strictly, like a Japanese console."""
+    buffer = io.BytesIO()
+    return buffer, io.TextIOWrapper(buffer, encoding="cp932", errors="strict")
+
+
+def test_replay_prints_em_dash_and_japanese_on_a_cp932_console(tmp_path, monkeypatch):
+    sheet_path = tmp_path / "unconfirmed" / "abc.json"
+    report = report_dict(
+        sheet_path,
+        tmp_path,
+        title="Nvidia \u2014 GPU launch confirmed \U0001f3ae",
+        label="Nvidia \u306f\u767a\u8868 \u2014 launch \U0001f3ae",
+        quote="\u300c\u767a\u8868\u3059\u308b\u3001\u3053\u306e\u5834\u5408\u3002\u300d",
+    )
+    monkeypatch.setattr(replay, "run", lambda *args, **kwargs: report)
+
+    buffer, console = cp932_console()
+    monkeypatch.setattr(sys, "stdout", console)
+
+    code = replay.main(["abc"])
+    console.flush()
+    printed = buffer.getvalue().decode("cp932")
+
+    assert code == 0
+    assert "model calls: 3" in printed
+    assert "\u2014" not in printed
+    assert str(sheet_path) in printed
+    assert printed.strip().splitlines()[-1].startswith("report:")
+
+
+def test_replay_writes_the_report_file_as_utf8(tmp_path, monkeypatch, capsys):
+    sheet_path = tmp_path / "unconfirmed" / "abc.json"
+    monkeypatch.setattr(
+        replay,
+        "run",
+        lambda *args, **kwargs: report_dict(sheet_path, tmp_path, title="Nvidia \u767a\u8868"),
+    )
+
+    code = replay.main(["abc"])
+
+    report_path = tmp_path / "unconfirmed" / "abc-report.txt"
+    assert code == 0
+    assert report_path.is_file()
+    text = report_path.read_text(encoding="utf-8")
+    assert "Nvidia \u767a\u8868" in text
+    assert "claim 1:" in text
+    assert "sheet: " in text
+
+
+def test_replay_last_printed_line_names_the_sheet_path(tmp_path, monkeypatch, capsys):
+    sheet_path = tmp_path / "unconfirmed" / "abc.json"
+    monkeypatch.setattr(replay, "run", lambda *args, **kwargs: report_dict(sheet_path, tmp_path))
+
+    code = replay.main(["abc"])
+    lines = capsys.readouterr().out.strip().splitlines()
+
+    assert code == 0
+    assert lines[-1] == (
+        f"report: {tmp_path / 'unconfirmed' / 'abc-report.txt'} sheet: {sheet_path}"
+    )
+
+
+def test_replay_print_failure_reports_and_keeps_the_temp_folder(tmp_path, monkeypatch, capsys):
+    temp_dir = Path(tempfile.mkdtemp(prefix="gx-replay-", dir=tmp_path))
+    sheet_path = temp_dir / "unconfirmed" / "abc.json"
+    monkeypatch.setattr(replay, "run", lambda *args, **kwargs: report_dict(sheet_path, temp_dir))
+
+    class BrokenConsole:
+        def write(self, text):
+            raise OSError("console is broken")
+
+        def flush(self):
+            raise OSError("console is broken")
+
+    monkeypatch.setattr(sys, "stdout", BrokenConsole())
+
+    code = replay.main(["abc"])
+    captured = capsys.readouterr()
+
+    assert code != 0
+    assert "report failed: console is broken" in captured.err
+    assert str(sheet_path) in captured.err
+    assert temp_dir.exists()
+

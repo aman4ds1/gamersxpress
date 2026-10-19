@@ -26,6 +26,12 @@ verdict (rule, confirmed, reason), the accepted and dropped fact-group counts,
 and -- for the first :data:`CLAIM_REPORT_LIMIT` claims -- the label, kind,
 central flag and, per evidence entry, ok, reason, speaker, attribution mode and
 the attribution quote truncated to :data:`ATTRIBUTION_QUOTE_WORDS` words.
+
+The report has to survive a Windows console. :func:`render_report` emits ASCII
+punctuation only (:data:`ASCII_PUNCT`), stdout is reconfigured to replace any
+character the console code page cannot encode, and the complete report is also
+written as UTF-8 next to the sheet. The last printed line names both files, and
+a failure while reporting says so instead of hiding a finished run.
 """
 
 from __future__ import annotations
@@ -62,6 +68,41 @@ CLAIM_REPORT_LIMIT = 8
 
 #: How many words of an attribution quote the printed report keeps.
 ATTRIBUTION_QUOTE_WORDS = 15
+
+#: Typographic characters converted to plain ASCII before printing, so a
+#: Windows console on an ANSI code page (cp932, cp1252, ...) can encode them.
+#: Letters are never touched: a Japanese label stays Japanese and the console
+#: replaces it instead of raising UnicodeEncodeError.
+ASCII_PUNCT = {
+    # dashes and hyphens
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-",
+    "\u2015": "-", "\u2212": "-", "\ufe58": "-", "\uff0d": "-", "\u2043": "-",
+    # single quotes
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+    "\u2032": "'", "\u00b4": "'", "\uff07": "'", "\u02b9": "'",
+    # double quotes
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2033": '"',
+    "\u00ab": '"', "\u00bb": '"', "\uff02": '"',
+    # ellipsis
+    "\u2026": "...",
+    # spaces and invisible characters
+    "\u00a0": " ", "\u3000": " ", "\u2002": " ", "\u2003": " ", "\u2009": " ",
+    "\u200b": "", "\ufeff": "", "\u00ad": "",
+    # arrows
+    "\u2190": "<-", "\u2192": "->", "\u2194": "<->", "\u2191": "^", "\u2193": "v",
+    # bullets
+    "\u2022": "-", "\u00b7": "-", "\u30fb": "-", "\u25cf": "-",
+    # fullwidth and CJK punctuation
+    "\u3001": ",", "\u3002": ".", "\uff01": "!", "\uff1f": "?", "\uff1a": ":",
+    "\uff1b": ";", "\uff08": "(", "\uff09": ")", "\u300c": '"', "\u300d": '"',
+    "\u300e": '"', "\u300f": '"', "\u3010": "[", "\u3011": "]", "\uff3b": "[",
+    "\uff3d": "]", "\uff5b": "{", "\uff5d": "}", "\uff5e": "~", "\uff05": "%",
+    "\uff0a": "*", "\uff0b": "+", "\uff1d": "=", "\uff20": "@", "\uff03": "#",
+    "\uff06": "&", "\uff0f": "/", "\uff5c": "|",
+}
+
+#: The translation table built from :data:`ASCII_PUNCT`.
+ASCII_PUNCT_TABLE = str.maketrans(ASCII_PUNCT)
 
 
 class ReplayError(Exception):
@@ -176,6 +217,12 @@ def _truncate_words(text: object, limit: int) -> str:
     return " ".join(words[:limit])
 
 
+def _ascii_punct(text: object) -> str:
+    """``text`` with every typographic character replaced by ASCII."""
+    return str(text or "").translate(ASCII_PUNCT_TABLE)
+
+
+
 def _claim_report(claim: dict) -> dict:
     """One claim's report entry: label, kind, central flag and its evidence."""
     evidence = claim.get("evidence") or []
@@ -209,6 +256,7 @@ def build_report(
     entities: list[str],
     model_calls: int,
     sheet_path: Path | None,
+    output_dir: Path | None = None,
 ) -> dict:
     """Summarize a facts sheet for the printed replay report."""
     confirmation = sheet.get("confirmation") or {}
@@ -231,12 +279,20 @@ def build_report(
         "claims": [_claim_report(claim) for claim in claims[:CLAIM_REPORT_LIMIT]],
         "claims_total": len(claims),
         "sheet_path": str(sheet_path) if sheet_path is not None else None,
+        "output_dir": str(output_dir) if output_dir is not None else None,
     }
 
 
-def render_report(report: dict) -> str:
-    """Render a replay report as the short block the CLI prints."""
-    title = report.get("title") or "(no title)"
+def render_report(report: dict, *, limit: int | None = CLAIM_REPORT_LIMIT) -> str:
+    """Render a replay report as the short block the CLI prints.
+
+    Typographic punctuation is converted to ASCII (see :data:`ASCII_PUNCT`), so
+    what is emitted never trips a console code page. Letters are kept as they
+    are; the CLI's stdout replaces any of those the console cannot encode.
+    ``limit`` caps the claims shown (:data:`CLAIM_REPORT_LIMIT` by default,
+    every claim when None).
+    """
+    title = _ascii_punct(report.get("title") or "(no title)")
     lines = [f"replay: {report.get('cluster_id')} - {title}"]
     lines.append(f"model calls: {report.get('model_calls')}")
     confirmation = report.get("confirmation") or {}
@@ -244,18 +300,19 @@ def render_report(report: dict) -> str:
         "confirmation: "
         f"rule={confirmation.get('rule')} "
         f"confirmed={confirmation.get('confirmed')} "
-        f"reason={confirmation.get('reason')}"
+        f"reason={_ascii_punct(confirmation.get('reason'))}"
     )
     fact_groups = report.get("fact_groups") or {}
     lines.append(
         f"fact_groups: accepted={fact_groups.get('accepted')} "
         f"dropped={fact_groups.get('dropped')}"
     )
-    claims = report.get("claims") or []
-    lines.append(f"claims: showing {len(claims)} of {report.get('claims_total')}")
-    for index, claim in enumerate(claims, start=1):
+    claims = list(report.get("claims") or [])
+    shown = claims if limit is None else claims[:limit]
+    lines.append(f"claims: showing {len(shown)} of {report.get('claims_total')}")
+    for index, claim in enumerate(shown, start=1):
         lines.append(
-            f"claim {index}: label={claim.get('label')!r} "
+            f"claim {index}: label={_ascii_punct(claim.get('label'))!r} "
             f"kind={claim.get('kind')} central={claim.get('central')}"
         )
         evidence = claim.get("evidence") or []
@@ -264,13 +321,14 @@ def render_report(report: dict) -> str:
         for entry in evidence:
             lines.append(
                 "  evidence: "
-                f"ok={entry.get('ok')} reason={entry.get('reason')} "
-                f"speaker={entry.get('speaker')} "
+                f"ok={entry.get('ok')} reason={_ascii_punct(entry.get('reason'))} "
+                f"speaker={_ascii_punct(entry.get('speaker'))} "
                 f"attribution_mode={entry.get('attribution_mode')} "
-                f"attribution_quote={entry.get('attribution_quote')!r}"
+                f"attribution_quote={_ascii_punct(entry.get('attribution_quote'))!r}"
             )
     lines.append(f"sheet: {report.get('sheet_path')}")
-    return "\n".join(lines)
+    return _ascii_punct("\n".join(lines))
+
 
 
 def run(
@@ -360,7 +418,29 @@ def run(
         entities=entities,
         model_calls=run_state.calls,
         sheet_path=sheet_path,
+        output_dir=output_dir,
     )
+
+
+def _report_path(report: dict) -> Path:
+    """The UTF-8 report file's path: next to the sheet, inside the temp dir."""
+    sheet_path = report.get("sheet_path")
+    if sheet_path:
+        sheet = Path(sheet_path)
+        return sheet.parent / f"{sheet.stem}-report.txt"
+    output_dir = report.get("output_dir")
+    return (Path(output_dir) if output_dir else Path(".")) / "report.txt"
+
+
+def _make_stdout_encodable() -> None:
+    """Ask stdout to replace characters it cannot encode instead of raising."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(errors="replace")
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -387,8 +467,20 @@ def main(argv: list[str] | None = None) -> int:
     except ReplayError as exc:
         print(f"replay failed: {exc}", file=sys.stderr)
         return 2
-    print(render_report(report))
+
+    _make_stdout_encodable()
+    try:
+        report_path = _report_path(report)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(render_report(report, limit=None) + "\n", encoding="utf-8")
+        print(render_report(report))
+        print(f"report: {report_path} sheet: {report.get('sheet_path')}")
+    except Exception as exc:
+        print(f"report failed: {exc}", file=sys.stderr)
+        print(f"sheet: {report.get('sheet_path')}", file=sys.stderr)
+        return 3
     return 0
+
 
 
 if __name__ == "__main__":
