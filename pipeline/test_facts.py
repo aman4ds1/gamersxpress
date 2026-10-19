@@ -3584,7 +3584,7 @@ def test_verify_evidence_rejects_an_unrelated_speaker_on_a_first_party_site():
     )
     assert result["attribution_mode"] == "none"
     assert result["ok"] is False
-    assert result["reason"] == "attribution quote missing"
+    assert result["reason"] == "no attribution cue"
 
 
 def test_verify_evidence_accepts_a_headline_announcement_on_a_tier_one_site():
@@ -3638,7 +3638,7 @@ def test_verify_evidence_rejects_an_unattributed_claim_without_a_press_marker():
     )
     assert result["attribution_mode"] == "none"
     assert result["ok"] is False
-    assert result["reason"] == "attribution quote missing"
+    assert result["reason"] == "no named speaker"
 
 
 def test_verify_evidence_finds_an_attribution_quote_in_the_title():
@@ -5925,4 +5925,125 @@ def test_headline_only_source_makes_no_model_call_and_yields_one_title_claim(mon
     assert [source["link"] for source in result["sources"]] == [
         "https://news.acme.example/1", "https://outlet.example/2",
     ]
+
+
+def test_is_coreference_phrase_matches_role_noun_suffixes():
+    # A phrase corefers when its trailing words are a role noun, even when
+    # non-role words precede them ("an update the developer").
+    assert facts._is_coreference_phrase("the studio") is True
+    assert facts._is_coreference_phrase("the developer") is True
+    assert facts._is_coreference_phrase("an update the developer") is True
+    assert facts._is_coreference_phrase("even though the studio") is True
+    assert facts._is_coreference_phrase("an update") is False
+    assert facts._is_coreference_phrase("the game") is False
+
+
+def test_coreference_phrase_resolves_across_paragraphs():
+    # A role phrase in a later paragraph still resolves to the organization
+    # the previous paragraph named, when it sits within the sentence window.
+    src = source(text="Bethesda announced a delay.\n\nThe studio confirmed the patch lands in May.")
+    resolved = facts.resolve_claim_origins(
+        [claim(claim="the patch lands in May", origin="bethesda", source_url="https://a.example/1")], [src]
+    )
+    assert resolved[0]["origin"] == "bethesda"
+
+
+def test_role_phrase_with_two_candidates_stays_unresolved():
+    # Two organizations named before the phrase: it cannot say which one it
+    # stands for, so it stays unresolved instead of guessing.
+    text = "Bethesda announced the delay. Capcom commented on the release. The studio confirmed the patch lands in May."
+    position = text.find("The studio")
+    assert facts._nearest_preceding_organization(text, position, entities=[]) == ""
+
+
+def test_role_phrase_title_breaks_tie_when_it_names_one_candidate():
+    # The headline names one of the two candidates, which then wins the tie.
+    text = "Bethesda announced the delay. Capcom commented on the release. The studio confirmed the patch lands in May."
+    position = text.find("The studio")
+    resolved = facts._nearest_preceding_organization(
+        text, position, entities=[], title="Bethesda delays the patch"
+    )
+    assert resolved == "bethesda"
+
+
+def test_role_phrase_stays_unresolved_when_title_names_both_candidates():
+    # The headline names both candidates, so it cannot break the tie either.
+    text = "Bethesda announced the delay. Capcom commented on the release. The studio confirmed the patch lands in May."
+    position = text.find("The studio")
+    resolved = facts._nearest_preceding_organization(
+        text, position, entities=[], title="Bethesda and Capcom discuss the patch"
+    )
+    assert resolved == ""
+
+
+def test_role_phrase_beyond_sentence_window_stays_unresolved():
+    # An organization in an earlier paragraph, more than the sentence window
+    # away, no longer grounds the role phrase: the claim is unstated.
+    fillers = " ".join("The filler sentence number %d appears here." % i for i in range(1, 10))
+    text = "Bethesda announced the delay today.\n\n" + fillers + " The studio confirmed the patch lands in May."
+    src = source(text=text)
+    resolved = facts.resolve_claim_origins(
+        [claim(claim="the patch lands in May", origin="bethesda", source_url="https://a.example/1")], [src]
+    )
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+
+
+def test_role_phrase_does_not_resolve_to_a_product():
+    # A product that shares the organization pattern never vouches for the
+    # role phrase; the phrase stays unresolved.
+    text = "Steam Deck shipped worldwide today. The studio confirmed the patch lands in May."
+    position = text.find("The studio")
+    assert facts._nearest_preceding_organization(text, position, entities=["Steam Deck"]) == ""
+
+
+def test_role_phrase_does_not_resolve_to_the_publishing_outlet():
+    # The publishing outlet never vouches for its own article's role phrase.
+    text = "Xbox Wire published a delay guide today. The studio confirmed the patch lands in May."
+    position = text.find("The studio")
+    assert facts._nearest_preceding_organization(text, position, entities=[], outlet="Xbox Wire") == ""
+
+
+def test_object_role_phrase_without_a_cue_does_not_resolve():
+    # "the studio" is the object of "Players asked", not the speaker of an
+    # attribution cue, so it never grounds the claim's origin.
+    src = source(
+        text="Bethesda shipped the patch. Players asked the studio for a refund. The report says the patch lands in May."
+    )
+    resolved = facts.resolve_claim_origins(
+        [claim(claim="the patch lands in May", origin="bethesda", source_url="https://a.example/1")], [src]
+    )
+    assert resolved[0]["origin"] == facts.UNSTATED_ORIGIN
+
+
+def test_role_phrase_attribution_span_is_kept_for_evidence():
+    # A role-phrase subject with no named speaker still yields an attribution
+    # span for the evidence record, and grounding accepts it when the phrase
+    # sits next to the quoted claim.
+    text = "Techland delayed the patch. Even though the studio has said the delay is short, fans remain annoyed."
+    sentences = facts._numbered_sentences(text)
+    paragraphs = facts._sentence_paragraphs(text, sentences)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="The patch lands in May", value="in May", origin="Techland",
+            speaker="Techland", speaker_type="organization",
+            quote_ids=[1], attribution_ids=[2],
+        ),
+        sentences, aliases={}, entities=["Techland"], paragraphs=paragraphs,
+    )
+    assert cited["attribution_quote"] == "Even though the studio has said"
+    result = facts.verify_evidence(cited, text, "", "Alpha", aliases={}, entities=["Techland"])
+    assert result["ok"] is True
+
+
+def test_speaker_is_product_rejects_a_bare_product_title():
+    # A speaker that is the story's lead product or named in its title is the
+    # subject, not a speaker.
+    assert facts._speaker_is_product("Dawnwalker", ["The Blood of Dawnwalker"], "") is True
+    assert facts._speaker_is_product("Dawnwalker", [], "", story_title="Blood of Dawnwalker update") is True
+    # A multi-word organization sharing one word with a product is kept.
+    assert facts._speaker_is_product("Rebel Wolves", ["Wolves of Winter"], "") is False
+    # A known organization alias is kept.
+    assert facts._speaker_is_product("Xbox", [], "", story_title="Xbox delays the patch") is False
+    # A cue subject that is also the lead entity is kept.
+    assert facts._speaker_is_product("Rebel Wolves", ["Rebel Wolves"], "Rebel Wolves has announced") is False
 
