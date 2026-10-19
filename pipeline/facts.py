@@ -3220,12 +3220,78 @@ def _attribution_from_quote(quote: str, names: set[str]) -> str:
     return window
 
 
-def _evidence_speaker_names(speaker: object, aliases: dict[str, str]) -> set[str]:
-    """Every match key that identifies a claim's speaker (own form plus aliases)."""
+def _speaker_short_key(speaker: object, speaker_type: str) -> str:
+    """The short form of a claim's speaker: a surname or a suffix-free name.
+
+    "Jeff Fisher" is cited as "Fisher" as often as by its full name, and
+    "Rebel Wolves Studios" as "Rebel Wolves", so both short forms match the
+    speaker's sentences; a single-word speaker has no short form and an
+    organization keeps its full name when no corporate suffix closes it.
+    """
+    words = _origin_key(speaker).split()
+    if len(words) < 2:
+        return ""
+    if speaker_type == "person":
+        return words[-1]
+    if speaker_type == "organization" and words[-1] in _CORPORATE_SUFFIXES:
+        return " ".join(words[:-1])
+    return ""
+
+
+def _short_key_has_one_holder(short: str, own: str, sheet_speakers: object) -> bool:
+    """True when exactly one speaker string of the sheet can claim ``short``.
+
+    "Fisher said" is ambiguous when two Fishers are in the story, so the short
+    form is dropped then and only the full name credits its speaker; identical
+    repeats of the one speaker string count as one holder.
+    """
+    holders: set[str] = set()
+    for raw in sheet_speakers or ():
+        key = _origin_key(str(raw or ""))
+        if not key:
+            continue
+        if key == own or key == short:
+            holders.add(key)
+            continue
+        words = key.split()
+        if len(words) >= 2 and words[-1] == short:
+            holders.add(key)
+        elif (
+            len(words) >= 2
+            and words[-1] in _CORPORATE_SUFFIXES
+            and " ".join(words[:-1]) == short
+        ):
+            holders.add(key)
+    return len(holders) == 1
+
+
+def _evidence_speaker_names(
+    speaker: object,
+    aliases: dict[str, str],
+    *,
+    speaker_type: str = "",
+    sheet_speakers: object = None,
+) -> set[str]:
+    """Every match key that identifies a claim's speaker.
+
+    The speaker's own form plus its aliases as before; a person also matches
+    by its surname and an organization by its name without a corporate suffix,
+    so a sentence writing only "Fisher" or "Rebel Wolves" still credits "Jeff
+    Fisher" or "Rebel Wolves Studios". ``sheet_speakers`` is the set of speaker
+    strings the sheet holds: verification passes it and then the short form is
+    added only when exactly one of them derives it, so a surname shared by two
+    speakers never credits the wrong one; citation, seeing one source, always
+    adds it and verification is the gate that can still refuse it.
+    """
     names = set(_origin_names(speaker, aliases))
     own = _origin_key(speaker)
     if own:
         names.add(own)
+    short = _speaker_short_key(own, speaker_type)
+    if short and (
+        sheet_speakers is None or _short_key_has_one_holder(short, own, sheet_speakers)
+    ):
+        names.add(short)
     return names
 
 
@@ -3388,6 +3454,7 @@ def verify_evidence(
     source_tier: object = None,
     source_owner: object = None,
     story_title: object = "",
+    sheet_speakers: object = None,
 ) -> dict[str, Any]:
     """Check one claim's stored quote and attribution against its own source.
 
@@ -3437,7 +3504,13 @@ def verify_evidence(
     speaker = str(claim.get("speaker") or "").strip()
     speaker_type = _normalize_speaker_type(claim.get("speaker_type"))
 
-    names = _evidence_speaker_names(speaker, aliases) if speaker else set()
+    names = (
+        _evidence_speaker_names(
+            speaker, aliases, speaker_type=speaker_type, sheet_speakers=sheet_speakers
+        )
+        if speaker
+        else set()
+    )
     absence = is_absence_claim(claim)
 
     # The claim's cited ids name this source's numbered sentences: every
@@ -5678,13 +5751,43 @@ def _cited_sentences(ids: object, sentences: list[str]) -> list[str]:
     return cited
 
 
+def _span_skipped_tokens(sentence: str, tokens: list[re.Match]) -> set[int]:
+    """Token indices the span search window may skip.
+
+    A segment inside parentheses ("Fisher (via 4Gamers) said") or set off by a
+    comma pair ("Jeff Fisher, the vice president of the unit, has denied") is an
+    aside from the main clause, so its words never count toward the cue gap and
+    a long apposition or source parenthetical cannot push the nearest cue out
+    of reach. The span itself stays one verbatim stretch of the sentence, so a
+    parenthetical trailing the span simply lies outside it.
+    """
+    regions: list[tuple[int, int]] = []
+    commas: list[int] = []
+    open_offsets: list[int] = []
+    for offset, char in enumerate(sentence):
+        if char == "(":
+            open_offsets.append(offset)
+        elif char == ")" and open_offsets:
+            regions.append((open_offsets.pop(), offset))
+        elif char == ",":
+            commas.append(offset)
+    regions.extend(zip(commas, commas[1:]))
+    skipped: set[int] = set()
+    for open_offset, close_offset in regions:
+        for index, token in enumerate(tokens):
+            if token.start() > open_offset and token.end() <= close_offset:
+                skipped.add(index)
+    return skipped
+
+
 def _attribution_span(sentence: str, names: set[str]) -> str:
     """The shortest span of ``sentence`` naming the speaker next to a cue.
 
     The span covers one occurrence of the speaker's name plus the nearest
     attribution cue within :data:`ATTRIBUTION_SPAN_MAX_GAP_WORDS` words before
     or after it ("Rebel Wolves has announced", "According to MP1st", "CD
-    Projekt chief says"), so the words that credit the speaker become the
+    Projekt chief says"), words inside parentheses or a comma-pair aside
+    excluded from that count, so the words that credit the speaker become the
     claim's attribution quote verbatim. Empty when the sentence names no
     speaker or carries no cue; whether the span is affirmative is left to
     :func:`verify_evidence`.
@@ -5694,6 +5797,7 @@ def _attribution_span(sentence: str, names: set[str]) -> str:
     tokens = list(re.finditer(r"[\w']+", sentence))
     if not tokens:
         return ""
+    skipped = _span_skipped_tokens(sentence, tokens)
     folded = [_grounding_normalize(match.group(0)) for match in tokens]
     cues = [cue for cue in (_grounding_normalize(cue) for cue in attribution_cues()) if cue]
     longest = max((len(cue.split()) for cue in cues), default=0)
@@ -5717,9 +5821,13 @@ def _attribution_span(sentence: str, names: set[str]) -> str:
             best: tuple[tuple[int, int], int, int] | None = None
             for cue_start, cue_end in cue_spans:
                 if cue_start > end:
-                    gap = cue_start - end - 1
+                    gap = sum(
+                        1 for index in range(end + 1, cue_start) if index not in skipped
+                    )
                 elif cue_end < start:
-                    gap = start - cue_end - 1
+                    gap = sum(
+                        1 for index in range(cue_end + 1, start) if index not in skipped
+                    )
                 else:
                     gap = 0
                 if gap > ATTRIBUTION_SPAN_MAX_GAP_WORDS:
@@ -5789,6 +5897,50 @@ def _best_body_sentence_for(
         if len(shared) > best_shared:
             best_index, best_shared = index, len(shared)
     return best_index
+
+
+#: How many content words a borrowed quote must share with the claim it says:
+#: the nearest body sentence after the attribution that is about the claim.
+_QUOTE_BORROW_MIN_SHARED_WORDS = 3
+
+
+def _quote_borrow_sentence(
+    claim: dict,
+    sentences: list[str],
+    entities: list[str] | None,
+    attribution_ids: list[int],
+) -> int | None:
+    """The sentence after the claim's attribution that can quote it, when any.
+
+    A claim whose attribution is cited but whose ``quote_ids`` list is empty
+    borrows the nearest following body sentence sharing at least
+    :data:`_QUOTE_BORROW_MIN_SHARED_WORDS` content words with its label and
+    value, or naming a primary entity the claim also names; when no following
+    sentence is about the claim, the quote stays empty and verification fails
+    it as quote missing.
+    """
+    valid = [
+        index
+        for index in attribution_ids
+        if 0 <= index < len(sentences) and sentences[index]
+    ]
+    if not valid:
+        return None
+    label = _grounding_normalize(
+        f"{claim.get('claim', '')} {claim.get('value', '')}"
+    )
+    label_words = gates._content_words(label)
+    label_names_entity = _names_primary_entity(label, entities)
+    for index in range(max(valid) + 1, len(sentences)):
+        sentence = sentences[index]
+        if not sentence:
+            continue
+        shared = label_words & gates._content_words(_grounding_normalize(sentence))
+        if len(shared) >= _QUOTE_BORROW_MIN_SHARED_WORDS:
+            return index
+        if label_names_entity and _names_primary_entity(sentence, entities):
+            return index
+    return None
 
 
 def _coreference_span_offset(subject: str) -> int | None:
@@ -5884,6 +6036,47 @@ def _attribution_sentence_granted(
     )
 
 
+def _first_attribution_span(sentences: list[str], names: set[str], speaker: str) -> str:
+    """The first of ``sentences`` carrying the speaker next to a cue, or ``""``.
+
+    The named speaker's span wins; a sentence without any of its names may
+    still corefer ("the studio has said ..."), which is the role-phrase span.
+    """
+    for sentence in sentences:
+        attribution = _attribution_span(sentence, names)
+        if not attribution and speaker:
+            attribution = _role_phrase_attribution_span(sentence)
+        if attribution:
+            return attribution
+    return ""
+
+
+def _preceding_quoted_sentence(
+    quote_ids: list[int], sentences: list[str], paragraphs: list[int] | None
+) -> str:
+    """The sentence right before the claim's quote, when it shares its paragraph.
+
+    "Here's what Fisher said:" often introduces its quote from the sentence
+    before, so when the cited sentences carry no attribution the sentence
+    immediately preceding the first quoted one may still name the speaker next
+    to a cue -- only when both sit in the same paragraph, never across a break.
+    """
+    if paragraphs is None:
+        return ""
+    valid = [
+        index for index in quote_ids if 0 <= index < len(sentences) and sentences[index]
+    ]
+    if not valid:
+        return ""
+    first = min(valid)
+    index = first - 1
+    if index < 0 or index >= len(paragraphs) or first >= len(paragraphs):
+        return ""
+    if paragraphs[index] < 0 or paragraphs[index] != paragraphs[first]:
+        return ""
+    return sentences[index]
+
+
 def _cite_claim_evidence(
     claim: dict,
     sentences: list[str],
@@ -5899,15 +6092,24 @@ def _cite_claim_evidence(
     span naming the speaker next to a cue in the sentences ``attribution_ids``
     cites, falling back to the quoted sentences when no attribution sentence
     is cited (the in-sentence case: "Rebel Wolves has announced that ..."),
-    and to the role phrase that corefers next to the cue when the sentence
-    carries none of the speaker's names ("the studio has said ...").
-    A claim whose only citation is the headline (S0) is remapped to the body
-    sentence that best supports it (:func:`_best_body_sentence_for`), keeping
-    the title citation when no body sentence qualifies. A cited attribution
-    sentence outside the claim's own quote must name the speaker next to a cue
-    and either sit near the quoted sentence (same paragraph, or at most
-    :data:`_ATTRIBUTION_MAX_SENTENCES_BEFORE` sentences before it) or be
-    about the claim itself (shared primary entity or shared content words,
+    and then to the sentence immediately before the quote when it shares its
+    paragraph -- "Here's what Fisher said:" introduces its quote from the
+    sentence before -- and to the role phrase that corefers next to the cue
+    when the sentence carries none of the speaker's names ("the studio has
+    said ..."). A cited attribution sentence that names no speaker of this
+    claim is dropped rather than replaced by the quote: the quote itself is
+    searched only when the claim cites no attribution sentence at all. A claim
+    whose attribution is cited but whose ``quote_ids`` list is empty borrows
+    the nearest following body sentence that is about the claim
+    (:func:`_quote_borrow_sentence`); with nothing to borrow its quote stays
+    empty and verification fails it as quote missing. A claim whose only
+    citation is the headline (S0) is remapped to the body sentence that best
+    supports it (:func:`_best_body_sentence_for`), keeping the title citation
+    when no body sentence qualifies. A cited attribution sentence outside the
+    claim's own quote must name the speaker next to a cue and either sit near
+    the quoted sentence (same paragraph, or at most
+    :data:`_ATTRIBUTION_MAX_SENTENCES_BEFORE` sentences before it) or be about
+    the claim itself (shared primary entity or shared content words,
     :func:`_attribution_sentence_granted`), else no attribution is taken from
     it. A claim that cites no ids keeps its literal quotes (an older sheet),
     and ids that name no sentence are dropped.
@@ -5921,9 +6123,21 @@ def _cite_claim_evidence(
         if best is not None:
             quote_ids = [best]
             claim = {**claim, "quote_ids": [best], "remapped_from_title": True}
+    # An attributed claim citing no quote takes the nearest following sentence
+    # that is about the claim, so the speaker's statement still says something.
+    if not quote_ids and attribution_ids:
+        borrowed = _quote_borrow_sentence(claim, sentences, entities, attribution_ids)
+        if borrowed is not None:
+            quote_ids = [borrowed]
+            claim = {**claim, "quote_ids": [borrowed]}
     quoted = _cited_sentences(quote_ids, sentences)
     speaker = str(claim.get("speaker") or "").strip()
-    names = _evidence_speaker_names(speaker, aliases) if speaker else set()
+    speaker_type = _normalize_speaker_type(claim.get("speaker_type"))
+    names = (
+        _evidence_speaker_names(speaker, aliases, speaker_type=speaker_type)
+        if speaker
+        else set()
+    )
     cited_attribution = _cited_sentences(attribution_ids, sentences)
     if cited_attribution:
         # An attribution sentence outside the claim's own quote credits the
@@ -5940,13 +6154,11 @@ def _cite_claim_evidence(
                 attributed.append(sentence)
     else:
         attributed = quoted
-    attribution = ""
-    for sentence in attributed:
-        attribution = _attribution_span(sentence, names)
-        if not attribution and speaker:
-            attribution = _role_phrase_attribution_span(sentence)
-        if attribution:
-            break
+    attribution = _first_attribution_span(attributed, names, speaker)
+    if not attribution:
+        preceding = _preceding_quoted_sentence(quote_ids, sentences, paragraphs)
+        if preceding:
+            attribution = _attribution_span(preceding, names)
     return {
         **claim,
         "quote": _clip_field(" ".join(quoted), MAX_QUOTE_CHARS),
@@ -5989,6 +6201,7 @@ def _evidence_for_claim(
     aliases: dict[str, str],
     entities: list[str] | None,
     story_title: object = "",
+    sheet_speakers: object = None,
 ) -> dict:
     """Verify one claim against its own source and tag the result with the URL.
 
@@ -5996,6 +6209,9 @@ def _evidence_for_claim(
     :func:`_cite_claim_evidence` before anything else read them); on top of
     the verbatim checks, the cited quote must be about the claim it is cited
     for (:func:`_quote_supports_claim`), else the entry fails with that reason.
+    ``sheet_speakers`` is every speaker string the sheet holds, so a short
+    speaker form (a surname) credits its claim only when exactly one speaker
+    in the sheet owns it.
     """
     result = verify_evidence(
         claim,
@@ -6007,6 +6223,7 @@ def _evidence_for_claim(
         source_tier=source.get("tier"),
         source_owner=source.get("owner"),
         story_title=story_title,
+        sheet_speakers=sheet_speakers,
     )
     if claim.get("quote") and not _quote_supports_claim(
         claim.get("quote"), claim, entities
@@ -6427,12 +6644,22 @@ def facts(
     # claim already carries its own evidence (there is no text to check it
     # against), so it is left as built.
     sources_by_url = _sources_by_url(sources)
+    sheet_speakers = {
+        speaker
+        for speaker in (str(claim.get("speaker") or "").strip() for claim in kept)
+        if speaker
+    }
     for claim in kept:
         if claim.get("headline_only"):
             continue
         source = sources_by_url.get(_source_url_key(claim.get("source_url"))) or {}
         claim["evidence"] = _evidence_for_claim(
-            claim, source, aliases=aliases, entities=canonical, story_title=title
+            claim,
+            source,
+            aliases=aliases,
+            entities=canonical,
+            story_title=title,
+            sheet_speakers=sheet_speakers,
         )
     evidence_summary = _evidence_summary(kept)
 

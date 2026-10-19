@@ -522,6 +522,23 @@ facts:
     - unveiled
     - detailed
     - shared
+    - denied
+    - denies
+    - rejected
+    - responded
+    - replied
+    - stressed
+    - emphasized
+    - insisted
+    - acknowledged
+    - admitted
+    - warned
+    - cautioned
+    - argued
+    - described
+    - pointed out
+    - speaking at
+    - in a statement to
 
 
 # Verifier stage (pipeline/verify.py; PLAN.md principle 4 / stage 6).

@@ -4343,6 +4343,265 @@ def test_an_attribution_sentence_naming_a_different_speaker_grants_none():
     assert cited["attribution_quote"] == ""
 
 
+# --- surname speakers, denial cues and the citation fallbacks ----------------
+
+
+def fisher_names() -> set[str]:
+    return facts._evidence_speaker_names("Jeff Fisher", {}, speaker_type="person")
+
+
+def test_a_trailing_source_parenthetical_stays_out_of_the_attribution_span():
+    # 'says Fisher (via 4Gamers)' ends the span at the name: the source
+    # parenthetical trails the speaker's words and never joins them.
+    assert (
+        facts._attribution_span(
+            'The RTX 5090 remains the fastest card on the market," says Fisher '
+            "(via 4Gamers).",
+            fisher_names(),
+        )
+        == "says Fisher"
+    )
+
+
+def test_a_surname_mention_next_to_a_cue_builds_the_attribution_span():
+    # The sentence names only the surname, which is a match key of the
+    # full-name speaker "Jeff Fisher".
+    assert (
+        facts._attribution_span(
+            "Here's what Fisher said about the wider delay: production continues.",
+            fisher_names(),
+        )
+        == "Fisher said"
+    )
+
+
+def test_a_long_apposition_keeps_the_cue_inside_the_span_window():
+    # The role phrase between the comma pair is an aside: its nineteen words
+    # would push "has denied" past the cue gap, but they never count.
+    span = facts._attribution_span(
+        "However, Jeff Fisher, the senior vice president of Nvidia's GeForce "
+        "gaming business who has held the role since 2015, has denied its "
+        "demise, and the line stays on sale.",
+        fisher_names(),
+    )
+    assert span.startswith("Jeff Fisher")
+    assert span.endswith("has denied")
+    assert "Fisher" in span and "denied" in span
+
+
+def test_the_denial_and_response_cues_are_attribution_cues():
+    cues = facts.attribution_cues()
+    for cue in (
+        "denied",
+        "denies",
+        "rejected",
+        "responded",
+        "replied",
+        "stressed",
+        "emphasized",
+        "insisted",
+        "acknowledged",
+        "admitted",
+        "warned",
+        "cautioned",
+        "argued",
+        "described",
+        "noted",
+        "pointed out",
+        "speaking at",
+        "in a statement to",
+    ):
+        assert cue in cues, f"{cue!r} missing from facts.attribution_cues"
+        assert facts._attribution_has_cue(f"The company {cue} the report")
+    assert (
+        facts._attribution_span(
+            "Jeff Fisher has denied its demise", fisher_names()
+        )
+        == "Jeff Fisher has denied"
+    )
+
+
+def test_a_surname_only_mention_is_credited_to_the_full_name_speaker():
+    text = (
+        "Jeff Fisher said the line stays alive. "
+        "Here's what Fisher said about the wider delay: production continues. "
+    )
+    sentences = facts._numbered_sentences(text)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="production continues",
+            value="production continues",
+            origin="Jeff Fisher",
+            kind="reported",
+            speaker="Jeff Fisher",
+            speaker_type="person",
+            quote_ids=[2],
+            attribution_ids=[2],
+        ),
+        sentences,
+        aliases={},
+        paragraphs=facts._sentence_paragraphs(text, sentences),
+    )
+    assert cited["attribution_quote"] == "Fisher said"
+    # The sheet holds one Fisher, so the surname-only span credits "Jeff
+    # Fisher" and verification accepts it.
+    result = facts.verify_evidence(
+        cited, text, "", "Alpha", aliases={}, sheet_speakers={"Jeff Fisher"}
+    )
+    assert result["attribution_found"] is True
+    assert result["ok"] is True
+    assert result["reason"] == ""
+
+
+def test_a_surname_shared_by_a_second_speaker_in_the_story_credits_no_one():
+    # "Fisher said" is ambiguous with two Fishers in the story: only the full
+    # name may credit its speaker, so the short attribution credits nobody.
+    text = (
+        "Jeff Fisher said the line stays alive. "
+        "Here's what Fisher said about the wider delay: production continues. "
+    )
+    cited = claim(
+        claim="production continues",
+        value="production continues",
+        quote="Here's what Fisher said about the wider delay: production continues.",
+        attribution_quote="Fisher said",
+        speaker="Jeff Fisher",
+        speaker_type="person",
+    )
+    result = facts.verify_evidence(
+        cited,
+        text,
+        "",
+        "Alpha",
+        aliases={},
+        sheet_speakers={"Jeff Fisher", "Dana Fisher"},
+    )
+    assert result["attribution_found"] is False
+    assert result["ok"] is False
+    assert result["reason"] == "attribution quote not found"
+
+
+def test_a_claim_citing_no_attribution_sentence_takes_the_attribution_from_its_quote():
+    text = "The mod ships in January. Jeff Fisher said the mod ships in January."
+    sentences = facts._numbered_sentences(text)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="the mod ships in January",
+            value="in January",
+            origin="Jeff Fisher",
+            kind="reported",
+            speaker="Jeff Fisher",
+            speaker_type="person",
+            quote_ids=[2],
+            attribution_ids=[],
+        ),
+        sentences,
+        aliases={},
+        paragraphs=facts._sentence_paragraphs(text, sentences),
+    )
+    assert cited["quote"] == sentences[2]
+    assert cited["attribution_quote"] == "Jeff Fisher said"
+
+
+def test_a_claim_with_no_attribution_sentence_falls_back_to_the_sentence_before_its_quote():
+    # The quoted sentence itself names no one and carries no cue; the sentence
+    # introducing it, in the same paragraph, carries the speaker.
+    text = (
+        "Jeff Fisher said the line stays alive. "
+        "The lineup carries the new card forward through the cycle."
+    )
+    sentences = facts._numbered_sentences(text)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="the lineup carries the new card",
+            value="the new card",
+            origin="Jeff Fisher",
+            kind="reported",
+            speaker="Jeff Fisher",
+            speaker_type="person",
+            quote_ids=[2],
+            attribution_ids=[],
+        ),
+        sentences,
+        aliases={},
+        paragraphs=facts._sentence_paragraphs(text, sentences),
+    )
+    assert cited["quote"] == sentences[2]
+    assert cited["attribution_quote"] == "Jeff Fisher said"
+
+
+def test_an_attributed_claim_without_a_quote_borrows_the_following_sentence():
+    text = (
+        "Jeff Fisher said the line stays alive. "
+        "The RTX 5090 line stays alive through the cycle, the executive said. "
+        "Sunny weather expected tomorrow across the region."
+    )
+    sentences = facts._numbered_sentences(text)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="the RTX 5090 line stays alive",
+            value="through the cycle",
+            origin="Jeff Fisher",
+            kind="reported",
+            speaker="Jeff Fisher",
+            speaker_type="person",
+            quote_ids=[],
+            attribution_ids=[1],
+        ),
+        sentences,
+        aliases={},
+        entities=["Nvidia"],
+        paragraphs=facts._sentence_paragraphs(text, sentences),
+    )
+    assert cited["quote_ids"] == [2]
+    assert cited["quote"] == sentences[2]
+    assert cited["attribution_quote"] == "Jeff Fisher said"
+    entry = facts._evidence_for_claim(
+        cited,
+        source(link="https://a.example/1", text=text, title=""),
+        aliases={},
+        entities=["Nvidia"],
+    )
+    assert entry["ok"] is True
+    assert entry["reason"] == ""
+
+
+def test_an_attributed_claim_with_no_following_sentence_keeps_quote_missing():
+    # Nothing after the attribution is about the claim, so no sentence is
+    # borrowed: the quote stays empty and the claim fails as quote missing.
+    text = (
+        "Jeff Fisher said the line stays alive. "
+        "Sunny weather expected tomorrow across the region."
+    )
+    sentences = facts._numbered_sentences(text)
+    cited = facts._cite_claim_evidence(
+        claim(
+            claim="the line stays alive",
+            value="stays alive",
+            origin="Jeff Fisher",
+            kind="reported",
+            speaker="Jeff Fisher",
+            speaker_type="person",
+            quote_ids=[],
+            attribution_ids=[1],
+        ),
+        sentences,
+        aliases={},
+        entities=["Nvidia"],
+        paragraphs=facts._sentence_paragraphs(text, sentences),
+    )
+    assert cited["quote"] == ""
+    assert cited["attribution_quote"] == "Jeff Fisher said"
+    entry = facts._evidence_for_claim(
+        cited,
+        source(link="https://a.example/1", text=text, title=""),
+        aliases={},
+        entities=["Nvidia"],
+    )
+    assert entry["reason"] == "quote missing"
+    assert entry["ok"] is False
+
+
 def test_a_headline_restating_claim_citing_s0_verifies_after_the_remapped_quote():
     title = "Acme Games announced a space RPG today"
     text = (
