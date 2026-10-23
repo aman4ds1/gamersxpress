@@ -1056,6 +1056,154 @@ def test_statement_clause_naming_the_speaker_passes(tmp_path):
     assert report.passed is True
 
 
+NVIDIA_CLAUSE = "Production of RTX 5090 has not been discontinued"
+NVIDIA_SENTENCE = (
+    "Nvidia stated that although there are other variants of the RTX 5090 chip, "
+    "production has not been discontinued and the company will continue to ship the RTX 5090."
+)
+
+
+def nvidia_statement_sheet():
+    return {
+        "id": "stm-nvidia",
+        "generated_at": "2026-10-09T12:00:00+00:00",
+        "sources": [
+            {
+                "source_name": "CNA",
+                "link": "https://cna.example/nvidia",
+                "tier": 1,
+                "region": "global",
+            }
+        ],
+        "claims": [
+            {
+                "claim": "Nvidia stated production of RTX 5090 has not been discontinued",
+                "value": NVIDIA_CLAUSE,
+                "source_url": "https://cna.example/nvidia",
+                "confidence": 0.9,
+                "kind": "statement",
+                "origin": "Nvidia",
+                "affiliation": "Nvidia",
+                "speaker": "Nvidia",
+                "speaker_type": "organization",
+            }
+        ],
+    }
+
+
+def run_statement_check(tmp_path, article, clause, facts=None):
+    payload = model(
+        clauses=[
+            {
+                "clause": clause,
+                "fact_ids": ["F1"],
+                "match": "exact",
+                "exceeds_facts": False,
+                "difference": "",
+            }
+        ]
+    )
+    return verify_module.verify(
+        article,
+        facts or nvidia_statement_sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+
+
+def test_statement_clause_credited_by_containing_sentence_passes(tmp_path):
+    report = run_statement_check(tmp_path, NVIDIA_SENTENCE + "\n", NVIDIA_CLAUSE)
+
+    assert report.passed is True
+    assert f"speaker named in sentence: {NVIDIA_CLAUSE}" in report.notes
+
+
+def test_statement_clause_without_a_speaker_in_its_sentence_is_unsupported(tmp_path):
+    sentence = "Production has not been discontinued."
+    report = run_statement_check(tmp_path, sentence + "\n", NVIDIA_CLAUSE)
+
+    assert report.passed is False
+    assert NVIDIA_CLAUSE in report.unsupported
+    detail = next(item for item in report.unsupported_detail if item["clause"] == NVIDIA_CLAUSE)
+    assert detail["sentence"] == sentence
+
+
+def test_statement_clause_naming_only_the_surname_passes(tmp_path):
+    clause = "Yamanaka said Phoenix Cyclops was added as DLC rather than a day-one fighter"
+    report = run_statement_check(
+        tmp_path,
+        "Yamanaka said Phoenix Cyclops was added as DLC rather than a day-one fighter.\n",
+        clause,
+        statement_sheet(),
+    )
+
+    assert report.passed is True
+
+
+def test_statement_clause_carried_by_another_speakers_sentence_is_unsupported(tmp_path):
+    sentence = "Leakers said production of RTX 5090 has not been discontinued."
+    report = run_statement_check(tmp_path, sentence + "\n", NVIDIA_CLAUSE)
+
+    assert report.passed is False
+    assert NVIDIA_CLAUSE in report.unsupported
+    detail = next(item for item in report.unsupported_detail if item["clause"] == NVIDIA_CLAUSE)
+    assert detail["sentence"] == sentence
+
+
+def test_statement_clause_without_a_matching_sentence_falls_back_to_the_clause(tmp_path):
+    clause = "Nvidia said production of RTX 5090 has not been discontinued"
+    report = run_statement_check(tmp_path, "Nvidia announced a new graphics card.\n", clause)
+
+    assert report.passed is True
+
+
+def test_statement_clause_split_from_an_attributed_sentence_passes(tmp_path):
+    facts = {
+        "id": "stm-fisher",
+        "generated_at": "2026-10-09T12:00:00+00:00",
+        "sources": [
+            {"source_name": "CNA", "link": "https://cna.example/fisher", "tier": 1, "region": "global"}
+        ],
+        "claims": [
+            {
+                "claim": "Jeff Fisher said the supply crunch is a global problem",
+                "value": "The supply crunch is a global problem",
+                "source_url": "https://cna.example/fisher",
+                "confidence": 0.9,
+                "kind": "statement",
+                "origin": "Jeff Fisher",
+                "affiliation": "CNA",
+                "speaker": "Jeff Fisher",
+                "speaker_type": "person",
+            }
+        ],
+    }
+    clause = "The supply crunch is a global problem"
+    report = run_statement_check(
+        tmp_path,
+        "Jeff Fisher told CNA that the supply crunch is a global problem.\n",
+        clause,
+        facts,
+    )
+
+    assert report.passed is True
+    assert f"speaker named in sentence: {clause}" in report.notes
+
+
+def test_statement_clause_credited_by_a_role_phrase_in_its_sentence_passes(tmp_path):
+    article = (
+        "Capcom announced new fighters. "
+        "The company said Phoenix Cyclops was added as DLC rather than a day-one fighter.\n"
+    )
+    clause = "Phoenix Cyclops was added as DLC rather than a day-one fighter"
+    report = run_statement_check(tmp_path, article, clause, statement_sheet())
+
+    assert report.passed is True
+    assert f"speaker named in sentence: {clause}" in report.notes
+
+
 def style_sheet():
     return {
         "id": "style-1",

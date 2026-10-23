@@ -66,6 +66,9 @@ from typing import Any, Callable
 
 import yaml
 
+import facts as facts_module
+import gather
+import gates
 from providers import (
     PROJECT_ROOT,
     Generation,
@@ -282,6 +285,7 @@ class VerifyReport:
     verifier_provider: str | None
     verifier_model: str | None
     unsupported: list[str] = field(default_factory=list)
+    unsupported_detail: list[dict] = field(default_factory=list)
     unmatched_numbers: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     model_sentences: list[dict] = field(default_factory=list)
@@ -304,6 +308,7 @@ class VerifyReport:
             "verifier_provider": self.verifier_provider,
             "verifier_model": self.verifier_model,
             "unsupported": self.unsupported,
+            "unsupported_detail": self.unsupported_detail,
             "unmatched_numbers": self.unmatched_numbers,
             "notes": self.notes,
             "model_sentences": self.model_sentences,
@@ -333,6 +338,110 @@ def _mentions(text: object, name: object) -> bool:
     if not needle:
         return False
     return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack) is not None
+
+
+_SENTENCE_MATCH_THRESHOLD = 0.70
+_ROLE_LEADER_PATTERN = "|".join(
+    sorted((re.escape(word) for word in facts_module._COREFERENCE_LEADERS), key=len, reverse=True)
+)
+_ROLE_NOUN_PATTERN = "|".join(
+    sorted((re.escape(word) for word in facts_module._COREFERENCE_NOUNS), key=len, reverse=True)
+)
+_ROLE_PHRASE_RE = re.compile(
+    rf"\b(?:{_ROLE_LEADER_PATTERN})\s+(?:{_ROLE_NOUN_PATTERN})\b",
+    re.IGNORECASE,
+)
+
+
+def _match_sentence(clause: object, sentences: list[str]) -> tuple[str, float]:
+    """The article sentence carrying the largest share of the clause's content words."""
+    clause_words = gates._content_words(str(clause or ""))
+    if not clause_words:
+        return "", 0.0
+    best_sentence = ""
+    best_ratio = 0.0
+    for sentence in sentences:
+        sentence_words = gates._content_words(sentence)
+        ratio = len(clause_words & sentence_words) / len(clause_words)
+        if ratio > best_ratio:
+            best_sentence = sentence
+            best_ratio = ratio
+    return best_sentence, best_ratio
+
+
+def _sheet_speakers(facts: dict) -> set[str]:
+    speakers: set[str] = set()
+    for claim in facts.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        for key in ("speaker", "origin", "affiliation"):
+            name = str(claim.get(key) or "").strip()
+            if name and name.lower() != "unstated":
+                speakers.add(name)
+    return speakers
+
+
+def _speaker_type(claim: dict, speaker: str, field: str) -> str:
+    declared = facts_module._normalize_speaker_type(claim.get("speaker_type"))
+    if declared in ("person", "organization", "outlet"):
+        return declared
+    if field in ("affiliation", "outlet"):
+        return "organization" if field == "affiliation" else "outlet"
+    key = facts_module._origin_key(speaker)
+    words = key.split()
+    if len(words) < 2:
+        return ""
+    if words[-1] in facts_module._CORPORATE_SUFFIXES:
+        return "organization"
+    if facts_module._matches_organization(speaker, facts_module.load_organizations()):
+        return "organization"
+    return "person"
+
+
+def _speaker_names(claim: dict, facts: dict) -> set[str]:
+    """Every accepted spelling for a statement fact's speaker."""
+    aliases = facts_module.load_origin_aliases()
+    sheet_speakers = _sheet_speakers(facts)
+    entries: list[tuple[str, str]] = []
+    for field in ("origin", "affiliation", "speaker"):
+        name = str(claim.get(field) or "").strip()
+        if name and name.lower() != "unstated":
+            entries.append((name, field))
+    if not entries:
+        entries = [(name, "outlet") for name in _fact_speakers(claim, facts)]
+    names: set[str] = set()
+    for speaker, field in entries:
+        names |= facts_module._evidence_speaker_names(
+            speaker,
+            aliases,
+            speaker_type=_speaker_type(claim, speaker, field),
+            sheet_speakers=sheet_speakers,
+        )
+    return names
+
+
+def _sentence_names_speaker(
+    sentence: str,
+    names: set[str],
+    body: str,
+    sentence_start: int,
+) -> bool:
+    if not sentence or not names:
+        return False
+    if any(_mentions(sentence, name) for name in names):
+        return True
+    aliases = facts_module.load_origin_aliases()
+    for match in _ROLE_PHRASE_RE.finditer(sentence):
+        resolved = facts_module._nearest_preceding_organization(
+            body,
+            sentence_start + match.start(),
+            aliases,
+        )
+        if resolved and any(
+            _mentions(resolved, name) or _mentions(name, resolved) for name in names
+        ):
+            return True
+    return False
 
 
 def _relative_time_hits(text: object, words: tuple[str, ...]) -> list[str]:
@@ -375,7 +484,7 @@ def _fact_speakers(claim: dict, facts: dict) -> list[str]:
     """Names a ``statement`` fact may be attributed to: its origin/affiliation, or
     the outlet that published it when the speaker is unstated."""
     names: list[str] = []
-    for key in ("origin", "affiliation"):
+    for key in ("origin", "affiliation", "speaker"):
         value = str(claim.get(key) or "").strip()
         if value and value.lower() != "unstated":
             names.append(value)
@@ -410,18 +519,38 @@ def _clause_supported(item: dict) -> bool:
     return not item.get("exceeds_facts")
 
 
-def _statement_attribution_ok(item: dict, facts: dict, by_id: dict[str, dict]) -> bool:
-    """A clause resting on a ``statement`` fact must name that fact's speaker."""
+def _statement_attribution_ok(
+    item: dict,
+    facts: dict,
+    by_id: dict[str, dict],
+    *,
+    sentence: str = "",
+    body: str = "",
+    sentence_start: int = 0,
+) -> tuple[bool, bool]:
+    """Check a ``statement`` fact's speaker in the clause, then its sentence.
+
+    Returns ``(ok, used_sentence)``. ``used_sentence`` is true when the clause
+    itself does not name the speaker but the article sentence carrying it does.
+    """
+    used_sentence = False
+    clause = item.get("clause")
     for fact_id in item.get("fact_ids") or []:
         claim = by_id.get(str(fact_id))
         if not isinstance(claim, dict):
             continue
         if str(claim.get("kind") or "").strip().lower() != "statement":
             continue
-        speakers = _fact_speakers(claim, facts)
-        if speakers and not any(_mentions(item.get("clause"), name) for name in speakers):
-            return False
-    return True
+        names = _speaker_names(claim, facts)
+        if not names:
+            continue
+        if any(_mentions(clause, name) for name in names):
+            continue
+        if _sentence_names_speaker(sentence, names, body, sentence_start):
+            used_sentence = True
+            continue
+        return False, False
+    return True, used_sentence
 
 
 def _numbered_facts(facts: dict) -> str:
@@ -535,6 +664,7 @@ def _model_check(
         "error": None,
         "clauses": [],
         "unsupported_clauses": [],
+        "unsupported_detail": [],
         "unsupported_claims": [],
         "rumors_stated_as_fact": [],
         "unsupported_regional": [],
@@ -611,18 +741,36 @@ def _model_check(
     # outside a quoted name is unsupported. A partial match that merely states
     # less than its fact does not fail: it stays visible as a note.
     by_id = _facts_by_id(facts)
+    body = _split_front_matter(_as_text(article))[1]
+    sentences = gather._split_sentences(body)
     unsupported_clauses: list[str] = []
+    unsupported_detail: list[dict] = []
     notes: list[str] = []
     for item in clauses:
         clause = item["clause"]
+        best_sentence, ratio = _match_sentence(clause, sentences)
+        sentence = best_sentence if ratio >= _SENTENCE_MATCH_THRESHOLD else ""
+        sentence_start = body.find(sentence) if sentence else 0
+        attribution_ok, used_sentence = _statement_attribution_ok(
+            item,
+            facts,
+            by_id,
+            sentence=sentence,
+            body=body,
+            sentence_start=sentence_start,
+        )
         if (
             not _clause_supported(item)
-            or not _statement_attribution_ok(item, facts, by_id)
+            or not attribution_ok
             or _relative_time_hits(clause, relative_time_words)
         ):
             unsupported_clauses.append(clause)
-        elif item.get("match") == "partial" and item.get("exceeds_facts") is False:
-            notes.append(f"partial match kept (states less than its fact): {clause}")
+            unsupported_detail.append({"clause": clause, "sentence": best_sentence[:300]})
+        else:
+            if used_sentence:
+                notes.append(f"speaker named in sentence: {clause}")
+            if item.get("match") == "partial" and item.get("exceeds_facts") is False:
+                notes.append(f"partial match kept (states less than its fact): {clause}")
     ok = not (
         unsupported_clauses
         or data["unsupported_claims"]
@@ -637,6 +785,7 @@ def _model_check(
         "error": None,
         "clauses": clauses,
         "unsupported_clauses": unsupported_clauses,
+        "unsupported_detail": unsupported_detail,
         "unsupported_claims": data["unsupported_claims"],
         "rumors_stated_as_fact": data["rumors_stated_as_fact"],
         "unsupported_regional": data["unsupported_regional"],
@@ -1167,6 +1316,7 @@ def verify(
         verifier_provider=generation.provider,
         verifier_model=generation.model,
         unsupported=unsupported,
+        unsupported_detail=model_result["unsupported_detail"],
         unmatched_numbers=code_result["unmatched"],
         notes=model_result["notes"],
         model_sentences=model_result["clauses"],
