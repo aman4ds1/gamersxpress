@@ -1,15 +1,19 @@
 import datetime as dt
 import io
 import json
+import os
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
 
 import dryrun
 import providers
+import publish
 import replay
+import run as run_module
 from providers import Generation
 
 NOW = dt.datetime(2026, 10, 19, 12, tzinfo=dt.timezone.utc)
@@ -388,6 +392,20 @@ def test_replay_writes_the_report_file_as_utf8(tmp_path, monkeypatch, capsys):
     assert "sheet: " in text
 
 
+def test_report_note_is_printed_and_saved(tmp_path, monkeypatch, capsys):
+    sheet_path = tmp_path / "unconfirmed" / "abc.json"
+    monkeypatch.setattr(replay, "run", lambda *args, **kwargs: report_dict(sheet_path, tmp_path))
+
+    code = replay.main(["abc"])
+    captured = capsys.readouterr()
+    report_path = tmp_path / "unconfirmed" / "abc-report.txt"
+
+    assert code == 0
+    assert replay.REPORT_NOTE in captured.out
+    assert captured.out.strip().splitlines()[-2] == replay.REPORT_NOTE
+    assert report_path.read_text(encoding="utf-8").splitlines()[-1] == replay.REPORT_NOTE
+
+
 def test_replay_last_printed_line_names_the_sheet_path(tmp_path, monkeypatch, capsys):
     sheet_path = tmp_path / "unconfirmed" / "abc.json"
     monkeypatch.setattr(replay, "run", lambda *args, **kwargs: report_dict(sheet_path, tmp_path))
@@ -399,6 +417,413 @@ def test_replay_last_printed_line_names_the_sheet_path(tmp_path, monkeypatch, ca
     assert lines[-1] == (
         f"report: {tmp_path / 'unconfirmed' / 'abc-report.txt'} sheet: {sheet_path}"
     )
+
+
+def stage_calls():
+    return {"writer": 0, "verifier": 0}
+
+
+def verdict_json(*unsupported):
+    return json.dumps({
+        "clauses": [
+            {
+                "clause": clause,
+                "fact_ids": [],
+                "match": "none",
+                "exceeds_facts": False,
+                "difference": "not in the sheet",
+            }
+            for clause in unsupported
+        ],
+        "unsupported_claims": [],
+        "rumors_stated_as_fact": [],
+        "unsupported_regional": [],
+        "costs_described_as_received": [],
+        "invented_labels": [],
+        "category_claims": [],
+    })
+
+
+def stage_generate(writer_outputs, verifier_outputs, calls):
+    """Stub every model call for a full draft replay, recording roles."""
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        properties = (json_schema or {}).get("properties") or {}
+        if role == "verifier" and "groups" in properties:
+            value, family = {"groups": []}, "mistral"
+        elif role == "fast":
+            value = (
+                dryrun._claims_json(dryrun._prompt_source_url(prompt))
+                if "claims" in properties
+                else dryrun._seo_json()
+            )
+            family = "google"
+        elif role == "writer":
+            value = writer_outputs[min(calls["writer"], len(writer_outputs) - 1)]
+            calls["writer"] += 1
+            family = "google"
+        elif role == "verifier":
+            value = verifier_outputs[min(calls["verifier"], len(verifier_outputs) - 1)]
+            calls["verifier"] += 1
+            family = "mistral"
+        else:
+            raise AssertionError(f"unexpected role {role!r}")
+        generation = providers.Generation(role, "mock", f"mock-{role}", family, value)
+        if run_state is not None:
+            run_state.record(generation)
+        return generation
+
+    return generate
+
+
+def unconfirmed_generate(roles):
+    """A stub whose only claim is a rumor, so the story never confirms."""
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        roles.append(role)
+        properties = (json_schema or {}).get("properties") or {}
+        if role == "verifier" and "groups" in properties:
+            value = {"groups": []}
+            family = "mistral"
+        elif role == "fast" and "claims" in properties:
+            value = {
+                "claims": [
+                    {
+                        "claim": "Nvidia plans a briefing with partners",
+                        "value": "plans a briefing with partners",
+                        "source_url": dryrun._prompt_source_url(prompt),
+                        "confidence": 0.5,
+                        "origin": "unstated",
+                        "affiliation": "",
+                        "kind": "rumor",
+                        "quote_ids": [],
+                        "attribution_ids": [],
+                        "speaker": "",
+                        "speaker_type": "none",
+                    }
+                ]
+            }
+            family = "google"
+        else:
+            raise AssertionError(f"stage {role!r} must not run for an unconfirmed story")
+        generation = providers.Generation(role, "mock", f"mock-{role}", family, value)
+        if run_state is not None:
+            run_state.record(generation)
+        return generation
+
+    return generate
+
+
+def replay_through_draft(tmp_path, monkeypatch, generate, **kwargs):
+    data_dir = tmp_path / "data"
+    write_gathered(data_dir)
+    write_sheet(data_dir)
+    monkeypatch.setattr(replay, "DATA_DIR", data_dir)
+    options = {
+        "through": "draft",
+        "generate": generate,
+        "now": NOW,
+        "output_dir": tmp_path / "out",
+        "site_checks": lambda text, slug: (True, "stub site check"),
+    }
+    options.update(kwargs)
+    return replay.run(CLUSTER_ID, **options)
+
+
+def install_tripwires(monkeypatch) -> list[str]:
+    """Make every publish/seen/draft/last-run/issue/breaker writer fail loudly."""
+    calls: list[str] = []
+    targets = {
+        publish: (
+            "publish",
+            "save_draft",
+            "_mark_seen",
+            "write_last_run",
+            "write_issue",
+        ),
+        run_module: (
+            "load_breaker",
+            "save_breaker",
+            "record_failure",
+            "reset_breaker",
+        ),
+    }
+    for module, names in targets.items():
+        for name in names:
+            def tripwire(*args, __name=name, **kwargs):
+                calls.append(__name)
+                raise AssertionError(f"{__name} must not be called during a replay")
+
+            monkeypatch.setattr(module, name, tripwire)
+    return calls
+
+
+# --- output dir: never inside the repository ---------------------------------
+
+
+def test_output_dir_inside_repo_is_refused_before_any_stage(tmp_path, monkeypatch, capsys):
+    data_dir = tmp_path / "data"
+    write_gathered(data_dir)
+    monkeypatch.setattr(replay, "DATA_DIR", data_dir)
+    stages: list[str] = []
+    monkeypatch.setattr(replay.facts_stage, "facts", lambda *args, **kwargs: stages.append("facts"))
+
+    output_dir = providers.PROJECT_ROOT / "data" / f"replay-out-{uuid.uuid4().hex}"
+    code = replay.main([CLUSTER_ID, "--output-dir", str(output_dir)])
+    captured = capsys.readouterr()
+
+    assert code != 0
+    assert "output dir must be outside the repository" in captured.err
+    assert stages == []
+    assert not output_dir.exists()
+
+
+def test_output_dir_equal_to_repo_root_is_refused(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    write_gathered(data_dir)
+    monkeypatch.setattr(replay, "DATA_DIR", data_dir)
+    monkeypatch.setattr(
+        replay.facts_stage, "facts", lambda *args, **kwargs: pytest.fail("facts stage ran")
+    )
+
+    with pytest.raises(replay.ReplayError, match="output dir must be outside the repository"):
+        replay.run(
+            CLUSTER_ID,
+            generate=dryrun.make_generate("pass"),
+            now=NOW,
+            output_dir=providers.PROJECT_ROOT,
+        )
+
+
+def test_relative_output_dir_into_repo_is_refused(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    write_gathered(data_dir)
+    monkeypatch.setattr(replay, "DATA_DIR", data_dir)
+    monkeypatch.setattr(
+        replay.facts_stage, "facts", lambda *args, **kwargs: pytest.fail("facts stage ran")
+    )
+
+    target = providers.PROJECT_ROOT / "data" / f"replay-out-{uuid.uuid4().hex}"
+    relative = os.path.relpath(target, Path.cwd())
+
+    with pytest.raises(replay.ReplayError, match="output dir must be outside the repository"):
+        replay.run(
+            CLUSTER_ID,
+            generate=dryrun.make_generate("pass"),
+            now=NOW,
+            output_dir=relative,
+        )
+
+    assert not target.exists()
+
+
+def test_output_dir_outside_repo_is_accepted(tmp_path, monkeypatch):
+    output_dir = tmp_path / "sibling"
+    assert not output_dir.is_symlink()
+
+    report = replay_through_draft(
+        tmp_path,
+        monkeypatch,
+        dryrun.make_generate("pass"),
+        output_dir=output_dir,
+    )
+
+    assert report["status"] == "completed"
+    assert Path(report["temp_dir"]) == output_dir.resolve()
+    assert output_dir.is_dir()
+
+
+# --- --through draft: every stage in a temp tree -----------------------------
+
+
+def test_through_draft_confirmed_runs_all_stages_and_prints_article(tmp_path, monkeypatch):
+    report = replay_through_draft(tmp_path, monkeypatch, dryrun.make_generate("pass"))
+
+    assert report["status"] == "completed"
+    assert report["verify"]["passed"] is True
+    assert report["verify"]["unsupported"] == []
+    assert report["gates"]["passed"] is True
+    assert report["seo"]["title"] == dryrun.SAMPLE_TITLE
+    assert report["seo"]["slug"] == dryrun.SAMPLE_SLUG
+    assert report["seo"]["tags"] and report["seo"]["entities"] == ["Nvidia"]
+
+    assert "## Overview" in report["article"]
+    article_path = Path(report["article_path"])
+    assert article_path.is_file()
+    assert article_path.read_text(encoding="utf-8") == report["article"]
+    assert Path(report["temp_dir"]) == tmp_path / "out"
+    assert article_path.parent == tmp_path / "out" / "article"
+
+    printed = replay.render_report(report)
+    assert "verify: passed" in printed
+    assert "gates: passed" in printed
+    assert "seo: title=" in printed
+    assert "article:" in printed
+    assert "## Overview" in printed
+    assert str(article_path) in printed
+    assert str(tmp_path / "out") in printed
+
+
+def test_through_draft_unconfirmed_stops_after_facts_and_says_so(tmp_path, monkeypatch):
+    roles: list[str] = []
+    report = replay_through_draft(
+        tmp_path, monkeypatch, unconfirmed_generate(roles)
+    )
+
+    assert report["status"] == "not_confirmed"
+    assert report["not_confirmed"] is True
+    assert report["confirmation"]["confirmed"] is False
+    assert report.get("verify") is None
+    assert report.get("article_path") is None
+    assert "writer" not in roles
+
+    printed = replay.render_report(report)
+    assert (
+        f"not confirmed: {report['confirmation']['rule']} "
+        f"{report['confirmation']['reason']}" in printed
+    )
+    assert "verify:" not in printed
+
+
+def test_through_draft_writes_nothing_under_the_real_tree(tmp_path, monkeypatch):
+    real_root = providers.PROJECT_ROOT
+    real_dirs = {
+        name: real_root / name for name in ("src", "public", "drafts", "data")
+    }
+    before = {name: listing(path) for name, path in real_dirs.items()}
+    breaker = real_root / "data" / "breaker.json"
+    breaker_before = breaker.read_bytes() if breaker.is_file() else None
+
+    report = replay_through_draft(tmp_path, monkeypatch, dryrun.make_generate("pass"))
+
+    assert report["status"] == "completed"
+    after = {name: listing(path) for name, path in real_dirs.items()}
+    assert after == before
+    breaker_after = breaker.read_bytes() if breaker.is_file() else None
+    assert breaker_after == breaker_before
+    assert not (tmp_path / "out" / "breaker.json").exists()
+    assert not (tmp_path / "out" / "seen.json").exists()
+    assert not (tmp_path / "out" / "published-log.json").exists()
+
+
+def test_through_draft_stops_at_the_model_call_cap(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    gathered = dryrun.sample_gathered(CLUSTER_ID, NOW)
+    gathered["sources"] = gathered["sources"][:1]
+    write_gathered(data_dir, gathered=gathered)
+    write_sheet(data_dir)
+    monkeypatch.setattr(replay, "DATA_DIR", data_dir)
+
+    report = replay.run(
+        CLUSTER_ID,
+        through="draft",
+        generate=dryrun.make_generate("pass"),
+        now=NOW,
+        output_dir=tmp_path / "out",
+        max_model_calls=1,
+        site_checks=lambda text, slug: (True, "stub site check"),
+    )
+
+    assert report["status"] == "budget_exceeded"
+    assert "model call budget exceeded" in report["error"]
+    assert (tmp_path / "out").is_dir()
+    assert "budget_exceeded" in replay.render_report(report)
+    assert "model call budget exceeded" in replay.render_report(report)
+
+
+def test_through_draft_failed_verify_prints_clauses_and_keeps_temp(tmp_path, monkeypatch):
+    unsupported = "Nvidia will ship the card next month."
+    original = dryrun.sample_body() + f"\n\n{unsupported}\n"
+    calls = stage_calls()
+    generate = stage_generate(
+        [original, original],
+        [verdict_json(unsupported), verdict_json(unsupported)],
+        calls,
+    )
+
+    report = replay_through_draft(tmp_path, monkeypatch, generate)
+
+    assert report["status"] == "failed"
+    assert report["verify"]["passed"] is False
+    assert unsupported in report["verify"]["unsupported"]
+    assert "verification failed" in report["error"]
+    assert (tmp_path / "out").is_dir()
+    assert Path(report["article_path"]).is_file()
+    assert "reports" in listing(tmp_path / "out")
+
+    printed = replay.render_report(report)
+    assert "verify: failed" in printed
+    assert "unsupported_clauses=1" in printed
+    assert unsupported in printed
+
+
+def test_through_draft_confirmed_never_publishes_or_touches_breaker(tmp_path, monkeypatch):
+    calls = install_tripwires(monkeypatch)
+
+    report = replay_through_draft(tmp_path, monkeypatch, dryrun.make_generate("pass"))
+
+    assert report["status"] == "completed"
+    assert calls == []
+
+
+def test_through_draft_unconfirmed_never_publishes_or_touches_breaker(tmp_path, monkeypatch):
+    calls = install_tripwires(monkeypatch)
+
+    report = replay_through_draft(
+        tmp_path, monkeypatch, unconfirmed_generate([])
+    )
+
+    assert report["status"] == "not_confirmed"
+    assert calls == []
+
+
+def test_through_draft_failed_verify_never_publishes_or_touches_breaker(tmp_path, monkeypatch):
+    unsupported = "Nvidia will ship the card next month."
+    original = dryrun.sample_body() + f"\n\n{unsupported}\n"
+    calls = stage_calls()
+    generate = stage_generate(
+        [original, original],
+        [verdict_json(unsupported), verdict_json(unsupported)],
+        calls,
+    )
+    tripwires = install_tripwires(monkeypatch)
+
+    report = replay_through_draft(tmp_path, monkeypatch, generate)
+
+    assert report["status"] == "failed"
+    assert report["verify"]["passed"] is False
+    assert tripwires == []
+
+
+def test_through_draft_reports_a_repair_that_passes(tmp_path, monkeypatch):
+    unsupported = "Nvidia will ship the card next month."
+    original = dryrun.sample_body() + f"\n\n{unsupported}\n"
+    repaired = dryrun.sample_body()
+    calls = stage_calls()
+    generate = stage_generate(
+        [original, repaired], [verdict_json(unsupported), verdict_json()], calls
+    )
+
+    report = replay_through_draft(tmp_path, monkeypatch, generate)
+
+    assert report["status"] == "completed"
+    assert report["repair"]["attempted"] is True
+    assert report["repair"]["outcome"] == "accepted"
+    assert report["repair"]["problems"] == []
+    assert report["repair"]["verify_passed_after"] is True
+    assert report["verify"]["passed"] is True
+    assert report["gates"]["passed"] is True
+    assert calls["writer"] == 2
+    assert calls["verifier"] == 2
+
+    drafts = tmp_path / "out" / "drafts" / replay.seo_stage.slugify(dryrun.SAMPLE_TITLE)
+    assert (drafts / "original.md").read_text(encoding="utf-8") == original
+    assert (drafts / "repaired.md").read_text(encoding="utf-8") == repaired
+    assert unsupported in (drafts / "repair-clauses.txt").read_text(encoding="utf-8")
+
+    printed = replay.render_report(report)
+    assert "repair: ran outcome=accepted" in printed
+    assert "verify: passed" in printed
 
 
 def test_replay_print_failure_reports_and_keeps_the_temp_folder(tmp_path, monkeypatch, capsys):

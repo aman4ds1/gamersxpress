@@ -1,4 +1,4 @@
-"""Re-run the facts stage on a saved story (no ingest, clustering or gather).
+"""Re-run the facts stage, or a full draft, on a saved story.
 
 A story that has left the feeds is normally impossible to re-check: its cluster
 never forms again, so ``pipeline.run`` cannot reach the facts stage for it. This
@@ -9,6 +9,7 @@ tested on real text after the story is gone.
 Usage::
 
     python -m pipeline.replay <cluster_id>
+    python -m pipeline.replay <cluster_id> --through draft
 
 It reads ``data/gathered/<id>.json`` (the saved source text) and the story title
 and entity list from ``data/facts/unconfirmed/<id>.json`` or
@@ -16,16 +17,23 @@ and entity list from ``data/facts/unconfirmed/<id>.json`` or
 ``candidates-*.json`` report entry with that cluster id.
 
 It calls the same :func:`facts.facts` function ``run.py`` calls, with the same
-model roles, fallbacks and config, but writes the resulting sheet to a temp
-directory only. It never writes to ``data/facts``, ``data/failed.json``,
-``data/breaker.json``, ``data/reports`` or any other tracked file, and never
-touches the circuit breaker.
+model roles, fallbacks and config, but writes everything to a temp directory
+only. It never writes to ``data/facts``, ``data/failed.json``,
+``data/breaker.json``, ``data/reports``, ``src``, ``public``, ``drafts`` or any
+other tracked file, and never touches the circuit breaker or publishes.
 
-It prints a short report: how many model calls were used, the confirmation
-verdict (rule, confirmed, reason), the accepted and dropped fact-group counts,
-and -- for the first :data:`CLAIM_REPORT_LIMIT` claims -- the label, kind,
-central flag and, per evidence entry, ok, reason, speaker, attribution mode and
-the attribution quote truncated to :data:`ATTRIBUTION_QUOTE_WORDS` words.
+``--through draft`` continues only when the confirmation verdict is confirmed.
+It then runs write, verify, one repair when needed, SEO, cover and the publish
+gates with the real stage functions and model roles, still writing every file
+under the temp directory. The gate site check runs against a temp content
+directory, exactly as a dry run does. The whole replay is capped at
+:data:`MAX_MODEL_CALLS` model calls; exceeding it stops the replay with a clear
+message. An unconfirmed sheet stops after facts and prints
+``not confirmed: <rule> <reason>``.
+
+It prints the facts report as before, then the verify result (passed or failed,
+the unsupported clauses), whether a repair ran and its outcome, the SEO fields,
+the gate results, the full article text and the temp article/folder paths.
 
 The report has to survive a Windows console. :func:`render_report` emits ASCII
 punctuation only (:data:`ASCII_PUNCT`), stdout is reconfigured to replace any
@@ -53,8 +61,15 @@ _PIPELINE_DIR = Path(__file__).resolve().parent
 if str(_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(_PIPELINE_DIR))
 
+import cover as cover_stage
 import facts as facts_stage
+import gates as gates_stage
+import providers
+import publish as publish_stage
 import score as score_stage
+import seo as seo_stage
+import verify as verify_stage
+import write as write_stage
 from providers import PROJECT_ROOT, RunState, generate as default_generate
 
 logger = logging.getLogger("gamersxpress.replay")
@@ -63,11 +78,24 @@ logger = logging.getLogger("gamersxpress.replay")
 #: read at a temporary data tree.
 DATA_DIR = PROJECT_ROOT / "data"
 
+#: Most model calls one replay may make across every stage it runs.
+MAX_MODEL_CALLS = 12
+
+#: Read-only inputs shared with the real pipeline (never written by a replay).
+FONTS_DIR = PROJECT_ROOT / "assets" / "fonts"
+PAGE_TEMPLATE = PROJECT_ROOT / "src" / "pages" / "news" / "[id].astro"
+
 #: How many claims the printed report shows.
 CLAIM_REPORT_LIMIT = 8
 
 #: How many words of an attribution quote the printed report keeps.
 ATTRIBUTION_QUOTE_WORDS = 15
+
+#: Fixed note at the end of every report, printed and saved.
+REPORT_NOTE = (
+    "notes: gates read the real data/entities.json; "
+    "the duplicate-article check sees an empty temp content folder"
+)
 
 #: Typographic characters converted to plain ASCII before printing, so a
 #: Windows console on an ANSI code page (cp932, cp1252, ...) can encode them.
@@ -107,6 +135,35 @@ ASCII_PUNCT_TABLE = str.maketrans(ASCII_PUNCT)
 
 class ReplayError(Exception):
     """A replay cannot start or the facts stage could not produce a sheet."""
+
+
+class BudgetExceeded(Exception):
+    """The replay would need more model calls than its fixed budget allows."""
+
+
+def _budget_generate(
+    generate: Callable[..., Any], run_state: RunState, limit: int
+) -> Callable[..., Any]:
+    """Wrap ``generate`` so a replay can never exceed ``limit`` model calls.
+
+    The check happens before the call, so the cap is a hard ceiling even when a
+    stage retries (SEO validates twice) or repairs a draft.
+    """
+
+    def wrapped(role: str, prompt: str, *args: Any, **kwargs: Any) -> Any:
+        if run_state.calls >= limit:
+            raise BudgetExceeded(
+                f"model call budget exceeded ({run_state.calls} of {limit})"
+            )
+        return generate(role, prompt, *args, **kwargs)
+
+    return wrapped
+
+
+def _write_text(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def _sanitize_name(value: object) -> str:
@@ -327,8 +384,92 @@ def render_report(report: dict, *, limit: int | None = CLAIM_REPORT_LIMIT) -> st
                 f"attribution_quote={_ascii_punct(entry.get('attribution_quote'))!r}"
             )
     lines.append(f"sheet: {report.get('sheet_path')}")
+
+    if report.get("not_confirmed"):
+        verdict = report.get("confirmation") or {}
+        lines.append(
+            f"not confirmed: {verdict.get('rule')} {_ascii_punct(verdict.get('reason'))}"
+        )
+    if report.get("through"):
+        _render_draft_report(lines, report)
+    lines.append(REPORT_NOTE)
     return _ascii_punct("\n".join(lines))
 
+
+def _render_draft_report(lines: list[str], report: dict) -> None:
+    """Append the write/verify/repair/SEO/cover/gates part of a replay report."""
+    lines.append(f"through: {report.get('through')} status={report.get('status')}")
+    if report.get("error"):
+        lines.append(f"error: {_ascii_punct(report.get('error'))}")
+
+    verify = report.get("verify") or {}
+    if verify:
+        unsupported = list(verify.get("unsupported") or [])
+        lines.append(
+            f"verify: {'passed' if verify.get('passed') else 'failed'} "
+            f"unsupported_clauses={len(unsupported)} "
+            f"failure_reason={verify.get('failure_reason')}"
+        )
+        for clause in unsupported:
+            lines.append(f"  unsupported: {_ascii_punct(clause)!r}")
+        for number in verify.get("unmatched_numbers") or []:
+            lines.append(f"  unmatched number: {_ascii_punct(number)!r}")
+
+    repair = report.get("repair") or {}
+    if repair:
+        if repair.get("attempted"):
+            lines.append(
+                f"repair: ran outcome={repair.get('outcome')} "
+                f"problems={len(repair.get('problems') or [])}"
+            )
+            for problem in repair.get("problems") or []:
+                lines.append(f"  repair problem: {_ascii_punct(problem)}")
+        else:
+            lines.append("repair: not needed")
+
+    seo = report.get("seo") or {}
+    if seo:
+        lines.append(
+            f"seo: title={_ascii_punct(seo.get('title'))!r} "
+            f"description={_ascii_punct(seo.get('description'))!r} "
+            f"slug={seo.get('slug')} "
+            f"tags={seo.get('tags')} entities={seo.get('entities')}"
+        )
+
+    cover = report.get("cover") or {}
+    if cover:
+        lines.append(f"cover: {cover.get('path')}")
+
+    gates = report.get("gates") or {}
+    if gates:
+        lines.append(
+            f"gates: {'passed' if gates.get('passed') else 'failed'} "
+            f"failures={len(gates.get('failures') or [])} "
+            f"warnings={len(gates.get('warnings') or [])}"
+        )
+        for failure in gates.get("failures") or []:
+            lines.append(f"  gate failure: {_ascii_punct(failure)}")
+        for warning in gates.get("warnings") or []:
+            lines.append(f"  gate warning: {_ascii_punct(warning)}")
+
+    article = report.get("article")
+    if article is not None:
+        lines.append("article:")
+        lines.append(_ascii_punct(article))
+    if report.get("article_path"):
+        lines.append(f"temp article: {report.get('article_path')}")
+    if report.get("temp_dir"):
+        lines.append(f"temp folder: {report.get('temp_dir')}")
+
+
+
+def _resolve_output_dir(output_dir: str | Path) -> Path:
+    """Resolve an explicit output dir and refuse one inside the repository."""
+    path = Path(output_dir).resolve()
+    root = PROJECT_ROOT.resolve()
+    if path == root or root in path.parents:
+        raise ReplayError("output dir must be outside the repository")
+    return path
 
 
 def run(
@@ -340,14 +481,31 @@ def run(
     now: dt.datetime | None = None,
     run_state: RunState | None = None,
     config: dict | None = None,
+    through: str | None = None,
+    max_model_calls: int | None = None,
+    site_checks: Callable[[str, str], tuple[bool, str]] | None = None,
+    link_checker: Callable[[str], Any] | None = None,
 ) -> dict:
-    """Replay the facts stage for ``cluster_id`` and return its report.
+    """Replay the facts stage (or a full draft) for ``cluster_id``.
 
     The gathered file must exist (a :class:`ReplayError` naming the missing path
     otherwise). The sheet is written to ``output_dir`` (a fresh temp directory
-    when none is given) and never into the data tree. ``generate`` defaults to
-    the real ``providers.generate``; tests pass a stub so no live call is made.
+    when none is given) and never into the data tree. An explicit ``output_dir``
+    that resolves to the repository or a path under it is refused. ``generate``
+    defaults to the real ``providers.generate``; tests pass a stub so no live
+    call is made.
+
+    ``through="draft"`` continues after a confirmed facts sheet through write,
+    verify, one repair, SEO, cover and the publish gates, all inside
+    ``output_dir``. ``max_model_calls`` (default :data:`MAX_MODEL_CALLS`) caps
+    the whole replay.
     """
+    if through not in (None, "draft"):
+        raise ReplayError(f"unknown replay target {through!r}; expected 'draft'")
+
+    if output_dir is not None:
+        output_dir = _resolve_output_dir(output_dir)
+
     data_dir = Path(data_dir) if data_dir is not None else Path(DATA_DIR)
     gathered_path = data_dir / "gathered" / f"{cluster_id}.json"
     if not gathered_path.is_file():
@@ -361,9 +519,7 @@ def run(
 
     title, entities = load_story_context(cluster_id, data_dir=data_dir)
 
-    if output_dir is not None:
-        output_dir = Path(output_dir)
-    else:
+    if output_dir is None:
         output_dir = Path(tempfile.mkdtemp(prefix="gx-replay-"))
 
     config = config if config is not None else facts_stage.load_config()
@@ -381,6 +537,11 @@ def run(
     now = now or dt.datetime.now(dt.timezone.utc)
     if generate is None:
         generate = default_generate
+
+    model_limit = MAX_MODEL_CALLS if max_model_calls is None else int(max_model_calls)
+    if through == "draft":
+        generate = _budget_generate(generate, run_state, model_limit)
+        model_call_budget = min(model_call_budget, model_limit)
 
     sheet: dict | None = None
     try:
@@ -401,6 +562,8 @@ def run(
         sheet = None
     except facts_stage.FactsError as exc:
         raise ReplayError(f"facts stage failed for cluster {cluster_id!r}: {exc}") from exc
+    except BudgetExceeded as exc:
+        raise ReplayError(str(exc)) from exc
 
     if sheet is None:
         sheet, sheet_path = _locate_sheet(output_dir, cluster_id)
@@ -411,7 +574,7 @@ def run(
             f"facts stage produced no sheet for cluster {cluster_id!r} in {output_dir}"
         )
 
-    return build_report(
+    report = build_report(
         sheet,
         cluster_id=cluster_id,
         title=title,
@@ -420,6 +583,264 @@ def run(
         sheet_path=sheet_path,
         output_dir=output_dir,
     )
+    confirmation = sheet.get("confirmation") or {}
+    if not confirmation.get("confirmed"):
+        if through == "draft":
+            report["through"] = through
+            report["status"] = "not_confirmed"
+            report["not_confirmed"] = True
+        return report
+    if through != "draft":
+        return report
+
+    return _run_draft_stages(
+        report,
+        sheet,
+        gathered=gathered,
+        cluster_id=cluster_id,
+        data_dir=data_dir,
+        output_dir=output_dir,
+        generate=generate,
+        run_state=run_state,
+        now=now,
+        verify_config=verify_stage.load_verify_config(),
+        gates_config=gates_stage.load_gates_config(),
+        site_checks=site_checks,
+        link_checker=link_checker,
+    )
+
+
+def _run_draft_stages(
+    report: dict,
+    sheet: dict,
+    *,
+    gathered: dict,
+    cluster_id: str,
+    data_dir: Path,
+    output_dir: Path,
+    generate: Callable[..., Any],
+    run_state: RunState,
+    now: dt.datetime,
+    verify_config: dict,
+    gates_config: dict,
+    site_checks: Callable[[str, str], tuple[bool, str]] | None,
+    link_checker: Callable[[str], Any] | None,
+) -> dict:
+    """Run write, verify, repair, SEO, cover and gates inside ``output_dir``."""
+    reports_dir = output_dir / "reports"
+    drafts_dir = output_dir / "drafts"
+    content_dir = output_dir / "content"
+    covers_dir = output_dir / "covers"
+    article_dir = output_dir / "article"
+    for directory in (reports_dir, drafts_dir, content_dir, covers_dir, article_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    title = report.get("title") or cluster_id
+    provisional_slug = seo_stage.slugify(title)
+    draft = ""
+    article = ""
+    article_path: Path | None = None
+    verify_report: verify_stage.VerifyReport | None = None
+    repair_info: dict = {"attempted": False}
+    seo: dict = {}
+    cover: dict = {}
+    gate_result: gates_stage.GateResult | None = None
+    status = "completed"
+    error: str | None = None
+
+    report["through"] = "draft"
+    report["temp_dir"] = str(output_dir)
+    report["repair"] = repair_info
+
+    def finish() -> dict:
+        nonlocal article_path
+        report["status"] = status
+        report["error"] = error
+        report["model_calls"] = run_state.calls
+        if verify_report is not None:
+            report["verify"] = {
+                "passed": verify_report.passed,
+                "unsupported": list(verify_report.unsupported),
+                "unmatched_numbers": list(verify_report.unmatched_numbers),
+                "failure_reason": verify_report.failure_reason,
+            }
+        if seo:
+            report["seo"] = {
+                "title": seo.get("title"),
+                "description": seo.get("description"),
+                "slug": seo.get("slug"),
+                "tags": list(seo.get("tags") or []),
+                "entities": list(seo.get("entities") or []),
+                "category": seo.get("category"),
+            }
+        if cover:
+            report["cover"] = {
+                "path": cover.get("path"),
+                "image": cover.get("image"),
+                "bytes": cover.get("bytes"),
+            }
+        if gate_result is not None:
+            report["gates"] = gate_result.to_dict()
+        text = article or draft
+        if text and article_path is None:
+            article_path = _write_text(
+                article_dir / f"{provisional_slug}.md", text
+            )
+        report["article"] = text
+        if article_path is not None:
+            report["article_path"] = str(article_path)
+        return report
+
+    try:
+        writer = write_stage.write(sheet, run_state=run_state, generate=generate)
+        draft = writer.value if isinstance(writer.value, str) else str(writer.value)
+
+        verify_report = verify_stage.verify(
+            draft,
+            sheet,
+            run_state=run_state,
+            generate=generate,
+            report_dir=reports_dir,
+            id=cluster_id,
+            verify_config=verify_config,
+        )
+
+        if verify_report.failure_reason == "article_rejected" and verify_report.unsupported:
+            changed_clauses = list(verify_report.unsupported)
+            reasons = {
+                str(sentence.get("clause") or ""): str(sentence.get("difference") or "").strip()
+                for sentence in verify_report.model_sentences or []
+                if isinstance(sentence, dict)
+            }
+            flagged = [
+                {
+                    "clause": clause,
+                    "reason": reasons.get(clause) or "flagged as unsupported by the facts",
+                }
+                for clause in changed_clauses
+            ]
+            repaired = write_stage.repair(
+                draft, flagged, sheet, run_state=run_state, generate=generate
+            )
+            repair_info.update(
+                attempted=True,
+                changed_clauses=changed_clauses,
+                original_chars=len(draft),
+                repaired_chars=len(repaired.value),
+                paths=publish_stage.save_repair(
+                    draft,
+                    repaired.value,
+                    slug=provisional_slug,
+                    drafts_dir=drafts_dir,
+                    changed_clauses=changed_clauses,
+                ),
+            )
+            problems = write_stage.validate_repair(draft, repaired.value, changed_clauses)
+            repair_info["problems"] = problems
+            if problems:
+                repair_info["accepted"] = False
+                repair_info["outcome"] = "rejected"
+                logger.warning(
+                    "repair rejected (the original draft is kept): %s",
+                    "; ".join(problems),
+                )
+            else:
+                repair_info["accepted"] = True
+                repair_info["outcome"] = "accepted"
+                draft = repaired.value
+                verify_report = verify_stage.verify(
+                    draft,
+                    sheet,
+                    run_state=run_state,
+                    generate=generate,
+                    report_dir=reports_dir,
+                    id=cluster_id,
+                    verify_config=verify_config,
+                    repair={
+                        "attempted": True,
+                        "changed_clauses": changed_clauses,
+                        "original_chars": len(writer.value),
+                        "repaired_chars": len(repaired.value),
+                    },
+                )
+                repair_info["verify_passed_after"] = verify_report.passed
+
+        if not verify_report.passed:
+            status = "failed"
+            error = f"verification failed ({verify_report.failure_reason or 'unknown'})"
+            return finish()
+
+        entities_path = output_dir / "entities.json"
+        if not entities_path.exists():
+            source_entities = data_dir / "entities.json"
+            if source_entities.is_file():
+                try:
+                    entities_path.write_text(
+                        source_entities.read_text(encoding="utf-8"), encoding="utf-8"
+                    )
+                except OSError:
+                    pass
+
+        seo = seo_stage.generate_seo(
+            draft,
+            sheet,
+            run_state=run_state,
+            generate=generate,
+            entities_path=entities_path,
+            articles_dir=content_dir,
+            drafts_dir=drafts_dir,
+            config=verify_config,
+        )
+        slug = str(seo["slug"])
+        cover = cover_stage.generate_cover(
+            slug,
+            seo["title"],
+            seo["category"],
+            output_dir=covers_dir,
+            fonts_dir=FONTS_DIR,
+        )
+        front = publish_stage.build_front_matter(sheet, seo, cover)
+        body = gates_stage.parse_front_matter(draft)[1]
+        article = publish_stage.assemble_article(body, front)
+        article_path = _write_text(article_dir / f"{slug}.md", article)
+
+        gate_result = gates_stage.run_gates(
+            article,
+            slug=slug,
+            facts=sheet,
+            cluster_id=cluster_id,
+            gathered=gathered,
+            verify_report=verify_report.to_dict(),
+            run_state=run_state,
+            config=gates_config,
+            articles_dir=content_dir,
+            page_template=PAGE_TEMPLATE,
+            now=now,
+            link_checker=link_checker or (lambda url: 200),
+            site_checks=site_checks,
+        )
+        if not gate_result.passed:
+            status = "failed"
+            error = "publish gates failed"
+        return finish()
+    except BudgetExceeded as exc:
+        status = "budget_exceeded"
+        error = str(exc)
+        return finish()
+    except (
+        providers.SkipRun,
+        providers.MissingWriterFamilyError,
+        seo_stage.SeoError,
+        cover_stage.CoverError,
+        write_stage.WriterInputError,
+    ) as exc:
+        status = "failed"
+        error = f"{type(exc).__name__}: {exc}"
+        return finish()
+    except Exception as exc:  # noqa: BLE001 - keep the temp tree and report it
+        status = "failed"
+        error = f"{type(exc).__name__}: {exc}"
+        return finish()
 
 
 def _report_path(report: dict) -> Path:
@@ -446,11 +867,17 @@ def _make_stdout_encodable() -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m pipeline.replay",
-        description="Re-run the facts stage on a saved story.",
+        description="Re-run the facts stage (or a full draft) on a saved story.",
     )
     parser.add_argument("cluster_id", help="cluster id whose saved story to replay")
     parser.add_argument("--data-dir", default=None, help="override the data directory")
-    parser.add_argument("--output-dir", default=None, help="directory for the replay sheet")
+    parser.add_argument("--output-dir", default=None, help="directory for the replay files")
+    parser.add_argument(
+        "--through",
+        choices=("draft",),
+        default=None,
+        help="continue through write, verify, SEO, cover and gates after confirmed facts",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -463,6 +890,7 @@ def main(argv: list[str] | None = None) -> int:
             args.cluster_id,
             data_dir=args.data_dir,
             output_dir=args.output_dir,
+            through=args.through,
         )
     except ReplayError as exc:
         print(f"replay failed: {exc}", file=sys.stderr)
@@ -478,6 +906,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"report failed: {exc}", file=sys.stderr)
         print(f"sheet: {report.get('sheet_path')}", file=sys.stderr)
+        return 3
+    if report.get("status") in ("failed", "budget_exceeded"):
         return 3
     return 0
 
