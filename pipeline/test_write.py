@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -609,7 +610,7 @@ def test_saved_sheet_writer_prompt_fits_groq_after_compaction():
     assert limit == 8000
     cap = int(0.9 * limit - estimate)
 
-    assert estimate <= 5000, f"compact writer prompt is {estimate:.0f} tokens"
+    assert estimate <= 5300, f"compact writer prompt is {estimate:.0f} tokens"
     assert cap >= providers.DEFAULT_MIN_OUTPUT_TOKENS["writer"], (
         f"computed Groq cap {cap} is below the writer minimum "
         f"{providers.DEFAULT_MIN_OUTPUT_TOKENS['writer']}; the sheet would be skipped"
@@ -642,3 +643,55 @@ def test_writer_template_never_refers_to_an_unstated_claim():
     template = write_module.load_template()
     assert "Never refer to a claim, prediction or rumor the article has not stated" in template
     assert "never open with" in template
+
+
+def test_writer_template_merges_fact_lines_that_make_one_point():
+    template = write_module.load_template()
+    assert "Fact lines making one point" in template
+    assert "never restate it later" in template
+    # The phrases earlier tests rely on are untouched.
+    assert "cite every source together" in template
+    assert "according to Xbox Wire and PC Gamer" in template
+
+
+def test_writer_template_credits_the_person_and_shares_only_the_common_title():
+    template = write_module.load_template()
+    assert "**Name the person.**" in template
+    assert "not their company" in template
+    assert "use what they share" in template
+    assert "a senior vice president at Nvidia" in template
+
+
+def test_writer_template_credits_the_relaying_outlet():
+    template = write_module.load_template()
+    assert "**Credit the relay.**" in template
+    assert "second-hand or translated" in template
+    assert "according to TechPowerUp News, Fisher told Taiwanese media" in template
+
+
+def test_writer_template_matches_the_verb_to_the_source():
+    template = write_module.load_template()
+    assert "**Match the verb.**" in template
+    assert '"confirmed" only for a `confirmed` fact' in template
+    assert "no verb more than twice" in template
+
+
+def test_writer_template_leaves_out_asides_and_keeps_rumor_support_with_the_rumor():
+    template = write_module.load_template()
+    assert "**No asides.**" in template
+    assert "context-dependent remark" in template
+    assert 'goes under "What is unconfirmed"' in template
+
+
+def test_writer_template_rules_are_numbered_without_gaps():
+    template = write_module.load_template()
+    numbers = [int(match) for match in re.findall(r"^(\d+)\. \*\*", template, re.MULTILINE)]
+    assert numbers == list(range(1, len(numbers) + 1))
+    assert numbers[-1] >= 36
+
+
+def test_writer_template_stays_within_its_token_ceiling():
+    # The saved-sheet Groq test only runs where that sheet exists; this one
+    # always runs and stops the rules from growing past what the budget allows.
+    tokens = providers.estimate_prompt_tokens(write_module.load_template())
+    assert tokens <= 3950, f"writer template is {tokens:.0f} tokens"

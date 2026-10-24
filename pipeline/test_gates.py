@@ -1,6 +1,7 @@
 import datetime as dt
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 import dryrun
@@ -744,6 +745,67 @@ def test_near_identical_sentences_fail():
     result = run(make_article(body=body)[0])
     assert not result.passed
     assert any("near-duplicate sentences" in failure for failure in result.failures)
+
+
+FISHER_SENTENCES = (
+    "Jeff Fisher stated that discontinuation rumors are not true and confirmed that "
+    "the company will continue to ship the RTX 5090.",
+    "Jeff Fisher stated that discontinuation rumors are not true and that Nvidia "
+    "will continue to ship the RTX 5090.",
+)
+OTHER_FISHER_SENTENCES = (
+    "Addressing supply capacity, Jeff Fisher stated that supply chain capacity is indeed "
+    "somewhat constrained, but Nvidia is doing everything it can to get the product on the market.",
+    "Jeff Fisher stated that Nvidia is going all out to bring products to market.",
+    "Jeff Fisher stated that although there are other variants of the RTX 5090 chip, "
+    "production has not been discontinued.",
+    "PC Gamer reports that the graphics card has disappeared from Nvidia's official US marketplace.",
+    "TechPowerUp News reports that the RTX 5090 has a $1,999 MSRP.",
+)
+
+
+def _pair_scores(sentences):
+    contents = [gates._content_words(sentence) for sentence in sentences]
+    return [
+        len(contents[i] & contents[j]) / len(contents[i] | contents[j])
+        for i in range(len(contents))
+        for j in range(i + 1, len(contents))
+    ]
+
+
+def test_a_real_repeated_denial_is_caught_by_the_default_threshold():
+    # Measured on a real draft: the repeated sentence scored 0.77, below the old 0.8.
+    score = _pair_scores(FISHER_SENTENCES)[0]
+    assert 0.7 <= score < 0.8
+    assert gates.near_duplicate_sentence_failures(" ".join(FISHER_SENTENCES))
+    assert gates.near_duplicate_sentence_failures(" ".join(FISHER_SENTENCES), threshold=0.8) == []
+
+
+def test_different_statements_by_the_same_speaker_are_not_near_duplicates():
+    sentences = (FISHER_SENTENCES[0],) + OTHER_FISHER_SENTENCES
+    assert max(_pair_scores(sentences)) < 0.7
+    assert gates.near_duplicate_sentence_failures(" ".join(sentences)) == []
+
+
+def test_the_near_duplicate_threshold_defaults_to_point_seven():
+    assert gates.DEFAULT_GATES["near_duplicate_threshold"] == 0.7
+    assert gates.load_gates_config()["near_duplicate_threshold"] == 0.7
+
+
+@pytest.mark.parametrize("value, expected", [(0.9, 0.9), ("0.75", 0.75), ("abc", 0.7), (0, 0.7), (1.5, 0.7), (None, 0.7)])
+def test_the_near_duplicate_threshold_is_read_from_config_and_bad_values_fall_back(tmp_path, value, expected):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"gates": {"near_duplicate_threshold": value}}), encoding="utf-8")
+    assert gates.load_gates_config(path)["near_duplicate_threshold"] == expected
+
+
+def test_the_gate_uses_the_configured_threshold():
+    body = "## Overview\n\n" + filler(200) + "\n\n" + " ".join(FISHER_SENTENCES) + "\n"
+    article = make_article(body=body)[0]
+    strict = run(article, config={**CONFIG, "near_duplicate_threshold": 0.7})
+    loose = run(article, config={**CONFIG, "near_duplicate_threshold": 0.8})
+    assert strict.checks["near_duplicate_sentences"]["failures"]
+    assert loose.checks["near_duplicate_sentences"]["failures"] == []
 
 
 def test_near_duplicate_sentences_switch_disables_the_gate():

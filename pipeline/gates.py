@@ -129,6 +129,7 @@ DEFAULT_GATES: dict[str, Any] = {
     "check_repeated_facts": True,
     "max_repeat_tokens": 2,
     "check_near_duplicate_sentences": True,
+    "near_duplicate_threshold": 0.7,
     "check_dangling_references": True,
     "check_circular_attribution": True,
     "check_thin_sections": True,
@@ -371,6 +372,14 @@ def load_gates_config(path: str | Path | None = None) -> dict:
         config[key] = value if isinstance(value, bool) else DEFAULT_GATES[key]
     config["max_repeat_tokens"] = int(section.get("max_repeat_tokens", DEFAULT_GATES["max_repeat_tokens"]))
     config["max_same_opener"] = int(section.get("max_same_opener", DEFAULT_GATES["max_same_opener"]))
+    threshold = section.get("near_duplicate_threshold", DEFAULT_GATES["near_duplicate_threshold"])
+    try:
+        threshold = float(threshold)
+    except (TypeError, ValueError):
+        threshold = DEFAULT_GATES["near_duplicate_threshold"]
+    config["near_duplicate_threshold"] = (
+        threshold if 0.0 < threshold <= 1.0 else DEFAULT_GATES["near_duplicate_threshold"]
+    )
     return config
 
 
@@ -647,7 +656,7 @@ def _content_words(text: str) -> set[str]:
     }
 
 
-def near_duplicate_sentence_failures(body: str, threshold: float = 0.8) -> list[str]:
+def near_duplicate_sentence_failures(body: str, threshold: float = 0.7) -> list[str]:
     """Failure messages for sentence pairs with a high content-word Jaccard overlap."""
     sentences = _sentences(body)
     contents = [_content_words(sentence) for sentence in sentences]
@@ -1134,7 +1143,12 @@ def run_gates(
     # 5h. near-duplicate sentences: the same fact rewritten as a second sentence
     near_sentence_failures: list[str] = []
     if config.get("check_near_duplicate_sentences", DEFAULT_GATES["check_near_duplicate_sentences"]):
-        near_sentence_failures = near_duplicate_sentence_failures(body, threshold=0.8)
+        near_sentence_failures = near_duplicate_sentence_failures(
+            body,
+            threshold=config.get(
+                "near_duplicate_threshold", DEFAULT_GATES["near_duplicate_threshold"]
+            ),
+        )
     record("near_duplicate_sentences", near_sentence_failures)
 
     # 5i. dangling references: an anaphoric opener needs the sentence before it

@@ -679,7 +679,8 @@ gates:
   # off; the two limits are the per-gate thresholds.
   check_repeated_facts: true       # a date or 3+ digit number over the limit fails
   max_repeat_tokens: 2
-  check_near_duplicate_sentences: true  # content-word Jaccard >= 0.8 fails
+  check_near_duplicate_sentences: true  # content-word Jaccard >= the threshold below fails
+  near_duplicate_threshold: 0.7    # a real repeated sentence scored 0.77; the next pair 0.31
   check_dangling_references: true  # "Beside this"/"This claim" openers need their noun
   check_circular_attribution: true # "<Name> said that <Name>"
   check_thin_sections: true        # every H2 needs 2 sentences and 40 words
