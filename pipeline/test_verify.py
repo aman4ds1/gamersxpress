@@ -1868,3 +1868,134 @@ def test_verifier_instruction_rejects_attributing_silence_to_the_silent_party():
     assert "silence" in instruction
     assert "exceeds_facts" in instruction
     assert "never credit the silent party with saying it" in instruction
+
+
+# --- a merged fact keeps its company origin; the quoted person is in evidence --
+
+
+def merged_statement_sheet(*facts_specs):
+    """Facts shaped like a merged sheet: origin is the company, no top-level speaker.
+
+    Each spec is (claim text, origin, [(speaker, speaker_type, ok), ...]).
+    """
+    claims = []
+    for text, origin, evidence in facts_specs:
+        claims.append({
+            "claim": text,
+            "value": text,
+            "source_urls": ["https://techpowerup.example/fisher"],
+            "confidence": 0.9,
+            "kind": "statement",
+            "origin": origin,
+            "affiliation": "",
+            "versions": [],
+            "evidence": [
+                {"speaker": name, "speaker_type": kind, "ok": ok, "reason": ""}
+                for name, kind, ok in evidence
+            ],
+        })
+    return {"id": "story-1", "claims": claims}
+
+
+CNA_CLAUSE = "Fisher told CNA that the supply crunch is a global problem affecting the whole industry"
+CNA_CLAIM = "Jeff Fisher told CNA that the supply crunch is a global problem affecting the whole industry"
+
+
+def test_statement_fact_with_a_company_origin_accepts_the_person_its_evidence_names(tmp_path):
+    sheet = merged_statement_sheet((CNA_CLAIM, "nvidia", [("Jeff Fisher", "person", True)]))
+    report = run_statement_check(tmp_path, CNA_CLAUSE + ".\n", CNA_CLAUSE, sheet)
+
+    assert report.passed is True
+    assert report.unsupported == []
+    assert not any("speaker named in sentence" in note for note in report.notes)
+
+
+def test_statement_fact_with_a_company_origin_still_accepts_the_company(tmp_path):
+    sheet = merged_statement_sheet((CNA_CLAIM, "nvidia", [("Jeff Fisher", "person", True)]))
+    clause = "Nvidia said the supply crunch is a global problem affecting the whole industry"
+    report = run_statement_check(tmp_path, clause + ".\n", clause, sheet)
+
+    assert report.passed is True
+
+
+def test_statement_fact_rejects_a_different_person(tmp_path):
+    sheet = merged_statement_sheet((CNA_CLAIM, "nvidia", [("Jeff Fisher", "person", True)]))
+    clause = "Huang told CNA that the supply crunch is a global problem affecting the whole industry"
+    report = run_statement_check(tmp_path, clause + ".\n", clause, sheet)
+
+    assert report.passed is False
+    assert clause in report.unsupported
+
+
+def test_an_evidence_speaker_that_failed_verification_is_not_credited(tmp_path):
+    sheet = merged_statement_sheet((CNA_CLAIM, "nvidia", [("Jeff Fisher", "person", False)]))
+    report = run_statement_check(tmp_path, CNA_CLAUSE + ".\n", CNA_CLAUSE, sheet)
+
+    assert report.passed is False
+    assert CNA_CLAUSE in report.unsupported
+
+
+@pytest.mark.parametrize("speaker_type", ["outlet", "anonymous", "none"])
+def test_an_outlet_or_anonymous_evidence_speaker_is_not_credited(tmp_path, speaker_type):
+    # The clause names the speaker in full, so only the speaker's type can
+    # keep it from being credited.
+    sheet = merged_statement_sheet((CNA_CLAIM, "nvidia", [("TechPowerUp News", speaker_type, True)]))
+    clause = "TechPowerUp News said the supply crunch is a global problem affecting the whole industry"
+    report = run_statement_check(tmp_path, clause + ".\n", clause, sheet)
+
+    assert report.passed is False
+    assert clause in report.unsupported
+
+
+def test_a_person_evidence_speaker_is_credited_by_full_name_in_the_same_shape(tmp_path):
+    # The control for the test above: the same clause shape passes for a person.
+    sheet = merged_statement_sheet((CNA_CLAIM, "nvidia", [("TechPowerUp News", "person", True)]))
+    clause = "TechPowerUp News said the supply crunch is a global problem affecting the whole industry"
+    report = run_statement_check(tmp_path, clause + ".\n", clause, sheet)
+
+    assert report.passed is True
+
+
+def test_a_surname_shared_by_two_evidence_speakers_credits_neither_by_surname(tmp_path):
+    sheet = merged_statement_sheet(
+        (CNA_CLAIM, "nvidia", [("Jeff Fisher", "person", True)]),
+        ("Anna Fisher said the delay is short", "acme", [("Anna Fisher", "person", True)]),
+    )
+    report = run_statement_check(tmp_path, CNA_CLAUSE + ".\n", CNA_CLAUSE, sheet)
+
+    assert report.passed is False
+    assert CNA_CLAUSE in report.unsupported
+
+
+def test_the_full_name_still_credits_a_person_who_shares_a_surname(tmp_path):
+    sheet = merged_statement_sheet(
+        (CNA_CLAIM, "nvidia", [("Jeff Fisher", "person", True)]),
+        ("Anna Fisher said the delay is short", "acme", [("Anna Fisher", "person", True)]),
+    )
+    clause = CNA_CLAUSE.replace("Fisher told", "Jeff Fisher told")
+    report = run_statement_check(tmp_path, clause + ".\n", clause, sheet)
+
+    assert report.passed is True
+
+
+def test_the_facts_shown_to_the_model_list_a_statement_facts_speaker():
+    sheet = merged_statement_sheet(
+        (CNA_CLAIM, "nvidia", [("Jeff Fisher", "person", True), ("Jeff Fisher", "person", True)]),
+        ("Nvidia said production continues", "nvidia", [("Nvidia", "organization", True)]),
+    )
+    shown = verify_module._numbered_facts(sheet).splitlines()
+
+    assert shown[0].endswith("[kind statement; origin nvidia; speaker Jeff Fisher]")
+    # A speaker that is already the fact's origin is not listed twice.
+    assert shown[1].endswith("[kind statement; origin nvidia]")
+
+
+def test_only_statement_facts_list_a_speaker_to_the_model():
+    sheet = merged_statement_sheet((CNA_CLAIM, "nvidia", [("Jeff Fisher", "person", True)]))
+    sheet["claims"][0]["kind"] = "reported"
+
+    assert "speaker" not in verify_module._numbered_facts(sheet)
+
+
+def test_the_prompt_tells_the_model_where_a_facts_speaker_is_listed():
+    assert "listed speaker" in verify_module.SYSTEM_INSTRUCTION

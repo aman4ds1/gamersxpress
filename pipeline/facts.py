@@ -1188,6 +1188,33 @@ def _follows_date_preposition(text: str, match: re.Match) -> bool:
 
 
 
+#: Idioms built on "now" that are not statements about when something happened.
+#: Each maps to wording without a relative-time word, so "now" is never read as
+#: the post date ("pop up now and then" is not "pop up as of October 19, 2026
+#: and then"). The replacement keeps the sentence's meaning.
+_TIME_IDIOMS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"\bevery now and (?:then|again)\b", re.IGNORECASE), "occasionally"),
+    (re.compile(r"\bnow and (?:then|again)\b", re.IGNORECASE), "occasionally"),
+    (re.compile(r"\bfor now\b", re.IGNORECASE), "for the time being"),
+    (re.compile(r"\bfrom now on\b", re.IGNORECASE), "going forward"),
+)
+
+#: Idioms whose meaning turns on the story's own date ("unknown until now"):
+#: no rewrite is safe, so the claim is dropped rather than stored wrong.
+_AMBIGUOUS_TIME_IDIOMS = re.compile(
+    r"\b(?:by|until|till|up to) now\b", re.IGNORECASE
+)
+
+
+def _soften_time_idioms(text: str) -> Optional[str]:
+    """Replace "now" idioms with date-free wording; None when one is ambiguous."""
+    if _AMBIGUOUS_TIME_IDIOMS.search(text):
+        return None
+    for pattern, replacement in _TIME_IDIOMS:
+        text = pattern.sub(replacement, text)
+    return re.sub(r"\s+([,.;:!?])", r"\1", re.sub(r"\s+", " ", text)).strip()
+
+
 def absolutize_relative_time(value: object, published: object, *, kind: str | None = None) -> Optional[str]:
     """Rewrite relative-time words in ``value`` to grammatical absolute dates.
 
@@ -1197,6 +1224,9 @@ def absolutize_relative_time(value: object, published: object, *, kind: str | No
     of October 7, 2026", and "now" or "currently" become "as of <date>". When a
     phrase already follows a date preposition ("from today") the duplicate "on"
     is dropped. "yesterday" and "tomorrow" shift by a day.
+
+    Idioms built on "now" ("now and then", "for now", "from now on") become
+    date-free wording, and "by/until/up to now" drops the claim (``None``).
 
     "today", "now", "currently" are not replaced when they appear inside a
     claim of kind ``statement``, and not when they follow a form of "to be"
@@ -1211,6 +1241,10 @@ def absolutize_relative_time(value: object, published: object, *, kind: str | No
     words = _relative_time_words()
     if not text or not words:
         return text
+    softened = _soften_time_idioms(text)
+    if softened is None:
+        return None
+    text = softened
     pattern = re.compile(
         r"(?<!\w)(" + "|".join(re.escape(word) for word in words) + r")(?!\w)",
         re.IGNORECASE,

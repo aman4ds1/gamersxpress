@@ -244,7 +244,9 @@ SYSTEM_INSTRUCTION = (
     "an id that is not in the sheet is a fabrication) and always include "
     "\"exceeds_facts\" and \"difference\".\n"
     "When a cited fact's kind is \"statement\", the clause must name the same "
-    "speaker as that fact, or attribute it with \"says\" or \"according to\" "
+    "speaker as that fact (its origin, affiliation or listed speaker; a person "
+    "listed as the fact's speaker is that fact's speaker), or attribute it with "
+    "\"says\" or \"according to\" "
     "and that speaker; a clause that credits the statement to a group (\"the "
     "team\", \"the narrative team\") or to anyone other than the fact's speaker "
     "is unsupported.\n"
@@ -369,6 +371,34 @@ def _match_sentence(clause: object, sentences: list[str]) -> tuple[str, float]:
     return best_sentence, best_ratio
 
 
+#: Speaker types a verified evidence entry may name as a fact's speaker. An
+#: outlet citing itself or an anonymous source is never a speaker to credit.
+_EVIDENCE_SPEAKER_TYPES = ("person", "organization")
+
+
+def _evidence_speakers(claim: dict) -> list[tuple[str, str]]:
+    """The people and organizations a fact's verified evidence names as speaker.
+
+    A merged fact keeps its ``origin`` (often the company) but records who was
+    quoted in each source's evidence entry: "Jeff Fisher" for an Nvidia fact.
+    Only entries that passed verification count, and each speaker once.
+    """
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for entry in claim.get("evidence") or []:
+        if not isinstance(entry, dict) or not entry.get("ok"):
+            continue
+        name = str(entry.get("speaker") or "").strip()
+        speaker_type = facts_module._normalize_speaker_type(entry.get("speaker_type"))
+        if not name or name.lower() == "unstated" or speaker_type not in _EVIDENCE_SPEAKER_TYPES:
+            continue
+        if name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        found.append((name, speaker_type))
+    return found
+
+
 def _sheet_speakers(facts: dict) -> set[str]:
     speakers: set[str] = set()
     for claim in facts.get("claims") or []:
@@ -378,6 +408,8 @@ def _sheet_speakers(facts: dict) -> set[str]:
             name = str(claim.get(key) or "").strip()
             if name and name.lower() != "unstated":
                 speakers.add(name)
+        for name, _speaker_type in _evidence_speakers(claim):
+            speakers.add(name)
     return speakers
 
 
@@ -415,6 +447,15 @@ def _speaker_names(claim: dict, facts: dict) -> set[str]:
             speaker,
             aliases,
             speaker_type=_speaker_type(claim, speaker, field),
+            sheet_speakers=sheet_speakers,
+        )
+    # The person a source quoted for this fact is also its speaker, even when
+    # the fact's origin is the company they speak for.
+    for speaker, speaker_type in _evidence_speakers(claim):
+        names |= facts_module._evidence_speaker_names(
+            speaker,
+            aliases,
+            speaker_type=speaker_type,
             sheet_speakers=sheet_speakers,
         )
     return names
@@ -566,10 +607,19 @@ def _numbered_facts(facts: dict) -> str:
         kind = str(claim.get("kind") or "").strip()
         if kind:
             attribution.append(f"kind {kind}")
+        listed: set[str] = set()
         for field_name in ("origin", "affiliation"):
             name = str(claim.get(field_name) or "").strip()
             if name and name.lower() != "unstated":
                 attribution.append(f"{field_name} {name}")
+                listed.add(name.lower())
+        if kind.lower() == "statement":
+            speakers = [
+                name for name, _speaker_type in _evidence_speakers(claim)
+                if name.lower() not in listed
+            ]
+            if speakers:
+                attribution.append("speaker " + " / ".join(speakers))
         if attribution:
             line += f" [{'; '.join(attribution)}]"
         lines.append(line)

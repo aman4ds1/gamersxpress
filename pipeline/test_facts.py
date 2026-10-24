@@ -6545,3 +6545,49 @@ def test_speaker_is_product_rejects_a_bare_product_title():
     # A cue subject that is also the lead entity is kept.
     assert facts._speaker_is_product("Rebel Wolves", ["Rebel Wolves"], "Rebel Wolves has announced") is False
 
+
+# --- idioms built on "now" are not dates --------------------------------------
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("continue to pop up now and then", "continue to pop up occasionally"),
+    ("Rumours surface every now and again.", "Rumours surface occasionally."),
+    ("rumours surface every now and then", "rumours surface occasionally"),
+    ("the build is fine for now", "the build is fine for the time being"),
+    ("the beta stays free from now on", "the beta stays free going forward"),
+])
+def test_now_idioms_become_date_free_wording(text, expected):
+    assert facts.absolutize_relative_time(text, "2026-10-19", kind="reported") == expected
+
+
+@pytest.mark.parametrize("text", [
+    "the leak was unknown until now",
+    "the studio has launched it by now",
+    "nothing was announced up to now",
+    "nothing was announced till now",
+])
+def test_ambiguous_now_idioms_drop_the_claim(text):
+    assert facts.absolutize_relative_time(text, "2026-10-19", kind="reported") is None
+
+
+def test_now_idioms_need_no_publication_date():
+    assert facts.absolutize_relative_time("pop up now and then", None) == "pop up occasionally"
+
+
+def test_now_idioms_are_softened_inside_a_statement_too():
+    value = facts.absolutize_relative_time("we will share more now and then", "2026-10-19", kind="statement")
+    assert value == "we will share more occasionally"
+
+
+def test_a_plain_now_is_still_anchored_to_the_post_date():
+    value = facts.absolutize_relative_time("the card is available now", "2026-10-19", kind="confirmed")
+    assert value == "the card is available as of October 19, 2026"
+
+
+def test_an_idiom_and_a_plain_now_in_one_value_are_handled_separately():
+    value = facts.absolutize_relative_time(
+        "it appears now and then and is out now on PC", "2026-10-19", kind="reported"
+    )
+    assert "occasionally" in value
+    assert "as of October 19, 2026" in value or "available" in value
+    assert "now and then" not in value
