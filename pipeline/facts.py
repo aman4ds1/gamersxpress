@@ -152,7 +152,8 @@ WARN_LOW_SOURCE_CHARS = 1500
 WARN_MIN_CLAIMS = 3
 # Bump when the extraction prompt or the claim schema changes, so previously
 # written facts sheets are treated as stale and re-extracted.
-PROMPT_VERSION = "facts-v15"
+PROMPT_VERSION = "facts-v16"
+
 
 # Claim kinds, weakest to strongest. Merging takes the weakest kind a fact's
 # sources disagree on, so an estimate that one source calls an estimate is
@@ -190,6 +191,41 @@ HEDGE_WORDS = (
     "could", "may", "might", "possibly", "hopes to", "not a promise",
 )
 
+#: Merge scoring keeps its original word list; config.yaml mirrors it as
+#: ``facts.merge_hedge_words`` so it can be tuned without touching code.
+DEFAULT_MERGE_HEDGE_WORDS = HEDGE_WORDS
+
+#: Words that mark a source sentence as hedged: when a claim's cited quote uses
+#: one and the claim's value drops it ("seemingly vanished" extracted as
+#: "vanished"), the claim is demoted to rumor. Deliberately narrow: common words
+#: such as "over", "up to", "may" or "expected" are not hedges here, otherwise
+#: ordinary figures and plans would be demoted. Config:
+#: ``facts.rumor_hedge_words``.
+DEFAULT_RUMOR_HEDGE_WORDS = (
+    "seemingly", "reportedly", "allegedly", "apparently", "supposedly",
+    "purportedly", "appears to", "appeared to", "is said to", "are said to",
+    "believed to", "rumored", "rumoured",
+)
+
+
+def _config_word_list(key: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """A lower-cased word list from ``facts.<key>``, longest phrases first."""
+    config = load_config().get("facts") or {}
+    words = config.get(key)
+    if not isinstance(words, list) or not words:
+        words = list(default)
+    cleaned = [str(word).strip().lower() for word in words if str(word).strip()]
+    return tuple(sorted(set(cleaned), key=len, reverse=True))
+
+
+def _merge_hedge_words() -> tuple[str, ...]:
+    return _config_word_list("merge_hedge_words", DEFAULT_MERGE_HEDGE_WORDS)
+
+
+def _rumor_hedge_words() -> tuple[str, ...]:
+    return _config_word_list("rumor_hedge_words", DEFAULT_RUMOR_HEDGE_WORDS)
+
+
 #: Story-level confirmation is one tier-1 source OR at least two independent
 #: attributed origins. Setting `facts.allow_single_origin_attributed` in
 #: config.yaml lets a single attributed (named) origin confirm a story instead.
@@ -199,6 +235,8 @@ DEFAULT_ALLOW_SINGLE_ORIGIN_ATTRIBUTED = False
 #: the left maps to one canonical name on the right ("alinea" -> "Alinea
 #: Analytics"). A missing or malformed file is treated as an empty map.
 DEFAULT_ORIGIN_ALIASES_PATH = PROJECT_ROOT / "data" / "origins.json"
+
+
 
 #: Allowlist of well-known video game organizations (publishers, studios,
 #: platform holders, chip makers) from ``data/orgs.json``. Used to keep a
@@ -565,6 +603,8 @@ SYSTEM_INSTRUCTION = (
     "concrete value or a one-line summary), source_url (the exact URL given "
     "for this source), confidence (0 to 1), origin, affiliation, kind, "
     "quote_ids, attribution_ids, speaker, and speaker_type.\n"
+    "One fact per claim. A sentence or headline joined by but, and, while, although or a dash is split into separate claims when the parts are different facts, and an attribution governs only the clause it belongs to.\n"
+    "Hedge words: copy a hedge word that governs the claim from the source sentence into the value when present.\n"
     "origin names who produced the claim: the company or official source, or "
     "the analyst or firm the article cites (for example 'Sony', 'Sensor "
     "Tower'). When the article does not say who produced the claim, set origin "
@@ -658,6 +698,9 @@ SYSTEM_INSTRUCTION = (
     "mechanics or a roster it is shipping is 'confirmed' and must carry the "
     "publisher or named speaker as its origin."
 )
+
+
+
 
 
 #: The grouping call's instruction. It sees only claim ids, source ids and
@@ -1134,18 +1177,18 @@ def _relative_anchor(source: dict) -> Optional[dt.date]:
 _DATE_PREPOSITIONS = (
     "as of", "from", "on", "until", "till", "through", "by", "after", "before",
 )
+_IDIOM_TO_BE_RE = re.compile(r"\b(?:is|are|was|were|be|been|being)\b", re.I)
+_DATE_PREP_PATTERN = re.compile(r"(?<!\w)(?:as of|from|on|until|till|through|by|after|before)(?!\w)\s*$", re.I)
 
 
 def _follows_date_preposition(text: str, match: re.Match) -> bool:
     """True when the matched phrase follows a date preposition ("from today")."""
     prefix = text[: match.start()].rstrip().lower()
-    return any(
-        re.search(rf"(?<!\w){re.escape(prep)}(?!\w)\s*$", prefix)
-        for prep in _DATE_PREPOSITIONS
-    )
+    return bool(_DATE_PREP_PATTERN.search(prefix))
 
 
-def absolutize_relative_time(value: object, published: object) -> Optional[str]:
+
+def absolutize_relative_time(value: object, published: object, *, kind: str | None = None) -> Optional[str]:
     """Rewrite relative-time words in ``value`` to grammatical absolute dates.
 
     Every rewrite keeps the date attached to a preposition, so a sentence never
@@ -1154,6 +1197,11 @@ def absolutize_relative_time(value: object, published: object) -> Optional[str]:
     of October 7, 2026", and "now" or "currently" become "as of <date>". When a
     phrase already follows a date preposition ("from today") the duplicate "on"
     is dropped. "yesterday" and "tomorrow" shift by a day.
+
+    "today", "now", "currently" are not replaced when they appear inside a
+    claim of kind ``statement``, and not when they follow a form of "to be"
+    ("is today", "are now"); those are removed instead. Event claims such as
+    "Nvidia announced a new card today" keep anchoring.
 
     Returns the rewritten value, the unchanged value when it holds no
     relative-time word, or ``None`` when it does but ``published`` gives no date
@@ -1177,15 +1225,23 @@ def absolutize_relative_time(value: object, published: object) -> Optional[str]:
         return f"{_MONTH_NAMES[day.month]} {day.day}, {day.year}"
 
     had_out_now = False
+    kind_token = str(kind or "").strip().lower()
+    statement_kind = kind_token == "statement"
 
     def replace(match: re.Match) -> str:
         nonlocal had_out_now
         word = match.group(0).lower()
         if word == "out now":
-            # "is out now on PS5 and PC" rewrites to "is available on PS5 and
-            # PC"; the "as of <date>" clause is appended once, at the end.
             had_out_now = True
             return "available"
+        if word in ("today", "now", "currently"):
+            prefix_text = text[: match.start()]
+            # Check if preceded by a form of "to be"
+            before = prefix_text.rstrip().lower()
+            if re.search(r"\b(?:is|are|was|were|be|been|being)\s*$", before):
+                return ""
+            if statement_kind:
+                return ""
         delta = {"yesterday": -1, "tomorrow": 1}.get(word, 0)
         day = published_date + dt.timedelta(days=delta)
         if word in ("now", "currently"):
@@ -1194,9 +1250,11 @@ def absolutize_relative_time(value: object, published: object) -> Optional[str]:
         return prefix + _date(day)
 
     rewritten = pattern.sub(replace, text)
+    rewritten = re.sub(r"\s+", " ", rewritten).strip()
     if had_out_now:
-        rewritten = f"{rewritten} as of {_date(published_date)}"
+        rewritten = f"{rewritten} as of {_date(published_date)}".strip()
     return rewritten
+
 
 
 def _has_relative_time(value: object) -> bool:
@@ -1324,7 +1382,7 @@ def _absolutize_claims(
                 kept.append(claim)
             continue
         anchor = info["url"] if info["used"] == "url" else info["feed"]
-        rewritten = absolutize_relative_time(claim.get("value"), anchor)
+        rewritten = absolutize_relative_time(claim.get("value"), anchor, kind=claim.get("kind"))
         if rewritten is None:
             dropped.append(claim)
             logger.warning(
@@ -1335,6 +1393,7 @@ def _absolutize_claims(
             continue
         kept.append({**claim, "value": rewritten})
     return kept, dropped, notes, ambiguous_details
+
 
 
 # --- grounding: a claim's value must stay inside its own source ---------------
@@ -3940,13 +3999,21 @@ def resolve_claim_origins(
                 canonical_affiliation = ""
         else:
             canonical_affiliation = ""
-        resolved.append(
-            {
-                **claim,
-                "origin": origin,
-                "affiliation": canonical_affiliation,
-            }
-        )
+        new_claim = {
+            **claim,
+            "origin": origin,
+            "affiliation": canonical_affiliation,
+        }
+        if (
+            str(new_claim.get("kind") or "").strip().lower() == "statement"
+            and str(new_claim.get("origin") or "").strip().lower() == UNSTATED_ORIGIN
+        ):
+            speaker = str(new_claim.get("speaker") or "").strip()
+            speaker_type = str(new_claim.get("speaker_type") or "").strip().lower()
+            if not speaker or speaker_type in ("", "none", "anonymous"):
+                new_claim = {**new_claim, "kind": "reported"}
+                new_claim["kind_changed"] = "statement->reported (no named speaker)"
+        resolved.append(new_claim)
     # One summary line per source. A source whose only drops are its own
     # self-references is logged at INFO; a genuine attribution gap (unattributed
     # or unnamed) stays a WARNING so it is not missed.
@@ -3965,6 +4032,7 @@ def resolve_claim_origins(
             parts,
         )
     return resolved
+
 
 
 # --- merging duplicate claims across sources ---------------------------------
@@ -4038,21 +4106,90 @@ def _value_key_tokens(value: str) -> set[str]:
     return tokens
 
 
-def _same_value_fact(a: dict, b: dict) -> bool:
+def _story_entities(entities: Optional[Iterable[str]] = None) -> set[str]:
+    if not entities:
+        return set()
+    return {str(entity).strip() for entity in entities if str(entity).strip()}
+
+
+def _entity_tokens(entities: set[str]) -> set[str]:
+    tokens: set[str] = set()
+    for entity in entities:
+        for token in _word_tokens(cluster.strip_diacritics(entity)):
+            if token in _STOP_WORDS or token in _MONTHS or token.isdigit():
+                continue
+            tokens.add(_stem(token))
+    return tokens
+
+
+def _entity_alias_tokens(entities: set[str]) -> set[str]:
+    tokens: set[str] = set()
+    for entity in entities:
+        for alias in entity_aliases(entity):
+            for token in _word_tokens(cluster.strip_diacritics(alias)):
+                if token in _STOP_WORDS or token in _MONTHS or token.isdigit():
+                    continue
+                tokens.add(_stem(token))
+    return tokens
+
+
+def _entity_figures(entities: set[str]) -> set[str]:
+    """Digit figures that belong to an entity's name or alias ("5090" in "RTX 5090")."""
+    figures: set[str] = set()
+    for entity in entities:
+        for name in (entity, *entity_aliases(entity)):
+            figures |= {token for token in _value_key_tokens(name) if token.isdigit()}
+    return figures
+
+
+def _content_words_no_entities(text: str, entities: set[str]) -> set[str]:
+    entity_tokens = _entity_tokens(entities) | _entity_alias_tokens(entities)
+    words: set[str] = set()
+    for token in _word_tokens(cluster.strip_diacritics(text)):
+        if token in _STOP_WORDS or token in _MONTHS or token.isdigit():
+            continue
+        stemmed = _stem(token)
+        if stemmed in entity_tokens:
+            continue
+        words.add(stemmed)
+    return words
+
+
+def _same_value_fact(a: dict, b: dict, *, entities: Optional[Iterable[str]] = None) -> bool:
     """True when two claims share a concrete date or figure and topic words.
 
     The values must share at least one number, or two key tokens (so "October
     12" and "October 13" never merge on the month alone), and the claims must
     share topic words, so two unrelated claims quoting the same date stay apart.
     """
-    a_keys = _value_key_tokens(str(a.get("value") or ""))
-    b_keys = _value_key_tokens(str(b.get("value") or ""))
+    entity_set = _story_entities(entities)
+    # "5090" in "RTX 5090" names the product, not a figure of the fact: two
+    # headlines about the same card must not merge on its model number.
+    entity_figures = _entity_figures(entity_set) if entity_set else set()
+    a_keys = _value_key_tokens(str(a.get("value") or "")) - entity_figures
+    b_keys = _value_key_tokens(str(b.get("value") or "")) - entity_figures
     shared = a_keys & b_keys
     if not shared:
         return False
     if sum(1 for token in shared if token.isdigit()) < 1 and len(shared) < 2:
         return False
+    if entity_set:
+        a_topic = _content_words_no_entities(
+            f"{a.get('claim', '')} {a.get('value', '')}", entity_set
+        )
+        b_topic = _content_words_no_entities(
+            f"{b.get('claim', '')} {b.get('value', '')}", entity_set
+        )
+        ent_tokens = _entity_tokens(entity_set) | _entity_alias_tokens(entity_set)
+        shared_topic = a_topic & b_topic
+        if not shared_topic:
+            return False
+        if shared_topic and shared_topic.issubset(ent_tokens):
+            return False
+        return True
     return bool(_topic_words(str(a.get("claim") or "")) & _topic_words(str(b.get("claim") or "")))
+
+
 
 
 def _value_figures(value: object) -> set[str]:
@@ -4175,7 +4312,8 @@ def _same_fact(
         return False
     if _claim_key(a) == _claim_key(b):
         return True
-    return _same_value_fact(a, b)
+    return _same_value_fact(a, b, entities=entities)
+
 
 
 def _claim_groups(
@@ -4208,9 +4346,90 @@ def _claim_groups(
     return groups
 
 
+
 def _hedge_count(value: str) -> int:
     text = str(value or "").lower()
-    return sum(1 for word in HEDGE_WORDS if word in text)
+    count = 0
+    for word in _merge_hedge_words():
+        if word and word in text:
+            count += 1
+    return count
+
+
+def _find_hedge(text: object, words: tuple[str, ...]) -> str:
+    """The first hedge word or phrase in ``text`` as a whole word, or "".
+
+    Whole-word matching keeps "disappears to" from counting as "appears to".
+    """
+    lowered = str(text or "").lower()
+    for word in words:
+        if re.search(r"(?<![a-z])" + re.escape(word) + r"(?![a-z])", lowered):
+            return word
+    return ""
+
+
+#: Claim kinds a dropped hedge demotes. A statement keeps its speaker's words
+#: and an opinion is already hedged by its kind.
+RUMOR_DEMOTABLE_KINDS = frozenset({"confirmed", "reported"})
+
+
+def apply_rumor_hedge(claim: dict) -> dict:
+    """Demote a claim to rumor when its quote is hedged but its value is not.
+
+    The source wrote "The RTX 5090 also seemingly vanished from NVIDIA's own
+    marketplace" and the extracted value said "vanished": the hedge was lost,
+    so the claim is no longer the source's assertion. It becomes kind
+    ``rumor`` with ``hedge_lost`` naming the word, which keeps it out of
+    confirmation and sends the writer to the unconfirmed section.
+    """
+    kind = str(claim.get("kind") or "").strip().lower()
+    if kind not in RUMOR_DEMOTABLE_KINDS:
+        return claim
+    words = _rumor_hedge_words()
+    if _find_hedge(claim.get("value"), words):
+        return claim
+    # The hedge must govern the part of the quote the value came from: in
+    # "The announcement is expected next month, and retailers have reportedly
+    # begun listings" the hedge belongs to the retailers, not the announcement.
+    clause = _clause_for_value(str(claim.get("quote") or ""), str(claim.get("value") or ""))
+    hedge = _find_hedge(clause, words)
+    if not hedge:
+        return claim
+    return {**claim, "kind": "rumor", "hedge_lost": hedge}
+
+
+#: Where a quote splits into separately asserted clauses: sentence ends,
+#: semicolons, dashes, and a comma before a coordinating or relative word.
+_CLAUSE_SPLIT_RE = re.compile(
+    r"(?<=[.!?])\s+|;\s+|\s+[\u2014\u2013-]\s+"
+    r"|,\s+(?=(?:and|but|while|although|though|whereas|which|whilst)\b)",
+    re.IGNORECASE,
+)
+
+
+def _clause_words(text: str) -> set[str]:
+    return {
+        _stem(token)
+        for token in _word_tokens(cluster.strip_diacritics(text))
+        if token not in _STOP_WORDS and not token.isdigit()
+    }
+
+
+def _clause_for_value(quote: str, value: str) -> str:
+    """The clause of ``quote`` that shares the most content words with ``value``.
+
+    Falls back to the whole quote when no clause shares a word, so a value the
+    clauses cannot place is judged on everything it cited.
+    """
+    clauses = [part.strip() for part in _CLAUSE_SPLIT_RE.split(quote) if part and part.strip()]
+    if len(clauses) <= 1:
+        return quote
+    value_words = _clause_words(value)
+    scored = [(len(_clause_words(clause) & value_words), clause) for clause in clauses]
+    best_score = max(score for score, _ in scored)
+    if best_score == 0:
+        return quote
+    return next(clause for score, clause in scored if score == best_score)
 
 
 def _merge_score(claim: dict) -> tuple[int, int, int]:
@@ -4257,7 +4476,7 @@ def _merge_group(group: list[dict], *, prefer_url: str | None = None) -> dict:
         if preferred:
             candidates = preferred
     best = min(candidates, key=_merge_score)
-    return {
+    merged = {
         "claim": str(best["claim"]),
         "value": str(best["value"]),
         "source_urls": sorted({claim["source_url"] for claim in group}),
@@ -4277,6 +4496,13 @@ def _merge_group(group: list[dict], *, prefer_url: str | None = None) -> dict:
         # product). Diagnostics only: confirmation does not read it yet.
         "evidence": _merge_evidence(group),
     }
+    # Diagnostics recorded on a member (a statement demoted for lack of a
+    # speaker, a hedge the value dropped) survive the merge.
+    for note in ("kind_changed", "hedge_lost"):
+        values = sorted({str(claim[note]) for claim in group if claim.get(note)})
+        if values:
+            merged[note] = "; ".join(values)
+    return merged
 
 
 def _value_specifics(value: object) -> set[str]:
@@ -6475,7 +6701,7 @@ def facts(
     fingerprint = cluster.stage_fingerprint(
         name, "facts", PROMPT_VERSION, SYSTEM_INSTRUCTION, CLAIM_SCHEMA,
         _extraction_chain(), MAX_SOURCE_CHARS, MAX_FIELD_CHARS, max_claims,
-        allow_single, HEDGE_WORDS, sorted(aliases.items()), _relative_time_words(),
+        allow_single, _merge_hedge_words(), _rumor_hedge_words(), sorted(aliases.items()), _relative_time_words(),
         max_sources,
         # The grouping prompt/schema and the confirmation mode decide the sheet's
         # grouping and verdict blocks, so a change in either re-extracts.
@@ -6549,6 +6775,16 @@ def facts(
             )
             for item in part
         ]
+        # A claim whose cited sentence is hedged ("seemingly", "reportedly")
+        # but whose value is not becomes a rumor before origins and merging
+        # read its kind.
+        part = [apply_rumor_hedge(item) for item in part]
+        demoted = [item["hedge_lost"] for item in part if item.get("hedge_lost")]
+        if demoted:
+            logger.info(
+                "story %s: %d claim(s) from %s demoted to rumor (hedge dropped from value: %s)",
+                name, len(demoted), source.get("link"), ", ".join(sorted(set(demoted))),
+            )
 
         if len(part) > max_claims:
             logger.warning(
@@ -6896,6 +7132,7 @@ __all__ = [
     "GROUPING_LABEL_CHARS",
     "GROUPING_SCHEMA",
     "HEDGE_WORDS",
+    "apply_rumor_hedge",
     "KIND_STRENGTH",
     "MAX_ATTRIBUTION_QUOTE_CHARS",
     "MAX_FIELD_CHARS",

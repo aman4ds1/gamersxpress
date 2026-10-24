@@ -238,6 +238,40 @@ facts:
   # dates contradict, and it names a primary entity. Raise it to demand closer
   # wording; lower it to accept looser paraphrases.
   corroboration_overlap: 0.5
+  merge_hedge_words:
+    - estimated
+    - estimate
+    - estimates
+    - reportedly
+    - more than
+    - over
+    - approximately
+    - about
+    - around
+    - roughly
+    - nearly
+    - up to
+    - at least
+    - could
+    - may
+    - might
+    - possibly
+    - hopes to
+    - not a promise
+  rumor_hedge_words:
+    - seemingly
+    - reportedly
+    - allegedly
+    - apparently
+    - supposedly
+    - purportedly
+    - appears to
+    - appeared to
+    - is said to
+    - are said to
+    - believed to
+    - rumored
+    - rumoured
   # Explicit adverbs to treat as lead words (names like Holly, Kelly, Molly must not be dropped).
   adverb_lead_words:
     - reportedly

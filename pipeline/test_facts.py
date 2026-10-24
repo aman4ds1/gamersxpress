@@ -5712,9 +5712,9 @@ def test_evidence_confirmation_tier1_unrelated_speaker_is_not_first_party():
 
 
 def test_extraction_prompt_states_the_sentence_citation_rule():
-    # v15: quote_ids cite body sentences; only a headline-restating claim may
+    # v16: quote_ids cite body sentences; only a headline-restating claim may
     # cite S0 alone, and a speaker is never the game, product or platform.
-    assert facts.PROMPT_VERSION == "facts-v15"
+    assert facts.PROMPT_VERSION == "facts-v16"
     instruction = facts.SYSTEM_INSTRUCTION
     assert "Evidence is cited by numbered sentence, never copied" in instruction
     assert "Rebel Wolves has confirmed that" in instruction
@@ -6292,6 +6292,245 @@ def test_role_phrase_attribution_span_is_kept_for_evidence():
     assert cited["attribution_quote"] == "Even though the studio has said"
     result = facts.verify_evidence(cited, text, "", "Alpha", aliases={}, entities=["Techland"])
     assert result["ok"] is True
+
+
+# --- claim integrity: merging, idiom time words, speakerless statements, ----
+# --- lost hedges -----------------------------------------------------------
+
+PC_HEADLINE = claim(
+    claim="RTX 5090 is not dead, says Nvidia",
+    value="RTX 5090 is not dead, but it has mysteriously vanished from the company's official marketplace",
+    source_url="https://pcgamer.com/a",
+)
+TPU_HEADLINE = claim(
+    claim="NVIDIA denies rumors that the GeForce RTX 5090 is being discontinued",
+    value="NVIDIA denies GeForce RTX 5090 discontinuation rumors and admits supply is tight",
+    source_url="https://techpowerup.com/b",
+)
+
+
+@pytest.mark.parametrize("entities", [["RTX 5090"], ["RTX 5090", "Nvidia"]])
+def test_merge_keeps_two_different_headline_facts_apart(entities):
+    # The two outlets share only the card's name and its model number 5090,
+    # which names the product, not a figure of either fact.
+    merged = facts.merge_claims([dict(PC_HEADLINE), dict(TPU_HEADLINE)], entities=entities)
+    assert len(merged) == 2
+
+
+def test_merge_still_joins_two_outlets_stating_the_same_figure():
+    merged = facts.merge_claims(
+        [
+            claim(claim="Acme Arena sold 2 million copies", value="2 million copies", source_url="https://a.example/1"),
+            claim(claim="Acme Arena has sold 2 million copies", value="2 million copies sold", source_url="https://b.example/1"),
+        ],
+        entities=["Acme Arena"],
+    )
+    assert len(merged) == 1
+    assert len(merged[0]["versions"]) == 2
+
+
+def test_idiom_today_is_removed_from_a_statement_not_dated():
+    value = facts.absolutize_relative_time(
+        "the company would not be where it is today without GeForce", "2026-10-17", kind="statement"
+    )
+    assert value == "the company would not be where it is without GeForce"
+
+
+def test_idiom_today_after_a_form_of_be_is_removed_in_any_kind():
+    value = facts.absolutize_relative_time(
+        "the company would not be where it is today without GeForce", "2026-10-17", kind="reported"
+    )
+    assert value == "the company would not be where it is without GeForce"
+
+
+def test_currently_in_a_statement_is_removed():
+    value = facts.absolutize_relative_time("We are currently working on it", "2026-10-17", kind="statement")
+    assert value == "We are working on it"
+
+
+def test_an_event_today_keeps_its_anchored_date():
+    value = facts.absolutize_relative_time("Nvidia announced a new card today", "2026-10-23", kind="reported")
+    assert value == "Nvidia announced a new card on October 23, 2026"
+
+
+def test_statement_unstated_origin_no_named_speaker_becomes_reported():
+    result = facts.resolve_claim_origins(
+        [claim(claim="X happens", origin="unstated", kind="statement", speaker="", speaker_type="none")],
+        [source(text="X happens.", link="https://a.example/1")],
+    )
+    assert result[0]["kind"] == "reported"
+    assert result[0]["kind_changed"] == "statement->reported (no named speaker)"
+
+
+def test_statement_with_a_named_speaker_stays_a_statement():
+    result = facts.resolve_claim_origins(
+        [claim(claim="X happens", origin="unstated", kind="statement", speaker="Jeff Fisher", speaker_type="person")],
+        [source(text="Jeff Fisher said X happens.", link="https://a.example/1")],
+    )
+    assert result[0]["kind"] == "statement"
+    assert "kind_changed" not in result[0]
+
+
+def hedge_claim(quote, value="The RTX 5090 vanished from the marketplace", kind="reported"):
+    return claim(claim="RTX 5090 marketplace status", value=value, kind=kind, quote=quote)
+
+
+@pytest.mark.parametrize("quote, word", [
+    ("The RTX 5090 also seemingly vanished from NVIDIA's own marketplace.", "seemingly"),
+    ("The RTX 5090 is said to have vanished from the marketplace.", "is said to"),
+    ("The RTX 5090 appears to have vanished from the marketplace.", "appears to"),
+])
+def test_a_hedged_quote_with_an_unhedged_value_becomes_a_rumor(quote, word):
+    result = facts.apply_rumor_hedge(hedge_claim(quote))
+    assert result["kind"] == "rumor"
+    assert result["hedge_lost"] == word
+
+
+def test_a_confirmed_claim_with_a_lost_hedge_also_becomes_a_rumor():
+    result = facts.apply_rumor_hedge(hedge_claim("The card reportedly sold out.", value="The card sold out", kind="confirmed"))
+    assert result["kind"] == "rumor"
+    assert result["hedge_lost"] == "reportedly"
+
+
+def test_a_value_that_keeps_the_hedge_is_unchanged():
+    original = hedge_claim(
+        "The RTX 5090 also seemingly vanished from NVIDIA's own marketplace.",
+        value="The RTX 5090 seemingly vanished from NVIDIA's marketplace",
+    )
+    assert facts.apply_rumor_hedge(original) == original
+
+
+@pytest.mark.parametrize("quote", [
+    "The game sold over a million copies.",
+    "Some listings go for up to $8,000.",
+    "The publisher has more than 300 staff.",
+    "The update may launch in May.",
+    "The patch should arrive next week.",
+    "The sequel is expected in 2027.",
+])
+def test_common_words_never_demote_a_claim(quote):
+    original = hedge_claim(quote, value="plain value")
+    assert facts.apply_rumor_hedge(original) == original
+
+
+def test_a_hedge_in_another_clause_does_not_demote_the_claim():
+    # "reportedly" governs the retailers clause, not the announcement.
+    original = claim(
+        claim="Nvidia confirms the announcement timing", kind="confirmed",
+        value="the full announcement is expected alongside the next scheduled event",
+        quote=(
+            "The full announcement is expected alongside the company's next scheduled event, "
+            "and retailers have reportedly begun preparing internal listings ahead of time."
+        ),
+    )
+    assert facts.apply_rumor_hedge(original) == original
+
+
+def test_a_hedge_in_the_value_clause_demotes_the_claim():
+    result = facts.apply_rumor_hedge(claim(
+        claim="RTX 5090 marketplace status", kind="reported",
+        value="The RTX 5090 vanished from NVIDIA marketplace and Micro Center shelves",
+        quote=(
+            "The RTX 5090 also seemingly vanished from NVIDIA's own marketplace and from "
+            "Micro Center shelves, which only added fuel to the fire."
+        ),
+    ))
+    assert result["kind"] == "rumor"
+    assert result["hedge_lost"] == "seemingly"
+
+
+def test_rumor_hedges_match_whole_words_only():
+    # "disappears to" contains "appears to" as letters, not as a phrase.
+    original = hedge_claim("The card disappears to scalpers within minutes.", value="The card sells out")
+    assert facts.apply_rumor_hedge(original) == original
+
+
+def test_a_statement_with_a_named_speaker_is_never_demoted():
+    original = claim(
+        claim="Fisher on supply", value="supply is constrained", kind="statement",
+        speaker="Jeff Fisher", speaker_type="person",
+        quote="Fisher said supply is reportedly constrained worldwide.",
+    )
+    assert facts.apply_rumor_hedge(original) == original
+
+
+def test_the_lost_hedge_is_applied_inside_facts_and_survives_merging(tmp_path):
+    text = (
+        "The RTX 5090 also seemingly vanished from Nvidia's own marketplace. "
+        "Stock elsewhere remains thin according to retailers."
+    )
+    title = "RTX 5090 vanished from Nvidia's marketplace"
+    sources = [source(link="https://a.example/1", tier=2, name="Alpha", text=text, title=title)]
+    payload = {"claims": [claim(
+        claim="RTX 5090 vanished from Nvidia's marketplace",
+        value="The RTX 5090 vanished from Nvidia's marketplace",
+        origin="unstated", kind="reported", source_url="https://a.example/1",
+        quote_ids=[1],
+    )]}
+    try:
+        sheet = facts.facts(
+            gathered("rumor-1", sources), id="rumor-1", title=title, entities=["RTX 5090"],
+            output_dir=tmp_path, now=NOW, generate=make_generate(payload),
+        )
+    except facts.UnconfirmedStory:
+        sheet = json.loads((tmp_path / "unconfirmed" / "rumor-1.json").read_text(encoding="utf-8"))
+    vanished = [item for item in sheet["claims"] if "vanished" in item["value"]]
+    assert vanished, sheet["claims"]
+    assert vanished[0]["kind"] == "rumor"
+    assert vanished[0]["hedge_lost"] == "seemingly"
+
+
+def test_merge_hedge_count_uses_the_original_word_list():
+    assert facts._merge_hedge_words() == tuple(sorted(set(facts.HEDGE_WORDS), key=len, reverse=True))
+    assert facts._hedge_count("may launch with up to 4 players") == 2
+
+
+def strict_yaml_loader():
+    import yaml
+
+    class StrictLoader(yaml.SafeLoader):
+        pass
+
+    def construct_mapping(loader, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"duplicate key {key!r}", key_node.start_mark
+                )
+            seen.add(key)
+        return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+    StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_mapping)
+    return yaml, StrictLoader
+
+
+def test_strict_loader_rejects_a_duplicate_key():
+    yaml, loader = strict_yaml_loader()
+    with pytest.raises(yaml.constructor.ConstructorError):
+        yaml.load("facts:\n  words: [a]\n  words: [b]\n", Loader=loader)
+
+
+def test_config_yaml_has_no_duplicate_keys_and_separate_hedge_lists():
+    yaml, loader = strict_yaml_loader()
+    path = Path(facts.__file__).resolve().parent / "config.yaml"
+    config = yaml.load(path.read_text(encoding="utf-8"), Loader=loader)
+    facts_config = config["facts"]
+    assert "hedge_words" not in facts_config
+    assert tuple(facts_config["merge_hedge_words"]) == facts.HEDGE_WORDS
+    rumor = set(facts_config["rumor_hedge_words"])
+    assert "seemingly" in rumor
+    assert not rumor & {"over", "up to", "more than", "may", "might", "could", "should", "expected"}
+
+
+def test_prompt_rules_one_fact_and_split_and_attribution_scope():
+    instruction = facts.SYSTEM_INSTRUCTION
+    assert "One fact per claim" in instruction
+    assert "but, and, while, although" in instruction
+    assert "an attribution governs only the clause it belongs to" in instruction
+    assert "copy a hedge word that governs the claim" in instruction
+    assert facts.PROMPT_VERSION == "facts-v16"
 
 
 def test_speaker_is_product_rejects_a_bare_product_title():
