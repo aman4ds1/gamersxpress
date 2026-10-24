@@ -1025,3 +1025,135 @@ def test_main_accepts_use_sheet_and_prints_it(tmp_path, monkeypatch, capsys):
     assert code == 0
     assert seen["use_sheet"] == str(saved)
     assert "sheet reused from:" in capsys.readouterr().out
+
+
+# --- the first verify pass is kept, and each flagged clause says who flagged it --
+
+
+def fake_verify_report(unsupported, model_sentences, detail=None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        unsupported=list(unsupported),
+        model_sentences=list(model_sentences),
+        unsupported_detail=list(detail or []),
+    )
+
+
+def test_a_clause_the_model_rejected_is_reported_as_flagged_by_the_model():
+    report = fake_verify_report(
+        ["Fisher stated X"],
+        [{"clause": "Fisher stated X", "fact_ids": ["F3"], "match": "paraphrase",
+          "exceeds_facts": True, "difference": "drops the qualifier"}],
+        [{"clause": "Fisher stated X", "sentence": "Fisher stated X and Y."}],
+    )
+    (verdict,) = replay._clause_verdicts(report)
+
+    assert verdict["flagged_by"] == "model"
+    assert "exceeds_facts=True" in verdict["detail"]
+    assert "drops the qualifier" in verdict["detail"]
+    assert verdict["sentence"] == "Fisher stated X and Y."
+    assert verdict["fact_ids"] == ["F3"]
+
+
+def test_a_clause_the_model_accepted_is_reported_as_flagged_by_a_code_rule():
+    report = fake_verify_report(
+        ["Fisher stated X"],
+        [{"clause": "Fisher stated X", "fact_ids": ["F3"], "match": "exact",
+          "exceeds_facts": False, "difference": ""}],
+    )
+    (verdict,) = replay._clause_verdicts(report)
+
+    assert verdict["flagged_by"] == "code rule"
+    assert "the model accepted it" in verdict["detail"]
+
+
+def test_a_clause_missing_from_the_models_list_is_reported_as_unlisted():
+    report = fake_verify_report(["Something else"], [])
+    (verdict,) = replay._clause_verdicts(report)
+
+    assert verdict["flagged_by"] == "unlisted"
+    assert verdict["fact_ids"] == []
+
+
+def test_a_match_of_none_is_reported_as_flagged_by_the_model():
+    report = fake_verify_report(
+        ["Y"], [{"clause": "Y", "fact_ids": [], "match": "none", "exceeds_facts": False, "difference": ""}]
+    )
+    assert replay._clause_verdicts(report)[0]["flagged_by"] == "model"
+
+
+def test_a_report_with_nothing_unsupported_has_no_verdicts():
+    assert replay._clause_verdicts(fake_verify_report([], [])) == []
+
+
+def test_the_first_verify_report_survives_the_re_verify_after_a_repair(tmp_path, monkeypatch):
+    unsupported = "Nvidia will ship the card next month."
+    original = dryrun.sample_body() + f"\n\n{unsupported}\n"
+    repaired = dryrun.sample_body()
+    calls = stage_calls()
+    generate = stage_generate(
+        [original, repaired], [verdict_json(unsupported), verdict_json()], calls
+    )
+
+    report = replay_through_draft(tmp_path, monkeypatch, generate)
+
+    first = Path(report["first_verify_report"])
+    assert first.is_file()
+    assert first.name.endswith("-first.json")
+    first_data = json.loads(first.read_text(encoding="utf-8"))
+    assert first_data["passed"] is False
+    assert unsupported in first_data["unsupported"]
+    final = json.loads(first.with_name(first.name.replace("-first.json", ".json")).read_text(encoding="utf-8"))
+    assert final["passed"] is True
+    assert unsupported not in final["unsupported"]
+
+
+def test_the_report_prints_the_first_pass_clauses_and_the_first_report_path(tmp_path, monkeypatch):
+    unsupported = "Nvidia will ship the card next month."
+    original = dryrun.sample_body() + f"\n\n{unsupported}\n"
+    repaired = dryrun.sample_body()
+    generate = stage_generate(
+        [original, repaired], [verdict_json(unsupported), verdict_json()], stage_calls()
+    )
+
+    report = replay_through_draft(tmp_path, monkeypatch, generate)
+    printed = replay.render_report(report)
+
+    assert "first pass flagged" in printed
+    assert unsupported in printed
+    assert "first verify report:" in printed
+    assert report["repair"]["first_pass"][0]["clause"] == unsupported
+
+
+def test_a_failed_final_verify_prints_who_flagged_each_clause(tmp_path, monkeypatch):
+    unsupported = "Nvidia will ship the card next month."
+    original = dryrun.sample_body() + f"\n\n{unsupported}\n"
+    generate = stage_generate(
+        [original, original], [verdict_json(unsupported), verdict_json(unsupported)], stage_calls()
+    )
+
+    report = replay_through_draft(tmp_path, monkeypatch, generate)
+    printed = replay.render_report(report)
+
+    assert report["verify"]["clauses"][0]["clause"] == unsupported
+    assert "flagged by" in printed
+
+
+def test_a_passing_verify_still_saves_a_first_report_and_prints_no_flagged_clauses(tmp_path, monkeypatch):
+    report = replay_through_draft(tmp_path, monkeypatch, dryrun.make_generate("pass"))
+    printed = replay.render_report(report)
+
+    assert Path(report["first_verify_report"]).is_file()
+    assert "first pass flagged" not in printed
+    assert "flagged by" not in printed
+
+
+def test_keeping_the_first_report_never_fails_the_replay(tmp_path):
+    assert replay._keep_first_verify_report(tmp_path / "missing") is None
+    assert replay._keep_first_verify_report(tmp_path) is None
+    (tmp_path / "verify-abc.json").write_text("{}", encoding="utf-8")
+    kept = replay._keep_first_verify_report(tmp_path)
+    assert kept == tmp_path / "verify-abc-first.json"
+    # A second call must not treat the copy as a new report.
+    assert replay._keep_first_verify_report(tmp_path) == tmp_path / "verify-abc-first.json"

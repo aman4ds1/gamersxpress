@@ -456,8 +456,18 @@ def _render_draft_report(lines: list[str], report: dict) -> None:
             f"unsupported_clauses={len(unsupported)} "
             f"failure_reason={verify.get('failure_reason')}"
         )
+        detail_by_clause = {
+            str(item.get("clause")): item for item in (verify.get("clauses") or [])
+        }
         for clause in unsupported:
             lines.append(f"  unsupported: {_ascii_punct(clause)!r}")
+            item = detail_by_clause.get(str(clause))
+            if item:
+                lines.append(
+                    f"    flagged by {item.get('flagged_by')}: {_ascii_punct(item.get('detail'))}"
+                )
+                if item.get("sentence"):
+                    lines.append(f"    in sentence: {_ascii_punct(item.get('sentence'))!r}")
         for number in verify.get("unmatched_numbers") or []:
             lines.append(f"  unmatched number: {_ascii_punct(number)!r}")
 
@@ -472,6 +482,13 @@ def _render_draft_report(lines: list[str], report: dict) -> None:
                 lines.append(f"  repair problem: {_ascii_punct(problem)}")
         else:
             lines.append("repair: not needed")
+        for item in repair.get("first_pass") or []:
+            lines.append(
+                f"  first pass flagged {_ascii_punct(item.get('clause'))!r} "
+                f"by {item.get('flagged_by')}: {_ascii_punct(item.get('detail'))}"
+            )
+    if report.get("first_verify_report"):
+        lines.append(f"first verify report: {report.get('first_verify_report')}")
 
     seo = report.get("seo") or {}
     if seo:
@@ -689,6 +706,76 @@ def run(
     )
 
 
+def _clause_verdicts(verify_report: Any) -> list[dict]:
+    """For each unsupported clause: who flagged it and why.
+
+    ``flagged_by`` is ``model`` when the verifier model's own verdict for the
+    clause fails (its ``match`` or ``exceeds_facts``), ``code rule`` when the
+    model accepted the clause and a rule in verify.py (speaker, relative time,
+    a figure) rejected it, and ``unlisted`` when the clause is not in the
+    model's clause list (it came from its unsupported_claims list).
+    """
+    model = {
+        str(item.get("clause") or ""): item
+        for item in (getattr(verify_report, "model_sentences", None) or [])
+        if isinstance(item, dict)
+    }
+    sentences = {
+        str(item.get("clause") or ""): str(item.get("sentence") or "")
+        for item in (getattr(verify_report, "unsupported_detail", None) or [])
+        if isinstance(item, dict)
+    }
+    verdicts: list[dict] = []
+    for clause in getattr(verify_report, "unsupported", None) or []:
+        item = model.get(clause)
+        if item is None:
+            who = "unlisted"
+            detail = "not in the model's clause list (its unsupported_claims list)"
+        elif verify_stage._clause_supported(item):
+            who = "code rule"
+            detail = (
+                f"the model accepted it (match={item.get('match')}, "
+                f"exceeds_facts={item.get('exceeds_facts')})"
+            )
+        else:
+            who = "model"
+            detail = (
+                f"match={item.get('match')} exceeds_facts={item.get('exceeds_facts')} "
+                f"difference={str(item.get('difference') or '').strip()!r}"
+            )
+        verdicts.append(
+            {
+                "clause": clause,
+                "flagged_by": who,
+                "detail": detail,
+                "sentence": sentences.get(clause, "")[:300],
+                "fact_ids": list(item.get("fact_ids") or []) if item else [],
+            }
+        )
+    return verdicts
+
+
+def _keep_first_verify_report(reports_dir: Path) -> Path | None:
+    """Copy the verify report to ``verify-<id>-first.json`` before a re-verify.
+
+    A repair is followed by a second verify that overwrites ``verify-<id>.json``,
+    which loses what the first pass flagged. The copy keeps it. Never raises.
+    """
+    try:
+        candidates = sorted(
+            path for path in Path(reports_dir).glob("verify-*.json")
+            if not path.stem.endswith("-first")
+        )
+        if not candidates:
+            return None
+        source = candidates[-1]
+        target = source.with_name(f"{source.stem}-first.json")
+        target.write_bytes(source.read_bytes())
+        return target
+    except OSError:
+        return None
+
+
 def _run_draft_stages(
     report: dict,
     sheet: dict,
@@ -742,6 +829,7 @@ def _run_draft_stages(
                 "unsupported": list(verify_report.unsupported),
                 "unmatched_numbers": list(verify_report.unmatched_numbers),
                 "failure_reason": verify_report.failure_reason,
+                "clauses": _clause_verdicts(verify_report),
             }
         if seo:
             report["seo"] = {
@@ -783,9 +871,13 @@ def _run_draft_stages(
             id=cluster_id,
             verify_config=verify_config,
         )
+        first_report_path = _keep_first_verify_report(reports_dir)
+        if first_report_path is not None:
+            report["first_verify_report"] = str(first_report_path)
 
         if verify_report.failure_reason == "article_rejected" and verify_report.unsupported:
             changed_clauses = list(verify_report.unsupported)
+            repair_info["first_pass"] = _clause_verdicts(verify_report)
             reasons = {
                 str(sentence.get("clause") or ""): str(sentence.get("difference") or "").strip()
                 for sentence in verify_report.model_sentences or []
