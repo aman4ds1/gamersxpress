@@ -848,3 +848,180 @@ def test_replay_print_failure_reports_and_keeps_the_temp_folder(tmp_path, monkey
     assert str(sheet_path) in captured.err
     assert temp_dir.exists()
 
+
+# --- --use-sheet: reuse a saved sheet, no extraction ---------------------------
+
+
+def no_extraction(generate):
+    """Wrap a stub so any extraction or grouping call fails the test."""
+
+    def wrapped(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        properties = (json_schema or {}).get("properties") or {}
+        assert "claims" not in properties, "extraction must not run with --use-sheet"
+        assert "groups" not in properties, "grouping must not run with --use-sheet"
+        return generate(role, prompt, json_schema, run_state=run_state, **kwargs)
+
+    return wrapped
+
+
+def make_saved_sheet(tmp_path, monkeypatch, name="saved") -> Path:
+    """A real sheet from a first replay, saved outside the output folder."""
+    replay_through_draft(
+        tmp_path, monkeypatch, dryrun.make_generate("pass"), output_dir=tmp_path / "first"
+    )
+    saved = tmp_path / f"{name}.json"
+    saved.write_bytes((tmp_path / "first" / f"{CLUSTER_ID}.json").read_bytes())
+    return saved
+
+
+def test_use_sheet_skips_extraction_and_grouping_and_makes_no_model_call(tmp_path, monkeypatch):
+    saved = make_saved_sheet(tmp_path, monkeypatch)
+    calls: list[str] = []
+    inner = dryrun.make_generate("pass")
+
+    def recording(role, prompt, json_schema=None, **kwargs):
+        calls.append(role)
+        return inner(role, prompt, json_schema, **kwargs)
+
+    monkeypatch.setattr(
+        replay.facts_stage, "facts",
+        lambda *args, **kwargs: pytest.fail("facts.facts must not run with --use-sheet"),
+    )
+    report = replay_through_draft(
+        tmp_path, monkeypatch, no_extraction(recording),
+        use_sheet=saved, output_dir=tmp_path / "second",
+    )
+    assert report["status"] == "completed"
+    assert report["reused_sheet"] == str(saved)
+    assert report["confirmation"]["confirmed"] is True
+    assert "writer" in calls and "verifier" in calls
+
+
+def test_use_sheet_never_modifies_the_saved_file(tmp_path, monkeypatch):
+    saved = make_saved_sheet(tmp_path, monkeypatch)
+    before = saved.read_bytes()
+    replay_through_draft(
+        tmp_path, monkeypatch, no_extraction(dryrun.make_generate("pass")),
+        use_sheet=saved, output_dir=tmp_path / "second",
+    )
+    assert saved.read_bytes() == before
+
+
+def test_use_sheet_copies_the_sheet_into_the_output_dir_unchanged(tmp_path, monkeypatch):
+    saved = make_saved_sheet(tmp_path, monkeypatch)
+    report = replay_through_draft(
+        tmp_path, monkeypatch, no_extraction(dryrun.make_generate("pass")),
+        use_sheet=saved, output_dir=tmp_path / "second",
+    )
+    copy = tmp_path / "second" / f"{CLUSTER_ID}.json"
+    assert Path(report["sheet_path"]) == copy
+    assert copy.read_bytes() == saved.read_bytes()
+
+
+def test_use_sheet_gives_the_same_facts_on_every_run(tmp_path, monkeypatch):
+    saved = make_saved_sheet(tmp_path, monkeypatch)
+    first = replay_through_draft(
+        tmp_path, monkeypatch, no_extraction(dryrun.make_generate("pass")),
+        use_sheet=saved, output_dir=tmp_path / "run-a",
+    )
+    second = replay_through_draft(
+        tmp_path, monkeypatch, no_extraction(dryrun.make_generate("pass")),
+        use_sheet=saved, output_dir=tmp_path / "run-b",
+    )
+    assert first["claims"] == second["claims"]
+    assert first["confirmation"] == second["confirmation"]
+    assert first["fact_groups"] == second["fact_groups"]
+
+
+def test_use_sheet_with_an_unconfirmed_sheet_stops_after_the_facts(tmp_path, monkeypatch):
+    saved = make_saved_sheet(tmp_path, monkeypatch)
+    sheet = json.loads(saved.read_text(encoding="utf-8"))
+    sheet["confirmation"] = {"rule": "unconfirmed", "confirmed": False, "reason": "not enough evidence"}
+    saved.write_text(json.dumps(sheet), encoding="utf-8")
+    roles: list[str] = []
+
+    def generate(role, prompt, json_schema=None, **kwargs):
+        roles.append(role)
+        raise AssertionError("no model call may run for an unconfirmed saved sheet")
+
+    report = replay_through_draft(
+        tmp_path, monkeypatch, generate, use_sheet=saved, output_dir=tmp_path / "second"
+    )
+    assert report["status"] == "not_confirmed"
+    assert roles == []
+    assert (tmp_path / "second" / "unconfirmed" / f"{CLUSTER_ID}.json").is_file()
+
+
+def test_use_sheet_without_through_prints_the_report_and_calls_no_model(tmp_path, monkeypatch):
+    saved = make_saved_sheet(tmp_path, monkeypatch)
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(replay, "DATA_DIR", data_dir)
+
+    def generate(*args, **kwargs):
+        raise AssertionError("no model call may run")
+
+    report = replay.run(
+        CLUSTER_ID, generate=generate, now=NOW,
+        use_sheet=saved, output_dir=tmp_path / "second",
+    )
+    assert report["model_calls"] == 0
+    assert "sheet reused from:" in replay.render_report(report)
+    assert "extraction and grouping skipped" in replay.render_report(report)
+
+
+@pytest.mark.parametrize("content, message", [
+    (None, "saved sheet not found"),
+    ("not json", "could not read saved sheet"),
+    ("[1, 2]", "is not a JSON object"),
+    ('{"claims": [], "confirmation": {}}', "has no claims"),
+    ('{"claims": [{"claim": "x"}]}', "has no confirmation block"),
+])
+def test_use_sheet_refuses_an_unusable_file(tmp_path, monkeypatch, content, message):
+    data_dir = tmp_path / "data"
+    write_gathered(data_dir)
+    write_sheet(data_dir)
+    monkeypatch.setattr(replay, "DATA_DIR", data_dir)
+    path = tmp_path / "bad.json"
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    with pytest.raises(replay.ReplayError, match=message):
+        replay.run(CLUSTER_ID, use_sheet=path, now=NOW, output_dir=tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_use_sheet_still_refuses_an_output_dir_inside_the_repo(tmp_path, monkeypatch):
+    saved = make_saved_sheet(tmp_path, monkeypatch)
+    inside = providers.PROJECT_ROOT / "data" / f"replay-out-{uuid.uuid4().hex}"
+    with pytest.raises(replay.ReplayError, match="output dir must be outside the repository"):
+        replay.run(CLUSTER_ID, use_sheet=saved, output_dir=inside, now=NOW)
+    assert not inside.exists()
+
+
+def test_use_sheet_never_publishes_or_touches_the_breaker(tmp_path, monkeypatch):
+    saved = make_saved_sheet(tmp_path, monkeypatch)
+    calls = install_tripwires(monkeypatch)
+    report = replay_through_draft(
+        tmp_path, monkeypatch, no_extraction(dryrun.make_generate("pass")),
+        use_sheet=saved, output_dir=tmp_path / "second",
+    )
+    assert report["status"] == "completed"
+    assert calls == []
+
+
+def test_main_accepts_use_sheet_and_prints_it(tmp_path, monkeypatch, capsys):
+    saved = make_saved_sheet(tmp_path, monkeypatch)
+    seen = {}
+
+    def fake_run(cluster_id, **kwargs):
+        seen.update(kwargs)
+        return replay.build_report(
+            json.loads(saved.read_text(encoding="utf-8")),
+            cluster_id=cluster_id, title="t", entities=[], model_calls=0,
+            sheet_path=saved, output_dir=tmp_path,
+        ) | {"reused_sheet": str(saved)}
+
+    monkeypatch.setattr(replay, "run", fake_run)
+    code = replay.main([CLUSTER_ID, "--use-sheet", str(saved), "--output-dir", str(tmp_path / "o")])
+    assert code == 0
+    assert seen["use_sheet"] == str(saved)
+    assert "sheet reused from:" in capsys.readouterr().out

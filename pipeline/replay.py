@@ -257,6 +257,47 @@ def load_story_context(cluster_id: str, *, data_dir: Path) -> tuple[str | None, 
     return title, entities
 
 
+def load_saved_sheet(path: str | Path) -> tuple[dict, Path]:
+    """Read a saved facts sheet for ``--use-sheet``; refuse anything unusable.
+
+    The file is only ever read. A usable sheet is a JSON object with a
+    non-empty ``claims`` list and a ``confirmation`` object, which is what the
+    write stage and the report read.
+    """
+    source = Path(path).expanduser()
+    if not source.is_file():
+        raise ReplayError(f"saved sheet not found: {source}")
+    try:
+        sheet = _read_json(source)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReplayError(f"could not read saved sheet {source}: {exc}") from exc
+    if not isinstance(sheet, dict):
+        raise ReplayError(f"saved sheet {source} is not a JSON object")
+    claims = sheet.get("claims")
+    if not isinstance(claims, list) or not any(isinstance(item, dict) for item in claims):
+        raise ReplayError(f"saved sheet {source} has no claims")
+    if not isinstance(sheet.get("confirmation"), dict):
+        raise ReplayError(f"saved sheet {source} has no confirmation block")
+    return sheet, source
+
+
+def _place_saved_sheet(source: Path, sheet: dict, output_dir: Path, cluster_id: str) -> Path:
+    """Copy the saved sheet into ``output_dir`` as a facts run would have left it.
+
+    A confirmed sheet goes to ``<id>.json`` and an unconfirmed one to
+    ``unconfirmed/<id>.json``, so the rest of the replay finds it where it
+    finds a fresh sheet. The bytes are copied exactly; the original is never
+    modified.
+    """
+    name = _sanitize_name(cluster_id)
+    confirmed = bool((sheet.get("confirmation") or {}).get("confirmed"))
+    target = output_dir / (f"{name}.json" if confirmed else f"unconfirmed/{name}.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.resolve() != source.resolve():
+        target.write_bytes(source.read_bytes())
+    return target
+
+
 def _locate_sheet(output_dir: Path, cluster_id: str) -> tuple[dict | None, Path | None]:
     """The sheet facts.py just wrote under ``output_dir`` and its path."""
     name = _sanitize_name(cluster_id)
@@ -352,6 +393,11 @@ def render_report(report: dict, *, limit: int | None = CLAIM_REPORT_LIMIT) -> st
     title = _ascii_punct(report.get("title") or "(no title)")
     lines = [f"replay: {report.get('cluster_id')} - {title}"]
     lines.append(f"model calls: {report.get('model_calls')}")
+    if report.get("reused_sheet"):
+        lines.append(
+            f"sheet reused from: {report.get('reused_sheet')} "
+            "(extraction and grouping skipped)"
+        )
     confirmation = report.get("confirmation") or {}
     lines.append(
         "confirmation: "
@@ -485,6 +531,7 @@ def run(
     max_model_calls: int | None = None,
     site_checks: Callable[[str, str], tuple[bool, str]] | None = None,
     link_checker: Callable[[str], Any] | None = None,
+    use_sheet: str | Path | None = None,
 ) -> dict:
     """Replay the facts stage (or a full draft) for ``cluster_id``.
 
@@ -494,6 +541,12 @@ def run(
     that resolves to the repository or a path under it is refused. ``generate``
     defaults to the real ``providers.generate``; tests pass a stub so no live
     call is made.
+
+    ``use_sheet`` names a saved facts sheet to reuse: extraction, grounding and
+    grouping are skipped (no model call), the sheet is copied into
+    ``output_dir`` unchanged, and the replay continues from it. A draft replay
+    run on one saved sheet is then comparable from run to run, because the
+    writer and verifier always see the same facts. The saved file is only read.
 
     ``through="draft"`` continues after a confirmed facts sheet through write,
     verify, one repair, SEO, cover and the publish gates, all inside
@@ -505,6 +558,11 @@ def run(
 
     if output_dir is not None:
         output_dir = _resolve_output_dir(output_dir)
+
+    saved_sheet: dict | None = None
+    saved_source: Path | None = None
+    if use_sheet is not None:
+        saved_sheet, saved_source = load_saved_sheet(use_sheet)
 
     data_dir = Path(data_dir) if data_dir is not None else Path(DATA_DIR)
     gathered_path = data_dir / "gathered" / f"{cluster_id}.json"
@@ -518,6 +576,17 @@ def run(
         raise ReplayError(f"could not read gathered file {gathered_path}: {exc}") from exc
 
     title, entities = load_story_context(cluster_id, data_dir=data_dir)
+    if saved_sheet is not None:
+        if not title and saved_sheet.get("title"):
+            title = str(saved_sheet["title"])
+        if not entities:
+            coherence = saved_sheet.get("coherence") or {}
+            entities = [
+                str(entity)
+                for entity in (
+                    coherence.get("canonical_entities") or coherence.get("primary_entities") or []
+                )
+            ]
 
     if output_dir is None:
         output_dir = Path(tempfile.mkdtemp(prefix="gx-replay-"))
@@ -544,35 +613,43 @@ def run(
         model_call_budget = min(model_call_budget, model_limit)
 
     sheet: dict | None = None
-    try:
-        sheet = facts_stage.facts(
-            gathered,
-            id=cluster_id,
-            title=title,
-            entities=entities,
-            output_dir=output_dir,
-            now=now,
-            generate=generate,
-            run_state=run_state,
-            max_sources=max_sources,
-            model_call_budget=model_call_budget,
+    sheet_path: Path | None = None
+    if saved_sheet is not None and saved_source is not None:
+        sheet = saved_sheet
+        sheet_path = _place_saved_sheet(saved_source, saved_sheet, output_dir, cluster_id)
+        logger.info(
+            "replay: reusing saved sheet %s (extraction and grouping skipped)", saved_source
         )
-    except facts_stage.UnconfirmedStory:
-        # An unconfirmed story still wrote its sheet under output_dir/unconfirmed.
-        sheet = None
-    except facts_stage.FactsError as exc:
-        raise ReplayError(f"facts stage failed for cluster {cluster_id!r}: {exc}") from exc
-    except BudgetExceeded as exc:
-        raise ReplayError(str(exc)) from exc
-
-    if sheet is None:
-        sheet, sheet_path = _locate_sheet(output_dir, cluster_id)
     else:
-        sheet_path = output_dir / f"{_sanitize_name(cluster_id)}.json"
-    if sheet is None:
-        raise ReplayError(
-            f"facts stage produced no sheet for cluster {cluster_id!r} in {output_dir}"
-        )
+        try:
+            sheet = facts_stage.facts(
+                gathered,
+                id=cluster_id,
+                title=title,
+                entities=entities,
+                output_dir=output_dir,
+                now=now,
+                generate=generate,
+                run_state=run_state,
+                max_sources=max_sources,
+                model_call_budget=model_call_budget,
+            )
+        except facts_stage.UnconfirmedStory:
+            # An unconfirmed story still wrote its sheet under output_dir/unconfirmed.
+            sheet = None
+        except facts_stage.FactsError as exc:
+            raise ReplayError(f"facts stage failed for cluster {cluster_id!r}: {exc}") from exc
+        except BudgetExceeded as exc:
+            raise ReplayError(str(exc)) from exc
+
+        if sheet is None:
+            sheet, sheet_path = _locate_sheet(output_dir, cluster_id)
+        else:
+            sheet_path = output_dir / f"{_sanitize_name(cluster_id)}.json"
+        if sheet is None:
+            raise ReplayError(
+                f"facts stage produced no sheet for cluster {cluster_id!r} in {output_dir}"
+            )
 
     report = build_report(
         sheet,
@@ -583,6 +660,8 @@ def run(
         sheet_path=sheet_path,
         output_dir=output_dir,
     )
+    if saved_source is not None:
+        report["reused_sheet"] = str(saved_source)
     confirmation = sheet.get("confirmation") or {}
     if not confirmation.get("confirmed"):
         if through == "draft":
@@ -878,6 +957,15 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="continue through write, verify, SEO, cover and gates after confirmed facts",
     )
+    parser.add_argument(
+        "--use-sheet",
+        default=None,
+        metavar="PATH",
+        help=(
+            "reuse this saved facts sheet instead of extracting again: no extraction "
+            "or grouping calls, so a draft replay always starts from the same facts"
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -891,6 +979,7 @@ def main(argv: list[str] | None = None) -> int:
             data_dir=args.data_dir,
             output_dir=args.output_dir,
             through=args.through,
+            use_sheet=args.use_sheet,
         )
     except ReplayError as exc:
         print(f"replay failed: {exc}", file=sys.stderr)
