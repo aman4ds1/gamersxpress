@@ -610,7 +610,7 @@ def test_saved_sheet_writer_prompt_fits_groq_after_compaction():
     assert limit == 8000
     cap = int(0.9 * limit - estimate)
 
-    assert estimate <= 5300, f"compact writer prompt is {estimate:.0f} tokens"
+    assert estimate <= 5000, f"compact writer prompt is {estimate:.0f} tokens"
     assert cap >= providers.DEFAULT_MIN_OUTPUT_TOKENS["writer"], (
         f"computed Groq cap {cap} is below the writer minimum "
         f"{providers.DEFAULT_MIN_OUTPUT_TOKENS['writer']}; the sheet would be skipped"
@@ -694,4 +694,7 @@ def test_writer_template_stays_within_its_token_ceiling():
     # The saved-sheet Groq test only runs where that sheet exists; this one
     # always runs and stops the rules from growing past what the budget allows.
     tokens = providers.estimate_prompt_tokens(write_module.load_template())
-    assert tokens <= 3950, f"writer template is {tokens:.0f} tokens"
+    assert tokens <= 3700, (
+        f"writer template is {tokens:.0f} tokens; the Groq fallback needs the compact "
+        "prompt under 5000, so make room before adding a rule"
+    )
