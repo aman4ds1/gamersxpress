@@ -190,16 +190,24 @@ _DATE_SPECS: tuple[tuple[re.Pattern[str], Callable[[re.Match], str]], ...] = (
         lambda match: match.group(0).lower(),
     ),
     (
-        re.compile(rf"\b({_MONTHS_PATTERN})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b", re.IGNORECASE),
+        re.compile(
+            rf"\b({_MONTHS_PATTERN})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b(?:,?\s+(?:19|20)\d{{2}}\b)?",
+            re.IGNORECASE,
+        ),
         lambda match: f"{match.group(1).lower()} {match.group(2)}",
     ),
     (
-        re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTHS_PATTERN})\.?\b", re.IGNORECASE),
+        re.compile(
+            rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTHS_PATTERN})\.?\b(?:,?\s+(?:19|20)\d{{2}}\b)?",
+            re.IGNORECASE,
+        ),
         lambda match: f"{match.group(2).lower()} {match.group(1)}",
     ),
 )
 #: A number token: three or more digits (commas allowed, e.g. "1,299").
 _NUMBER_TOKEN_RE = re.compile(r"\b\d[\d,]{2,}\b")
+#: A bare calendar year ("2026"). A year is not a figure that can be repeated.
+_YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
 
 #: Words that carry no content for the near-duplicate sentence check.
 _CONTENT_STOPWORDS = frozenset(
@@ -590,13 +598,24 @@ def _empty_sections(body: str) -> list[str]:
 # --- draft-quality gate helpers ----------------------------------------------
 
 
-def repeated_fact_tokens(body: str, max_repeat: int = 2) -> list[str]:
+def repeated_fact_tokens(
+    body: str, max_repeat: int = 2, *, name_text: str = ""
+) -> list[str]:
     """Failure messages for date/number tokens that occur more than ``max_repeat`` times.
 
     A token is a calendar date ("October 13", "13 October", "2026-10-13") or a
-    number of three or more digits ("1,299", "5090"). Stating the same fact
-    three times is repetition, not emphasis.
+    number of three or more digits ("1,299"). Stating the same fact three
+    times is repetition, not emphasis.
+
+    What does not count as a repeated fact: the year of a full date (three
+    different dates in 2026 are three dates), a bare calendar year, and a
+    number that is part of the story's own name. ``name_text`` is the title and
+    entity names; "5090" in "GeForce RTX 5090" names the product and appears in
+    every sentence about it.
     """
+    name_numbers = {
+        match.group(0).replace(",", "") for match in _NUMBER_TOKEN_RE.finditer(name_text or "")
+    }
     counts: dict[str, int] = {}
     surface: dict[str, str] = {}
     masked = body or ""
@@ -608,6 +627,9 @@ def repeated_fact_tokens(body: str, max_repeat: int = 2) -> list[str]:
         masked = pattern.sub(lambda _match: " " * len(_match.group(0)), masked)
     for match in _NUMBER_TOKEN_RE.finditer(masked):
         key = match.group(0).replace(",", "")
+        # Judge a year on the raw text: "1,999" is a price, "1999" a year.
+        if _YEAR_RE.match(match.group(0)) or key in name_numbers:
+            continue
         counts[key] = counts.get(key, 0) + 1
         surface.setdefault(key, match.group(0))
     return [
@@ -1102,7 +1124,11 @@ def run_gates(
     # 5g. one fact, one mention: no date or number repeated past the limit
     repetition_failures: list[str] = []
     if config.get("check_repeated_facts", DEFAULT_GATES["check_repeated_facts"]):
-        repetition_failures = repeated_fact_tokens(body, config["max_repeat_tokens"])
+        repetition_failures = repeated_fact_tokens(
+            body,
+            config["max_repeat_tokens"],
+            name_text=" ".join([title, *[str(e) for e in front.get("entities") or []]]),
+        )
     record("repeated_facts", repetition_failures)
 
     # 5h. near-duplicate sentences: the same fact rewritten as a second sentence

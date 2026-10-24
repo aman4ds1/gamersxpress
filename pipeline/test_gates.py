@@ -650,6 +650,80 @@ def test_max_repeat_tokens_raises_the_repetition_limit():
     assert result.passed, result.failures
 
 
+def test_three_different_dates_in_one_year_are_not_a_repeated_fact():
+    # The year of a full date is part of the date, not a number repeated three times.
+    body = (
+        "## Overview\n\n" + filler(200)
+        + "\n\nThe talk took place on October 16, 2026. The post is dated October 17, 2026.\n"
+        "The page was updated on October 19, 2026.\n"
+    )
+    result = run(make_article(body=body)[0])
+    assert result.checks["repeated_facts"]["failures"] == []
+    assert result.passed, result.failures
+
+
+def test_the_same_full_date_three_times_still_fails():
+    body = (
+        "## Overview\n\n" + filler(200)
+        + "\n\nThe talk took place on October 16, 2026. The report repeats October 16, 2026.\n"
+        "The page still says October 16, 2026.\n"
+    )
+    result = run(make_article(body=body)[0])
+    assert any(failure == "repeated fact: October 16, 2026" for failure in result.failures)
+
+
+def test_a_date_with_and_without_its_year_counts_as_one_date():
+    assert gates.repeated_fact_tokens(
+        "October 16, 2026 then October 16 and again October 16."
+    ) == ["repeated fact: October 16, 2026"]
+
+
+def test_a_bare_year_repeated_is_not_a_repeated_fact():
+    assert gates.repeated_fact_tokens("In 2026 it grew. By 2026 it doubled. Still 2026.") == []
+
+
+def test_a_model_number_in_the_title_or_entities_may_repeat():
+    # make_article's title and entities name the RTX 5090.
+    body = (
+        "## Overview\n\n" + filler(200)
+        + "\n\nThe RTX 5090 is scarce. The RTX 5090 sold out. Buyers want the RTX 5090.\n"
+        "Stores say the RTX 5090 is gone.\n"
+    )
+    result = run(make_article(body=body)[0])
+    assert result.checks["repeated_facts"]["failures"] == []
+    assert result.passed, result.failures
+
+
+def test_a_number_that_is_not_part_of_the_name_still_fails_when_repeated():
+    body = (
+        "## Overview\n\n" + filler(200)
+        + "\n\nThe card ships with 7800 units. A shop lists 7800 units.\n"
+        "The report again says 7800 units.\n"
+    )
+    result = run(make_article(body=body)[0])
+    assert any(failure == "repeated fact: 7800" for failure in result.failures)
+
+
+def test_repeated_fact_tokens_exempts_numbers_in_the_name_text_only():
+    body = "The RTX 5090 is scarce. The RTX 5090 sold out. Buyers want the RTX 5090."
+    assert gates.repeated_fact_tokens(body) == ["repeated fact: 5090"]
+    assert gates.repeated_fact_tokens(body, name_text="GeForce RTX 5090") == []
+    assert gates.repeated_fact_tokens(body, name_text="GeForce RTX 5080") == ["repeated fact: 5090"]
+
+
+def test_the_price_of_a_named_product_still_fails_when_repeated_three_times():
+    body = "The RTX 5090 costs 1,999. Shops say 1,999. The tag reads 1,999."
+    assert gates.repeated_fact_tokens(body, name_text="GeForce RTX 5090") == ["repeated fact: 1,999"]
+
+
+def test_a_comma_formatted_price_that_looks_like_a_year_is_still_counted():
+    # "1,999" is a price, not the year 1999; "1999" with no comma is a year.
+    assert gates.repeated_fact_tokens("It costs 1,999. Shops say 1,999. The tag reads 1,999.") == [
+        "repeated fact: 1,999"
+    ]
+    assert gates.repeated_fact_tokens("In 1999 it began. By 1999 it grew. Still 1999.") == []
+
+
 def test_repeated_facts_switch_disables_the_gate():
     body = (
         "## Overview\n\n" + filler(200)
