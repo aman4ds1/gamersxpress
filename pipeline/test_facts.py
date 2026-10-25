@@ -7243,3 +7243,75 @@ def test_a_closing_mark_from_another_speakers_quotation_is_not_read_as_opening()
         'This was not our call." Ruiz disagreed. "It is late," Ruiz adds.'
     )
     assert cite("This was not our call.", text=text) == ""
+
+
+# --- the organization registry covers hardware and peripheral makers ---------------
+
+HARDWARE_MAKERS = [
+    "8BitDo", "Logitech", "Razer", "Corsair", "SteelSeries", "HyperX", "Turtle Beach",
+    "Cooler Master", "Thrustmaster", "Nacon", "Hori", "ASUS", "MSI", "GIGABYTE", "ASRock",
+    "Acer", "Lenovo", "Dell", "Samsung", "Qualcomm", "Zotac", "PowerColor", "XFX", "Palit",
+    "Kingston", "G.Skill", "Micron", "SK hynix", "TSMC", "Western Digital", "Seagate",
+    "Anbernic", "AYANEO", "Analogue", "Pimax", "HTC", "Apple", "Google",
+]
+
+
+def registry_keys():
+    import json
+
+    organizations = json.loads(facts.DEFAULT_ORGS_PATH.read_text(encoding="utf-8"))["organizations"]
+    keys = []
+    for entry in organizations:
+        names = [entry] if isinstance(entry, str) else [entry["canonical"], *entry.get("aliases", [])]
+        keys.extend(facts._origin_key(name) for name in names)
+    return keys
+
+
+def test_the_registry_has_no_duplicate_names_or_aliases():
+    keys = registry_keys()
+    assert len(keys) == len(set(keys)), sorted({k for k in keys if keys.count(k) > 1})
+
+
+@pytest.mark.parametrize("name", HARDWARE_MAKERS)
+def test_hardware_and_peripheral_makers_are_known_organizations(name):
+    assert facts._origin_key(name) in facts.load_organizations()
+
+
+@pytest.mark.parametrize("alias, canonical", [
+    ("Micro-Star International", "MSI"),
+    ("Logitech G", "Logitech"),
+    ("ASUSTeK Computer", "ASUS"),
+    ("Taiwan Semiconductor Manufacturing Company", "TSMC"),
+    ("Micron Technology", "Micron"),
+])
+def test_hardware_maker_aliases_resolve_to_their_canonical_name(alias, canonical):
+    resolved = facts.load_organization_aliases().get(facts._origin_key(alias))
+    assert resolved == facts._origin_key(canonical)
+
+
+@pytest.mark.parametrize("maker, product", [
+    ("8BitDo", "8BitDo Ultimate 3E"),
+    ("Logitech", "Logitech G Pro X Superlight 2"),
+    ("Razer", "Razer Kishi Ultra"),
+    ("Corsair", "Corsair K70 Pro"),
+])
+def test_a_maker_named_in_its_own_headline_is_a_voice_not_a_product(maker, product):
+    title = f"{product} launches next month"
+    assert facts._speaker_is_product(maker, [product], "", title) is False
+
+
+@pytest.mark.parametrize("product, lead", [
+    ("Ultimate 3E", "8BitDo Ultimate 3E"),
+    ("Kishi Ultra", "Razer Kishi Ultra"),
+    ("K70 Pro", "Corsair K70 Pro"),
+])
+def test_the_product_itself_is_still_not_a_speaker(product, lead):
+    assert facts._speaker_is_product(product, [lead], "", f"{lead} launches next month") is True
+
+
+def test_an_unlisted_company_named_in_the_headline_is_still_treated_as_a_product():
+    # The guard stays strict: a company only speaks once it is in data/orgs.json
+    # or the sentence itself shows it speaking.
+    title = "Zyxel Nova controller arrives"
+    assert facts._speaker_is_product("Zyxel", ["Zyxel Nova"], "", title) is True
+    assert facts._speaker_is_product("Zyxel", ["Zyxel Nova"], "Zyxel has announced", title) is False
