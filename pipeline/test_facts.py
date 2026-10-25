@@ -6967,3 +6967,90 @@ def test_the_trim_happens_before_the_grouping_call_sees_the_claims(monkeypatch, 
     assert "stores report it sold out" not in grouping_prompts[0]
     assert "according to Acme Games" in grouping_prompts[0]
     assert result["confirmation"]["confirmed"] is True
+
+
+# --- a claim that describes a rumor is a rumor ---------------------------------
+
+
+def labelled(label, value, kind="reported"):
+    return facts.apply_rumor_label({"claim": label, "value": value, "kind": kind})
+
+
+def test_the_rumors_own_content_stored_as_a_report_becomes_a_rumor():
+    # Real: TechPowerUp's rumor claim was extracted as a report.
+    out = labelled("GeForce RTX 5090 discontinuation rumors", "GeForce RTX 5090 is being discontinued")
+    assert out["kind"] == "rumor"
+    assert out["kind_changed"] == "reported->rumor (the claim describes a rumor)"
+
+
+@pytest.mark.parametrize("label, value, kind", [
+    ("Jeff Fisher denied discontinuation rumors", "The rumors aren't true", "statement"),
+    ("NVIDIA denies RTX 5090 discontinuation rumors and admits supply is tight",
+     "NVIDIA denied GeForce RTX 5090 discontinuation rumors and admitted supply is tight", "confirmed"),
+    ("CNA report on RTX 5090 production",
+     "Taiwanese outlet CNA quotes Fisher as saying it's not true in regards to ceased production rumours", "reported"),
+    ("RTX 5090 rumors", "The rumors are false", "reported"),
+    ("Nintendo confirms Switch 2 price rumors", "The Switch 2 costs $449", "confirmed"),
+    ("Ubisoft responds to layoff rumors", "Ubisoft said no layoffs are planned", "reported"),
+    ("Studio addresses delay speculation", "The game is still on track", "reported"),
+])
+def test_a_response_to_a_rumor_is_not_demoted(label, value, kind):
+    out = labelled(label, value, kind)
+    assert out["kind"] == kind
+    assert "kind_changed" not in out
+
+
+@pytest.mark.parametrize("label, value", [
+    ("Switch 2 price speculation", "The console could cost $449"),
+    ("Layoffs rumored at Ubisoft", "Ubisoft will cut 200 jobs"),
+    ("Rumours of a PS6 reveal", "Sony will reveal the PS6 in February"),
+    ("Price", "Rumors say the console costs $449"),          # the value says it
+])
+def test_a_rumor_or_speculation_is_demoted(label, value):
+    assert labelled(label, value)["kind"] == "rumor"
+
+
+@pytest.mark.parametrize("label, value", [
+    ("Valve sues leaker over Half-Life 3 leak", "Valve filed a lawsuit"),
+    ("Instrumental soundtrack released", "The soundtrack is out"),
+    ("Speculative fiction game announced", "The game is announced"),
+])
+def test_leaks_and_lookalike_words_are_not_rumor_labels(label, value):
+    assert labelled(label, value)["kind"] == "reported"
+
+
+@pytest.mark.parametrize("kind", ["statement", "opinion", "rumor"])
+def test_only_reports_and_confirmed_claims_are_demoted(kind):
+    out = labelled("GeForce RTX 5090 discontinuation rumors", "GeForce RTX 5090 is being discontinued", kind)
+    assert out["kind"] == kind
+    assert "kind_changed" not in out
+
+
+RUMOR_TEXT = ACME_TEXT + " Rumors say Acme Arena costs $70."
+
+
+def rumor_claim(url):
+    return {
+        "claim": "Acme Arena price rumors", "value": "Acme Arena costs $70", "source_url": url,
+        "confidence": 0.6, "origin": "unstated", "kind": "reported", "affiliation": "",
+        "quote": "", "attribution_quote": "", "speaker": "", "speaker_type": "none",
+    }
+
+
+def test_a_full_run_keeps_the_demotion_and_still_confirms_the_story(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(2, owners=["co-a", "co-b"], text=RUMOR_TEXT)
+    for index, payload in enumerate(payloads):
+        payload["claims"].append(rumor_claim(sources[index]["link"]))
+    generate, calls = grouping_generate(payloads, [["c0", "c2"]])
+    result = facts.facts(
+        gathered("acme-rumor", sources), id="acme-rumor", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+    )
+    rumors = [claim for claim in result["claims"] if "price rumors" in claim["claim"]]
+    assert rumors, "the rumor claim was not kept"
+    assert all(claim["kind"] == "rumor" for claim in rumors)
+    assert all("describes a rumor" in claim.get("kind_changed", "") for claim in rumors)
+    assert result["confirmation"]["confirmed"] is True
+    central = [claim for claim in result["claims"] if claim.get("central")]
+    assert central and central[0]["kind"] == "confirmed"

@@ -4432,6 +4432,45 @@ def apply_rumor_hedge(claim: dict) -> dict:
     return {**claim, "kind": "rumor", "hedge_lost": hedge}
 
 
+#: Words that say a claim is a rumor. "Leak" is left out on purpose: "Valve
+#: sues a leaker" is a fact about a lawsuit, and leak stories are the topic
+#: filter's business.
+_RUMOR_LABEL_RE = re.compile(
+    r"\b(?:rumou?rs?|rumou?red|speculation|speculated)\b", re.IGNORECASE
+)
+#: Words that make a claim a response to a rumor rather than the rumor itself:
+#: a denial, a dismissal, a confirmation, a "not true".
+_RUMOR_RESPONSE_RE = re.compile(
+    r"\b(?:den(?:y|ies|ied|ial|ials)|dismiss(?:es|ed)?|debunk(?:s|ed)?|"
+    r"refut(?:e|es|ed)|reject(?:s|ed)?|respond(?:s|ed)?|responses?|"
+    r"address(?:es|ed)?|quash(?:es|ed)?|shoots? down|shot down|"
+    r"false|untrue|not true|isn'?t true|aren'?t true|not accurate|inaccurate|"
+    r"confirm(?:s|ed)?|clarif(?:y|ies|ied))\b",
+    re.IGNORECASE,
+)
+
+
+def apply_rumor_label(claim: dict) -> dict:
+    """Demote a claim to rumor when it describes a rumor rather than answering one.
+
+    "GeForce RTX 5090 discontinuation rumors" with the value "GeForce RTX 5090
+    is being discontinued" is the rumor's own content stored as a report: a
+    writer sentence stating it would pass verification as supported. When a
+    reportable claim's label or value calls it a rumor or speculation and says
+    nothing that answers the rumor ("denied", "not true", "confirms"), it
+    becomes kind ``rumor`` and records why in ``kind_changed``. "Jeff Fisher
+    denied discontinuation rumors" and "Nintendo confirms the price rumors"
+    stay as they are.
+    """
+    kind = str(claim.get("kind") or "").strip().lower()
+    if kind not in RUMOR_DEMOTABLE_KINDS:
+        return claim
+    text = f"{claim.get('claim') or ''} {claim.get('value') or ''}"
+    if not _RUMOR_LABEL_RE.search(text) or _RUMOR_RESPONSE_RE.search(text):
+        return claim
+    return {**claim, "kind": "rumor", "kind_changed": f"{kind}->rumor (the claim describes a rumor)"}
+
+
 #: Where a quote splits into separately asserted clauses: sentence ends,
 #: semicolons, dashes, and a comma before a coordinating or relative word.
 _CLAUSE_SPLIT_RE = re.compile(
@@ -6982,6 +7021,19 @@ def facts(
             logger.info(
                 "story %s: %d claim(s) from %s demoted to rumor (hedge dropped from value: %s)",
                 name, len(demoted), source.get("link"), ", ".join(sorted(set(demoted))),
+            )
+        # A claim that describes a rumor ("discontinuation rumors": "it is being
+        # discontinued") is a rumor, whatever kind the extractor gave it.
+        before = [str(item.get("kind")) for item in part]
+        part = [apply_rumor_label(item) for item in part]
+        labelled = sum(
+            1 for old_kind, item in zip(before, part)
+            if old_kind != "rumor" and item.get("kind") == "rumor" and not item.get("hedge_lost")
+        )
+        if labelled:
+            logger.info(
+                "story %s: %d claim(s) from %s demoted to rumor (the claim describes a rumor)",
+                name, labelled, source.get("link"),
             )
 
         if len(part) > max_claims:
