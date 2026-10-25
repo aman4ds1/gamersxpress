@@ -6716,3 +6716,145 @@ def test_an_idiom_and_a_plain_now_in_one_value_are_handled_separately():
     assert "occasionally" in value
     assert "as of October 19, 2026" in value or "available" in value
     assert "now and then" not in value
+
+
+# --- a claim credited to a speaker keeps only the clause that speaker said -----
+
+
+def speaker_claim(value, speaker="Nvidia", speaker_type="organization", ok=True, kind="confirmed"):
+    return {
+        "claim": "RTX 5090 status",
+        "value": value,
+        "kind": kind,
+        "evidence": [{"speaker": speaker, "speaker_type": speaker_type, "ok": ok, "reason": ""}],
+    }
+
+
+ALIASES = facts.load_origin_aliases()
+REAL_COMPOUND = (
+    "RTX 5090 is not dead according to Nvidia, but it has vanished from the company's official marketplace"
+)
+
+
+def test_a_compound_value_keeps_the_clause_its_speaker_said():
+    item = speaker_claim(REAL_COMPOUND)
+    dropped = facts.trim_unattributed_clause(item, aliases=ALIASES)
+    assert item["value"] == "RTX 5090 is not dead according to Nvidia"
+    assert dropped == "it has vanished from the company's official marketplace"
+    assert item["value_trimmed"] == {
+        "dropped": "it has vanished from the company's official marketplace",
+        "reason": "clause not attributed to the claim's speaker",
+    }
+
+
+def test_a_raw_claim_with_a_single_evidence_dict_is_trimmed():
+    # Before merging, a claim carries one evidence dict, not a list.
+    item = speaker_claim(REAL_COMPOUND)
+    item["evidence"] = item["evidence"][0]
+    facts.trim_unattributed_clause(item, aliases=ALIASES)
+    assert item["value"] == "RTX 5090 is not dead according to Nvidia"
+
+
+def test_a_headline_style_dash_but_is_split_too():
+    item = speaker_claim("RTX 5090 not dead, says Nvidia\u2014but it's mysteriously vanished from the marketplace")
+    facts.trim_unattributed_clause(item, aliases=ALIASES)
+    assert item["value"] == "RTX 5090 not dead, says Nvidia"
+
+
+def test_the_speaker_may_be_in_the_second_clause():
+    item = speaker_claim("The card vanished from the marketplace, but Nvidia says it is not dead")
+    facts.trim_unattributed_clause(item, aliases=ALIASES)
+    assert item["value"] == "Nvidia says it is not dead"
+
+
+def test_a_person_is_matched_by_surname():
+    item = speaker_claim(
+        "Fisher says production continues, but the card is scarce", speaker="Jeff Fisher",
+        speaker_type="person", kind="statement",
+    )
+    facts.trim_unattributed_clause(item, aliases=ALIASES)
+    assert item["value"] == "Fisher says production continues"
+
+
+@pytest.mark.parametrize("speaker, speaker_type", [("Jeff Fisher", "person"), ("Nvidia", "organization")])
+def test_a_speakers_own_but_sentence_stays_whole(speaker, speaker_type):
+    # A real statement: Fisher said both halves; "Nvidia" in the second half has no cue.
+    value = (
+        "The supply chain capacity is indeed somewhat constrained, but Nvidia is doing "
+        "everything it can to get the product on the market"
+    )
+    item = speaker_claim(value, speaker=speaker, speaker_type=speaker_type, kind="statement")
+    assert facts.trim_unattributed_clause(item, aliases=ALIASES) is None
+    assert item["value"] == value
+    assert "value_trimmed" not in item
+
+
+@pytest.mark.parametrize("value", [
+    "Nvidia says the card is fine, but Nvidia admits supply is tight",   # speaker in both halves
+    "Nvidia's RTX 5090 is fast, but it is hard to find",                   # named, but no cue
+    "Nvidia says it is fine, but stock is low, but prices rise",           # two buts
+    "But Nvidia says it is not dead",                                      # nothing before but
+    "RTX 5090 is not dead according to Nvidia",                            # no but at all
+])
+def test_values_that_are_not_a_clean_attributed_compound_stay_whole(value):
+    item = speaker_claim(value)
+    assert facts.trim_unattributed_clause(item, aliases=ALIASES) is None
+    assert item["value"] == value
+
+
+def test_a_claim_whose_evidence_failed_is_never_trimmed():
+    item = speaker_claim(REAL_COMPOUND, ok=False)
+    assert facts.trim_unattributed_clause(item, aliases=ALIASES) is None
+    assert item["value"] == REAL_COMPOUND
+
+
+@pytest.mark.parametrize("kind", ["reported", "rumor", "opinion"])
+def test_only_confirmed_and_statement_claims_are_trimmed(kind):
+    item = speaker_claim(REAL_COMPOUND, kind=kind)
+    assert facts.trim_unattributed_clause(item, aliases=ALIASES) is None
+
+
+@pytest.mark.parametrize("speaker_type", ["outlet", "anonymous", "none"])
+def test_an_outlet_or_anonymous_speaker_never_trims(speaker_type):
+    item = speaker_claim(REAL_COMPOUND, speaker_type=speaker_type)
+    assert facts.trim_unattributed_clause(item, aliases=ALIASES) is None
+
+
+COMPOUND_TEXT = (
+    "Acme Arena is the fastest-selling game, according to Acme Games, but stores report it sold out. "
+    "Acme Games said the milestone came in its first week."
+)
+
+
+def test_the_trim_happens_before_the_grouping_call_sees_the_claims(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    sources, payloads = acme_scenario(2, owners=["co-a", "co-b"], text=COMPOUND_TEXT)
+    sources[1]["text"] = ACME_TEXT  # the second outlet carries the plain announcement
+    compound_value = "Acme Arena is the fastest-selling game, according to Acme Games, but stores report it sold out"
+    payloads[0]["claims"][0].update(
+        value=compound_value,
+        quote=compound_value,
+        attribution_quote="according to Acme Games",
+    )
+    grouping_prompts: list[str] = []
+    inner, calls = grouping_generate(payloads, [["c0", "c1"]])
+
+    def generate(role, prompt, json_schema=None, **kwargs):
+        if is_grouping_call(json_schema):
+            grouping_prompts.append(prompt)
+        return inner(role, prompt, json_schema, **kwargs)
+
+    result = facts.facts(
+        gathered("acme-compound", sources), id="acme-compound", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+    )
+    trimmed = [claim for claim in result["claims"] if claim.get("value_trimmed")]
+    assert trimmed, "the compound claim was not trimmed"
+    assert trimmed[0]["value_trimmed"] == [
+        {"dropped": "stores report it sold out", "reason": "clause not attributed to the claim's speaker"}
+    ]
+    assert "stores report it sold out" not in trimmed[0]["value"]
+    assert grouping_prompts, "the grouping call did not run"
+    assert "stores report it sold out" not in grouping_prompts[0]
+    assert "according to Acme Games" in grouping_prompts[0]
+    assert result["confirmation"]["confirmed"] is True

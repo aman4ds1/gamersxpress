@@ -4536,6 +4536,10 @@ def _merge_group(group: list[dict], *, prefer_url: str | None = None) -> dict:
         values = sorted({str(claim[note]) for claim in group if claim.get(note)})
         if values:
             merged[note] = "; ".join(values)
+    trims = [item["value_trimmed"] for item in group if isinstance(item.get("value_trimmed"), dict)]
+    if trims:
+        # Keep the record of any clause dropped from a member's value.
+        merged["value_trimmed"] = trims
     return merged
 
 
@@ -4946,6 +4950,76 @@ def _headline_restated(
     text = f"{str(claim.get('claim', ''))} {str(claim.get('value', ''))}"
     claim_words = _word_tokens(cluster.strip_diacritics(text))
     return bool(claim_words & (hard | verbs))
+
+
+#: Words that mark a clause as something its speaker said.
+_ATTRIBUTION_CUE_RE = re.compile(
+    r"\b(?:according to|says|said|say|states|stated|told|tells|denies|denied|deny|"
+    r"confirms|confirmed|announces|announced|claims|claimed|insists|insisted|"
+    r"adds|added|notes|noted)\b",
+    re.IGNORECASE,
+)
+#: "A, but B" in a claim value: a comma, semicolon or dash before "but", or a space.
+_BUT_SPLIT_RE = re.compile(r"(?:\s*[,;\u2014\u2013]\s*|\s+-\s+|\s+)but\s+", re.IGNORECASE)
+
+
+def _names_in(text: str, names: set[str]) -> bool:
+    keys = f" {cluster.normalize_title(cluster.strip_diacritics(str(text).lower()))} "
+    return any(name and f" {name} " in keys for name in names)
+
+
+def trim_unattributed_clause(claim: dict, *, aliases: dict[str, str]) -> Optional[str]:
+    """Keep only the clause a verified speaker said; return the dropped clause.
+
+    A headline such as "RTX 5090 not dead, says Nvidia -- but it's vanished
+    from the marketplace" joins the speaker's statement and the outlet's own
+    observation, and the extractor may copy both into one claim credited to
+    Nvidia. Nvidia never said the second half. When a ``confirmed`` or
+    ``statement`` claim's value is "A, but B" and exactly one half names its
+    verified speaker together with an attribution cue ("according to Nvidia",
+    "Fisher says"), while the other half names neither, the value keeps that
+    half and the claim records the dropped one in ``value_trimmed``. A value in
+    which no half names the speaker ("supply is tight, but we are doing all we
+    can") is the speaker's own sentence and stays whole.
+    """
+    if str(claim.get("kind")) not in ("confirmed", "statement"):
+        return None
+    value = str(claim.get("value") or "")
+    parts = _BUT_SPLIT_RE.split(value)
+    if len(parts) != 2:
+        return None
+    # A raw claim carries one evidence dict; a merged claim carries a list.
+    evidence = claim.get("evidence")
+    entries = evidence if isinstance(evidence, list) else [evidence]
+    names: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("ok"):
+            continue
+        speaker = str(entry.get("speaker") or "").strip()
+        speaker_type = _normalize_speaker_type(entry.get("speaker_type"))
+        if speaker and speaker_type in ("person", "organization"):
+            names |= _evidence_speaker_names(
+                speaker, aliases, speaker_type=speaker_type, sheet_speakers=None
+            )
+    if not names:
+        return None
+    named = [_names_in(part, names) for part in parts]
+    attributed = [named[i] and bool(_ATTRIBUTION_CUE_RE.search(parts[i])) for i in range(2)]
+    if attributed.count(True) != 1:
+        return None
+    keep = attributed.index(True)
+    if named[1 - keep]:
+        return None
+    kept = parts[keep].strip().rstrip(",;:\u2014\u2013- ").strip()
+    dropped = parts[1 - keep].strip()
+    if not kept or not dropped:
+        return None
+    claim["value"] = kept
+    claim["value_trimmed"] = {
+        "dropped": dropped,
+        "reason": "clause not attributed to the claim's speaker",
+    }
+    return dropped
 
 
 #: A claim whose verified speaker the headline names ("... says Nvidia") may be
@@ -6986,6 +7060,15 @@ def facts(
             entities=canonical,
             story_title=title,
             sheet_speakers=sheet_speakers,
+        )
+    # A claim credited to a verified speaker keeps only what that speaker said,
+    # before claims merge or are grouped: "not dead, says Nvidia, but it has
+    # vanished from the marketplace" must group with Nvidia's other statements,
+    # not with the outlet's marketplace observation.
+    trimmed = sum(1 for claim in kept if trim_unattributed_clause(claim, aliases=aliases))
+    if trimmed:
+        logger.info(
+            "story %s: %d claim value(s) trimmed to the clause their speaker said", name, trimmed
         )
     evidence_summary = _evidence_summary(kept)
 
