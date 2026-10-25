@@ -731,6 +731,28 @@ GROUPING_INSTRUCTION = (
 )
 
 
+RESTATEMENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"ids": {"type": "array", "items": {"type": "string"}}},
+    "required": ["ids"],
+    "additionalProperties": False,
+}
+
+RESTATEMENT_INSTRUCTION = (
+    "You are a news-room fact checker. One outlet's claim is the central fact of "
+    "a story. Other outlets' claims are listed below, each already backed by a "
+    "named speaker. Return the ids of the candidates that state the SAME fact as "
+    "the central claim: the same happening, announcement or statement, even when "
+    "it is worded differently or reported through a different channel (a memo, "
+    "a statement, a post, a quote).\n"
+    "A candidate that is related but states a different fact does not count: a "
+    "different date, number, feature, reaction, background detail or "
+    "consequence is a different fact. When you are not sure, leave the "
+    "candidate out.\n"
+    "Return JSON: {\"ids\": [\"<id>\"]}, with an empty list when none match."
+)
+
+
 def _extraction_chain() -> list[dict]:
     """The enabled 'fast' role entries from config.yaml: they pick the extractor.
 
@@ -5628,6 +5650,156 @@ def evidence_central_claims(record: dict, central_group: list[dict] | None) -> l
     return list(central_group or [])
 
 
+DEFAULT_CENTRAL_RESTATEMENT_CANDIDATES = 12
+
+
+def _central_restatement_settings() -> tuple[bool, int]:
+    """``(enabled, max_candidates)`` for the central restatement check."""
+    section = load_config().get("facts") or {}
+    enabled = section.get("central_restatement_check", True)
+    enabled = enabled if isinstance(enabled, bool) else True
+    limit = section.get("central_restatement_max_candidates")
+    if isinstance(limit, bool) or not isinstance(limit, (int, float)) or limit < 1:
+        limit = DEFAULT_CENTRAL_RESTATEMENT_CANDIDATES
+    return enabled, int(limit)
+
+
+def _evidence_entries(claim: dict) -> list[dict]:
+    evidence = claim.get("evidence")
+    if isinstance(evidence, dict):
+        return [evidence]
+    return [entry for entry in (evidence or []) if isinstance(entry, dict)]
+
+
+def _verified_speaker(claim: dict) -> str:
+    """The person or organization a claim's verified evidence names, or ""."""
+    for entry in _evidence_entries(claim):
+        speaker = str(entry.get("speaker") or "").strip()
+        speaker_type = _normalize_speaker_type(entry.get("speaker_type") or claim.get("speaker_type"))
+        if entry.get("ok") and speaker and speaker_type in ("person", "organization"):
+            return speaker
+    return ""
+
+
+def restatement_candidates(
+    kept: list[dict],
+    central_members: list[dict],
+    sources_by_url: dict[str, dict],
+    *,
+    max_candidates: int = DEFAULT_CENTRAL_RESTATEMENT_CANDIDATES,
+) -> list[tuple[str, dict]]:
+    """Claims that could corroborate the central fact: ``(claim id, claim)`` pairs.
+
+    A candidate is a first-party-kind claim with a named, verified speaker, from
+    an owner that gives the central group no verified claim yet. A claim with
+    failed evidence, a rumor or opinion, or a second claim from an owner the
+    central group already counts adds nothing a second owner could confirm.
+    """
+    member_ids = {id(claim) for claim in central_members}
+    verified_owners = {
+        _claim_owner(claim, sources_by_url)
+        for claim in central_members
+        if _verified_speaker(claim)
+    }
+    rank = {"confirmed": 0, "statement": 1, "reported": 2}
+    found: list[tuple[int, int, str, dict]] = []
+    for index, claim in enumerate(kept):
+        if id(claim) in member_ids:
+            continue
+        if str(claim.get("kind")) not in FIRST_PARTY_KINDS or not _verified_speaker(claim):
+            continue
+        if _claim_owner(claim, sources_by_url) in verified_owners:
+            continue
+        found.append((rank.get(str(claim.get("kind")), 3), index, f"c{index}", claim))
+    found.sort(key=lambda item: item[:2])
+    return [(cid, claim) for _rank, _index, cid, claim in found[:max_candidates]]
+
+
+def build_restatement_prompt(central: dict, candidates: list[tuple[str, dict]], source_ids: dict[str, str]) -> str:
+    label = f"{central.get('claim', '')} {central.get('value', '')}"
+    parts = [RESTATEMENT_INSTRUCTION, "", f"CENTRAL CLAIM: {_clip_field(label, GROUPING_LABEL_CHARS)}", "", "CANDIDATES:"]
+    for cid, claim in candidates:
+        text = f"{claim.get('claim', '')} {claim.get('value', '')}"
+        source_id = source_ids.get(_source_url_key(claim.get("source_url")), "s?")
+        parts.append(
+            f"- {cid} | {source_id} | said by {_verified_speaker(claim)} | "
+            f"{_clip_field(text, GROUPING_LABEL_CHARS)}"
+        )
+    return "\n".join(parts)
+
+
+def parse_restatement_ids(value: Any, allowed: set[str]) -> list[str]:
+    """The offered ids a restatement response selected; raise on a malformed shape."""
+    ids = value.get("ids") if isinstance(value, dict) else None
+    if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+        raise FactsError("restatement response is not {'ids': [str, ...]}")
+    chosen: list[str] = []
+    for item in ids:
+        item = item.strip()
+        if item in allowed and item not in chosen:
+            chosen.append(item)
+    return chosen
+
+
+def central_restatements(
+    kept: list[dict],
+    central: dict,
+    central_members: list[dict],
+    sources: list[dict],
+    sources_by_url: dict[str, dict],
+    *,
+    generate: Callable[..., Generation],
+    run_state: RunState | None = None,
+    model_call_budget: int | None = None,
+    exclude_families: set[str] | None = None,
+    max_candidates: int = DEFAULT_CENTRAL_RESTATEMENT_CANDIDATES,
+) -> dict:
+    """Ask which verified claims from other outlets restate the central fact.
+
+    The grouping call partitions every claim in one shot and sometimes misses an
+    obvious pairing, leaving the central claim alone in its group. This asks the
+    narrower question, once, and only about claims a second owner could confirm
+    with: each candidate already carries a named, verified speaker. The answer
+    only ever picks among the offered ids. Failure never fails the story; the
+    record keeps the reason and the confirmation stays as it was.
+    """
+    record: dict = {"asked": [], "accepted": [], "claims": [], "failed": None}
+    candidates = restatement_candidates(
+        kept, central_members, sources_by_url, max_candidates=max_candidates
+    )
+    if not candidates:
+        return record
+    record["asked"] = [cid for cid, _claim in candidates]
+    if (
+        run_state is not None
+        and model_call_budget is not None
+        and run_state.calls >= model_call_budget
+    ):
+        record["failed"] = "model-call budget spent before the restatement check"
+        return record
+    source_ids = {
+        _source_url_key(source.get("link")): f"s{index}"
+        for index, source in enumerate(sources or [])
+    }
+    try:
+        generation = generate(
+            "verifier",
+            build_restatement_prompt(central, candidates, source_ids),
+            json_schema=RESTATEMENT_SCHEMA,
+            run_state=run_state,
+            exclude_families=set(exclude_families or ()),
+        )
+        accepted = parse_restatement_ids(generation.value, set(record["asked"]))
+    except Exception as exc:  # noqa: BLE001 - the check is best-effort
+        record["failed"] = f"restatement check failed: {exc}"
+        logger.warning("story restatement check failed: %s", exc)
+        return record
+    by_id = dict(candidates)
+    record["accepted"] = accepted
+    record["claims"] = [by_id[cid] for cid in accepted]
+    return record
+
+
 #: Words that mark an affiliation as a past one: a former employee never speaks
 #: for the company.
 _FORMER_RE = re.compile(r"\b(?:former|formerly|ex|onetime|one-time)\b", re.IGNORECASE)
@@ -7403,6 +7575,51 @@ def facts(
             min_first_party=min_first_party,
         )
 
+    # The grouping call can leave the central claim alone in its group while
+    # another outlet's verified claim states the same fact. A story that would
+    # stay unconfirmed gets one narrower question: which verified claims from
+    # other owners restate the central fact? Those join the central group and
+    # the same evidence rules judge it again; nothing else changes.
+    restatement = None
+    restatement_enabled, restatement_limit = _central_restatement_settings()
+    if (
+        evidence_conf is not None
+        and confirmation_mode == "evidence"
+        and not evidence_conf.get("confirmed")
+        and central is not None
+        and restatement_enabled
+    ):
+        central_members = evidence_central_claims(grouping, central_group)
+        restatement = central_restatements(
+            kept,
+            central,
+            central_members,
+            sources,
+            sources_by_url,
+            generate=generate,
+            run_state=run_state,
+            model_call_budget=model_call_budget,
+            exclude_families=extractor_families,
+            max_candidates=restatement_limit,
+        )
+        if restatement["asked"]:
+            logger.info(
+                "story %s: central restatement check asked %d candidate(s), accepted %d%s",
+                name,
+                len(restatement["asked"]),
+                len(restatement["accepted"]),
+                f" ({restatement['failed']})" if restatement["failed"] else "",
+            )
+        if restatement["claims"]:
+            evidence_conf = evidence_confirmation(
+                list(central_members) + list(restatement["claims"]),
+                sources_by_url,
+                tier1_confirms=tier1_confirms,
+                aliases=aliases,
+                min_first_party=min_first_party,
+            )
+            evidence_conf["restatements"] = list(restatement["accepted"])
+
     # legacy keeps deciding in legacy and shadow; evidence decides in evidence.
     confirmation = evidence_conf if confirmation_mode == "evidence" else legacy_confirmation
     confirmation_legacy = None
@@ -7423,6 +7640,12 @@ def facts(
             else "",
         )
     fact_groups = fact_groups_sheet(grouping) if grouping is not None else None
+    if fact_groups is not None and restatement is not None and restatement["asked"]:
+        fact_groups["central_restatements"] = {
+            "asked": list(restatement["asked"]),
+            "accepted": list(restatement["accepted"]),
+            "failed": restatement["failed"],
+        }
 
     # Only sources that contributed at least one claim are listed in the sheet;
     # a source that yielded no claim is never cited by the article.

@@ -331,6 +331,9 @@ def make_generate(scenario: str = "pass") -> Callable[..., Generation]:
                 generation = Generation(
                     "verifier", "mock", "mock-verifier", "mistral", _grouping_json(prompt)
                 )
+            elif "ids" in properties:
+                # The central restatement check: the sample story never needs it.
+                generation = Generation("verifier", "mock", "mock-verifier", "mistral", {"ids": []})
             else:
                 generation = Generation("verifier", "mock", "mock-verifier", "mistral", _verifier_json(scenario))
         else:

@@ -223,6 +223,11 @@ facts:
   # each attribute the claim to that organization in their own text. Set to a
   # higher number to demand more independent first-party coverage.
   min_first_party_sources: 2
+  # When the grouping call leaves the central claim alone but another outlet's verified
+  # claim restates it, one narrower question finds the restatement (evidence mode only,
+  # unconfirmed stories only). Set false to rely on the grouping call alone.
+  central_restatement_check: true
+  central_restatement_max_candidates: 12
   # How the central fact is confirmed (PLAN.md pipeline stage 6). "legacy" is
   # the origin/tier/first-party rule only. "shadow" lets the legacy verdict
   # decide but also computes the evidence verdict (claims grouped by a model

@@ -7315,3 +7315,303 @@ def test_an_unlisted_company_named_in_the_headline_is_still_treated_as_a_product
     title = "Zyxel Nova controller arrives"
     assert facts._speaker_is_product("Zyxel", ["Zyxel Nova"], "", title) is True
     assert facts._speaker_is_product("Zyxel", ["Zyxel Nova"], "Zyxel has announced", title) is False
+
+
+# --- the central restatement check ---------------------------------------------------
+
+BLACK_FLAG_B_TEXT = (
+    "Acme Games confirmed its new shooter had a record first week. "
+    "Retailers reported steady restocks."
+)
+
+
+def restatement_generate(inner, answer=None, error=None):
+    """Wrap a grouping stub: the restatement call answers ``answer`` (or raises)."""
+    log = {"prompts": [], "calls": 0}
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        properties = (json_schema or {}).get("properties") or {}
+        if "ids" in properties and "groups" not in properties:
+            log["calls"] += 1
+            log["prompts"].append(prompt)
+            if error is not None:
+                raise error
+            value = {"ids": list(answer or [])} if not isinstance(answer, dict) else answer
+            if run_state is not None:
+                run_state.record(Generation(role=role, provider="mock", model="m", family="g", value=value))
+            return Generation(role=role, provider="mock", model="m", family="g", value=value, fallbacks=[])
+        return inner(role, prompt, json_schema, run_state=run_state, **kwargs)
+
+    return generate, log
+
+
+def run_restatement_story(tmp_path, monkeypatch, *, answer=None, error=None, groups=(), mode="evidence",
+                          mutate_b=None, budget=None, config=None, story="acme-restate"):
+    """Two owners, each with a verified Acme Games statement the grouping call never pairs."""
+    use_mode(monkeypatch, mode)
+    if config:
+        real = facts.load_config
+
+        def load(path=None):
+            data = real(path)
+            data.setdefault("facts", {}).update(config)
+            return data
+
+        monkeypatch.setattr(facts, "load_config", load)
+    url_a, url_b = "https://outlet0.example/acme", "https://outlet1.example/acme"
+    sources = [
+        source(link=url_a, name="Outlet 0", owner="co-a", tier=2, title=ACME_TITLE, text=ACME_TEXT),
+        source(link=url_b, name="Outlet 1", owner="co-b", tier=2, title="Acme Games has a new hit",
+               text=BLACK_FLAG_B_TEXT),
+    ]
+    claim_b = acme_claim(
+        url_b,
+        claim="Acme Games confirmed a record opening week for its new shooter",
+        value="record first week",
+        quote="Acme Games confirmed its new shooter had a record first week.",
+        attribution_quote="Acme Games confirmed",
+    )
+    if mutate_b:
+        mutate_b(claim_b)
+    payloads = [{"claims": [acme_claim(url_a)]}, {"claims": [claim_b]}]
+    inner, calls = grouping_generate(payloads, [list(group) for group in groups])
+    generate, log = restatement_generate(inner, answer=answer, error=error)
+    # Budget accounting needs a RunState, which the real pipeline always passes.
+    kwargs = {} if budget is None else {"model_call_budget": budget, "run_state": RunState()}
+    try:
+        result = facts.facts(
+            gathered(story, sources), id=story, title=ACME_TITLE, entities=ACME_ENTITIES,
+            output_dir=tmp_path, now=NOW, generate=generate, **kwargs,
+        )
+    except facts.UnconfirmedStory:
+        result = json.loads((tmp_path / "unconfirmed" / f"{story}.json").read_text(encoding="utf-8"))
+    return result, log
+
+
+def test_a_story_the_grouping_call_left_unpaired_stays_unconfirmed_without_the_check(tmp_path, monkeypatch):
+    # The setup itself: verified Acme statements from two owners, never grouped.
+    result, log = run_restatement_story(tmp_path, monkeypatch, config={"central_restatement_check": False})
+    assert result["confirmation"]["confirmed"] is False
+    assert log["calls"] == 0
+
+
+def test_the_restatement_check_pairs_the_other_outlets_verified_claim_and_confirms(tmp_path, monkeypatch):
+    result, log = run_restatement_story(tmp_path, monkeypatch, answer=["c1"])
+    assert result["confirmation"]["confirmed"] is True
+    assert result["confirmation"]["rule"] == "first-party"
+    assert result["confirmation"]["restatements"] == ["c1"]
+    assert result["fact_groups"]["central_restatements"] == {"asked": ["c1"], "accepted": ["c1"], "failed": None}
+    assert log["calls"] == 1
+    prompt = log["prompts"][0]
+    assert "CENTRAL CLAIM" in prompt and "fastest-selling" in prompt
+    assert "- c1 |" in prompt and "said by Acme Games" in prompt and "record opening week" in prompt
+
+
+def test_an_empty_answer_leaves_the_story_unconfirmed(tmp_path, monkeypatch):
+    result, log = run_restatement_story(tmp_path, monkeypatch, answer=[])
+    assert result["confirmation"]["confirmed"] is False
+    assert "restatements" not in result["confirmation"]
+    assert result["fact_groups"]["central_restatements"] == {"asked": ["c1"], "accepted": [], "failed": None}
+
+
+def test_an_id_that_was_never_offered_is_ignored(tmp_path, monkeypatch):
+    result, log = run_restatement_story(tmp_path, monkeypatch, answer=["c0", "c99"])
+    assert result["confirmation"]["confirmed"] is False
+    assert result["fact_groups"]["central_restatements"]["accepted"] == []
+
+
+def test_a_malformed_answer_is_recorded_and_changes_nothing(tmp_path, monkeypatch):
+    result, log = run_restatement_story(tmp_path, monkeypatch, answer={"groups": []})
+    assert result["confirmation"]["confirmed"] is False
+    assert "restatement response is not" in result["fact_groups"]["central_restatements"]["failed"]
+
+
+def test_a_failing_restatement_call_never_fails_the_story_run(tmp_path, monkeypatch):
+    result, log = run_restatement_story(tmp_path, monkeypatch, error=RuntimeError("provider down"))
+    assert result["confirmation"]["confirmed"] is False
+    assert "provider down" in result["fact_groups"]["central_restatements"]["failed"]
+
+
+def test_a_candidate_whose_evidence_failed_is_never_offered(tmp_path, monkeypatch):
+    def lose_attribution(claim):
+        claim["attribution_quote"] = ""
+        claim["quote"] = "Retailers reported steady restocks."
+
+    result, log = run_restatement_story(tmp_path, monkeypatch, answer=["c1"], mutate_b=lose_attribution)
+    assert log["calls"] == 0
+    assert result["confirmation"]["confirmed"] is False
+    assert "central_restatements" not in result["fact_groups"]
+
+
+@pytest.mark.parametrize("kind", ["rumor", "opinion"])
+def test_a_rumor_or_opinion_is_never_offered(tmp_path, monkeypatch, kind):
+    result, log = run_restatement_story(
+        tmp_path, monkeypatch, answer=["c1"], mutate_b=lambda claim: claim.update(kind=kind)
+    )
+    assert log["calls"] == 0
+    assert result["confirmation"]["confirmed"] is False
+
+
+def test_a_story_the_grouping_call_already_confirmed_asks_nothing_more(tmp_path, monkeypatch):
+    result, log = run_restatement_story(tmp_path, monkeypatch, answer=["c1"], groups=[["c0", "c1"]])
+    assert result["confirmation"]["confirmed"] is True
+    assert log["calls"] == 0
+    assert "restatements" not in result["confirmation"]
+
+
+def test_a_confirmed_story_asks_nothing_even_when_another_verified_claim_could_be_offered(tmp_path, monkeypatch):
+    # Three owners: the grouping call pairs the first two (confirmed first-party)
+    # and leaves a third verified Acme statement alone. It is an eligible candidate,
+    # so only the "already confirmed" condition keeps the check from asking.
+    use_mode(monkeypatch, "evidence")
+    urls = [f"https://outlet{i}.example/acme" for i in range(3)]
+    texts = [
+        ACME_TEXT,
+        BLACK_FLAG_B_TEXT,
+        "Acme Games revealed on Friday that its shooter sold two million copies.",
+    ]
+    sources = [
+        source(link=url, name=f"Outlet {i}", owner=f"co-{i}", tier=2, title=ACME_TITLE, text=text)
+        for i, (url, text) in enumerate(zip(urls, texts))
+    ]
+    payloads = [
+        {"claims": [acme_claim(urls[0])]},
+        {"claims": [acme_claim(
+            urls[1], claim="Acme Games confirmed a record opening week", value="record first week",
+            quote="Acme Games confirmed its new shooter had a record first week.",
+            attribution_quote="Acme Games confirmed",
+        )]},
+        {"claims": [acme_claim(
+            urls[2], claim="Acme Games revealed two million copies sold", value="two million copies",
+            quote="Acme Games revealed on Friday that its shooter sold two million copies.",
+            attribution_quote="Acme Games revealed",
+        )]},
+    ]
+    inner, _calls = grouping_generate(payloads, [["c0", "c1"]])
+    generate, log = restatement_generate(inner, answer=["c2"])
+    result = facts.facts(
+        gathered("acme-three", sources), id="acme-three", title=ACME_TITLE,
+        entities=ACME_ENTITIES, output_dir=tmp_path, now=NOW, generate=generate,
+    )
+    assert result["confirmation"]["confirmed"] is True
+    assert log["calls"] == 0
+    assert "restatements" not in result["confirmation"]
+
+
+def test_the_check_runs_only_in_evidence_mode(tmp_path, monkeypatch):
+    result, log = run_restatement_story(tmp_path, monkeypatch, answer=["c1"], mode="shadow")
+    assert log["calls"] == 0
+
+
+def test_the_check_respects_the_model_call_budget(tmp_path, monkeypatch):
+    # Two extraction calls and the grouping call already use three.
+    result, log = run_restatement_story(tmp_path, monkeypatch, answer=["c1"], budget=3)
+    assert log["calls"] == 0
+    assert result["confirmation"]["confirmed"] is False
+    assert "budget spent" in result["fact_groups"]["central_restatements"]["failed"]
+
+
+def test_the_check_can_be_switched_off_in_config(tmp_path, monkeypatch):
+    result, log = run_restatement_story(
+        tmp_path, monkeypatch, answer=["c1"], config={"central_restatement_check": False}
+    )
+    assert log["calls"] == 0
+    assert result["confirmation"]["confirmed"] is False
+
+
+def test_the_candidate_cap_comes_from_config(tmp_path, monkeypatch):
+    real = facts.load_config
+    monkeypatch.setattr(
+        facts, "load_config",
+        lambda path=None: {**real(path), "facts": {**real(path).get("facts", {}), "central_restatement_max_candidates": 7}},
+    )
+    assert facts._central_restatement_settings() == (True, 7)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "many", None])
+def test_a_bad_candidate_cap_falls_back_to_the_default(monkeypatch, value):
+    real = facts.load_config
+    monkeypatch.setattr(
+        facts, "load_config",
+        lambda path=None: {**real(path), "facts": {**real(path).get("facts", {}), "central_restatement_max_candidates": value}},
+    )
+    assert facts._central_restatement_settings()[1] == facts.DEFAULT_CENTRAL_RESTATEMENT_CANDIDATES
+
+
+# --- who may be offered as a restatement ------------------------------------------
+
+
+def verified(url, *, kind="confirmed", speaker="Acme Games", speaker_type="organization", ok=True, label="x"):
+    return {
+        "claim": label, "value": label, "source_url": url, "kind": kind, "origin": speaker,
+        "speaker": speaker, "speaker_type": speaker_type,
+        "evidence": {"ok": ok, "speaker": speaker, "speaker_type": speaker_type},
+    }
+
+
+OWNERS = by_url_map(("https://a/1", "co-a"), ("https://b/1", "co-b"), ("https://c/1", "co-c"))
+
+
+def offered(kept, members, **kwargs):
+    return [cid for cid, _claim in facts.restatement_candidates(kept, members, OWNERS, **kwargs)]
+
+
+def test_candidates_come_only_from_owners_the_central_group_does_not_yet_count():
+    central = verified("https://a/1")
+    same_owner = verified("https://a/1", label="second")
+    other = verified("https://b/1", label="other")
+    assert offered([central, same_owner, other], [central]) == ["c2"]
+
+
+def test_a_central_group_with_nothing_verified_accepts_candidates_from_any_owner():
+    central = verified("https://a/1", ok=False)
+    same_owner = verified("https://a/1", label="same outlet")
+    other = verified("https://b/1", label="other")
+    assert offered([central, same_owner, other], [central]) == ["c1", "c2"]
+
+
+def test_candidates_are_ranked_confirmed_then_statement_then_reported_and_capped():
+    central = verified("https://a/1")
+    reported = verified("https://b/1", kind="reported", label="r")
+    statement = verified("https://c/1", kind="statement", label="s")
+    confirmed = verified("https://b/1", kind="confirmed", label="c")
+    assert offered([central, reported, statement, confirmed], [central]) == ["c3", "c2", "c1"]
+    assert offered([central, reported, statement, confirmed], [central], max_candidates=2) == ["c3", "c2"]
+
+
+@pytest.mark.parametrize("override", [
+    {"kind": "rumor"}, {"kind": "opinion"}, {"kind": "estimate"},
+    {"ok": False}, {"speaker": "", "speaker_type": "none"},
+    {"speaker_type": "outlet"}, {"speaker_type": "anonymous"},
+])
+def test_unverifiable_or_non_first_party_claims_are_never_candidates(override):
+    central = verified("https://a/1")
+    weak = verified("https://b/1", **override)
+    assert offered([central, weak], [central]) == []
+
+
+def test_a_claim_already_in_the_central_group_is_not_offered_again():
+    central = verified("https://a/1")
+    member = verified("https://b/1", label="member")
+    assert offered([central, member], [central, member]) == []
+
+
+def test_parse_restatement_ids_keeps_only_offered_unique_ids():
+    allowed = {"c1", "c2"}
+    assert facts.parse_restatement_ids({"ids": ["c2", " c1 ", "c2", "c9"]}, allowed) == ["c2", "c1"]
+    assert facts.parse_restatement_ids({"ids": []}, allowed) == []
+
+
+@pytest.mark.parametrize("value", [None, [], {"groups": []}, {"ids": "c1"}, {"ids": [1, 2]}])
+def test_parse_restatement_ids_rejects_a_malformed_response(value):
+    with pytest.raises(facts.FactsError):
+        facts.parse_restatement_ids(value, {"c1"})
+
+
+def test_the_restatement_prompt_states_the_rule_and_lists_only_offered_claims():
+    central = {"claim": "Acme Arena is the fastest-selling game", "value": "fastest-selling"}
+    other = verified("https://b/1", label="record first week")
+    prompt = facts.build_restatement_prompt(central, [("c4", other)], {facts._source_url_key("https://b/1"): "s1"})
+    assert "SAME fact" in prompt and "When you are not sure, leave the candidate out" in prompt
+    assert "CENTRAL CLAIM: Acme Arena is the fastest-selling game fastest-selling" in prompt
+    assert "- c4 | s1 | said by Acme Games | record first week record first week" in prompt
