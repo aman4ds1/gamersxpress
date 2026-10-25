@@ -5198,6 +5198,115 @@ def test_evidence_confirmation_folds_a_person_into_their_employer_only_with_affi
     assert distinct["rule"] == "two-independent-origins"
 
 
+def person_claim(url, *, speaker="Jeff Fisher", affiliation="Nvidia", attribution="", quote="",
+                 kind="statement", ok=True):
+    item = ev_claim(url, speaker=speaker, speaker_type="person", kind=kind, ok=ok, affiliation=affiliation)
+    item["evidence"] = {"ok": ok, "attribution_quote": attribution, "quote": quote}
+    return item
+
+
+PCG_ATTRIBUTION = "Jeff Fisher, the senior vice president of Nvidia's GeForce business unit, has denied"
+TPU_QUOTE = (
+    "Jeff Fisher, senior vice president of NVIDIA's personal computing business, told Taiwanese "
+    "media after the RTX Spark launch party in Taipei on October 16 that the rumors aren't true"
+)
+
+
+def test_an_executive_quoted_with_their_company_in_two_outlets_is_first_party():
+    # The RTX 5090 case: Fisher's denial, with Nvidia named next to him, in two outlets.
+    by_url = by_url_map(("https://pcg/1", "future"), ("https://tpu/1", "techpowerup"))
+    claims = [
+        person_claim("https://pcg/1", attribution=PCG_ATTRIBUTION),
+        person_claim("https://tpu/1", attribution="told Taiwanese media", quote=TPU_QUOTE),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["confirmed"] is True
+    assert result["rule"] == "first-party"
+    assert result["first_party_organizations"] == ["nvidia"]
+    assert result["first_party_sources"] == 2
+
+
+def test_a_person_and_their_companys_own_statement_together_are_first_party():
+    by_url = by_url_map(("https://pcg/1", "future"), ("https://tpu/1", "techpowerup"))
+    claims = [
+        ev_claim("https://pcg/1", speaker="Nvidia", speaker_type="organization"),
+        person_claim("https://tpu/1", quote=TPU_QUOTE),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["rule"] == "first-party"
+
+
+def test_an_affiliation_the_evidence_does_not_state_never_counts():
+    # The article may name Nvidia elsewhere; this claim's own evidence does not.
+    by_url = by_url_map(("https://pcg/1", "future"), ("https://tpu/1", "techpowerup"))
+    claims = [
+        ev_claim("https://pcg/1", speaker="Nvidia", speaker_type="organization"),
+        person_claim("https://tpu/1", attribution="says Fisher", quote="The rumors aren't true."),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["confirmed"] is False
+    assert result["first_party_organizations"] == []
+
+
+@pytest.mark.parametrize("attribution", [
+    "John Doe, a former Nvidia engineer, said",
+    "ex-Nvidia executive John Doe said",
+    "John Doe, who formerly worked at Nvidia, said",
+])
+def test_a_former_employee_never_speaks_for_the_company(attribution):
+    by_url = by_url_map(("https://pcg/1", "future"), ("https://tpu/1", "techpowerup"))
+    claims = [
+        ev_claim("https://pcg/1", speaker="Nvidia", speaker_type="organization"),
+        person_claim("https://tpu/1", speaker="John Doe", attribution=attribution),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["first_party_organizations"] == []
+    assert result["confirmed"] is False
+
+
+def test_evidence_naming_a_different_company_does_not_count():
+    by_url = by_url_map(("https://pcg/1", "future"), ("https://tpu/1", "techpowerup"))
+    claims = [
+        ev_claim("https://pcg/1", speaker="Nvidia", speaker_type="organization"),
+        person_claim("https://tpu/1", attribution="Jeff Fisher, a senior vice president at AMD, said"),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["first_party_organizations"] == []
+
+
+@pytest.mark.parametrize("kind", ["rumor", "opinion"])
+def test_a_persons_rumor_or_opinion_is_never_first_party(kind):
+    by_url = by_url_map(("https://pcg/1", "future"), ("https://tpu/1", "techpowerup"))
+    claims = [
+        person_claim("https://pcg/1", attribution=PCG_ATTRIBUTION, kind=kind),
+        person_claim("https://tpu/1", quote=TPU_QUOTE, kind=kind),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["first_party_organizations"] == []
+
+
+def test_one_outlet_quoting_the_executive_twice_is_still_one_source():
+    by_url = by_url_map(("https://pcg/1", "future"), ("https://pcg/2", "future"))
+    claims = [
+        person_claim("https://pcg/1", attribution=PCG_ATTRIBUTION),
+        person_claim("https://pcg/2", attribution=PCG_ATTRIBUTION),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["confirmed"] is False
+
+
+def test_a_person_without_any_affiliation_stays_their_own_origin():
+    by_url = by_url_map(("https://pcg/1", "future"), ("https://tpu/1", "techpowerup"))
+    claims = [
+        person_claim("https://pcg/1", affiliation="", attribution=PCG_ATTRIBUTION),
+        person_claim("https://tpu/1", affiliation="", quote=TPU_QUOTE),
+    ]
+    result = facts.evidence_confirmation(claims, by_url, aliases={})
+    assert result["first_party_organizations"] == []
+    assert result["origins"] == ["jeff fisher"]
+    assert result["confirmed"] is False
+
+
 def test_evidence_confirmation_two_spellings_from_one_owner_count_once():
     by_url = by_url_map(("https://a/1", "co-a"), ("https://b/1", "co-a"))
     claims = [

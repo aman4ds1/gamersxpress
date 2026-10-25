@@ -5564,6 +5564,27 @@ def evidence_central_claims(record: dict, central_group: list[dict] | None) -> l
     return list(central_group or [])
 
 
+#: Words that mark an affiliation as a past one: a former employee never speaks
+#: for the company.
+_FORMER_RE = re.compile(r"\b(?:former|formerly|ex|onetime|one-time)\b", re.IGNORECASE)
+
+
+def _affiliation_stated_in_evidence(evidence: dict, organization: str, aliases: dict[str, str]) -> bool:
+    """True when the claim's own verified evidence names the speaker's organization.
+
+    "Jeff Fisher, the senior vice president of Nvidia's GeForce business unit,
+    has denied" states the affiliation in the attribution; "Jeff Fisher, senior
+    vice president of NVIDIA's personal computing business, told Taiwanese media
+    ... that the rumors aren't true" states it in the quoted sentence. An article
+    that names the company elsewhere does not, and text that says "former" or
+    "ex-" never counts.
+    """
+    text = " ".join(str(evidence.get(key) or "") for key in ("attribution_quote", "quote"))
+    if not text.strip() or _FORMER_RE.search(text):
+        return False
+    return _origin_in_text(organization, text, aliases)
+
+
 def evidence_confirmation(
     claims: list[dict],
     by_url: dict[str, dict],
@@ -5586,8 +5607,9 @@ def evidence_confirmation(
     Rules in order: a tier-1 source states the headline claim (unchanged, passed
     in as ``tier1_confirms``); first-party, when ``min_first_party`` distinct
     owners each carry a claim in the group whose stored evidence passed, whose
-    ``speaker_type`` is organization, whose canonical identity is the same
-    organization and whose kind may be first party; two-independent-origins,
+    ``speaker_type`` is organization (or a person whose own evidence names that
+    organization as their employer, never a former one), whose canonical
+    identity is the same organization and whose kind may be first party; two-independent-origins,
     when at least two distinct canonical speakers back the group from at least
     two distinct owners. Only claims whose stored evidence ``ok`` is true count,
     so an anonymous speaker, a product, the outlet citing itself or an
@@ -5621,6 +5643,7 @@ def evidence_confirmation(
         # evidence states the affiliation. A first-party own-site speaker also
         # resolves to the owner's canonical organization.
         identity_source = speaker
+        affiliated_org = ""
         affiliation = str(claim.get("affiliation") or "").strip()
         if first_party and not affiliation:
             owner = _claim_owner(claim, by_url)
@@ -5634,15 +5657,26 @@ def evidence_confirmation(
                 and not _is_anonymous_origin(canonical_affiliation, aliases)
             ):
                 identity_source = canonical_affiliation
+                affiliated_org = canonical_affiliation
         canonical = canonicalize_origin(identity_source, aliases)
         if canonical == UNSTATED_ORIGIN:
             continue
+        speaker_type = str(claim.get("speaker_type") or "none")
+        # A named person speaks for their organization -- and so counts toward
+        # its first-party confirmation -- only when this claim's own verified
+        # evidence names that organization next to them.
+        speaks_for_org = bool(
+            speaker_type == "person"
+            and affiliated_org
+            and _affiliation_stated_in_evidence(evidence, affiliated_org, aliases)
+        )
         resolved.append(
             (
                 canonical,
                 owner,
-                str(claim.get("speaker_type") or "none"),
+                speaker_type,
                 str(claim.get("kind") or ""),
+                speaks_for_org,
             )
         )
 
@@ -5652,9 +5686,9 @@ def evidence_confirmation(
 
     org_owners: dict[str, set[str]] = {}
     speaker_owners: dict[str, set[str]] = {}
-    for canonical, owner, speaker_type, kind in resolved:
+    for canonical, owner, speaker_type, kind, speaks_for_org in resolved:
         identity = identities.get(canonical, canonical)
-        if speaker_type == "organization" and kind in FIRST_PARTY_KINDS:
+        if (speaker_type == "organization" or speaks_for_org) and kind in FIRST_PARTY_KINDS:
             org_owners.setdefault(identity, set()).add(owner)
         if speaker_type in ("person", "organization", "outlet"):
             speaker_owners.setdefault(identity, set()).add(owner)
