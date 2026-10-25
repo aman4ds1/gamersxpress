@@ -3133,6 +3133,131 @@ def test_central_claim_prefers_a_confirmed_named_claim_over_a_longer_unstated_on
     assert facts.central_claim([unstated, confirmed], title=title)["origin"] == "epic games"
 
 
+HEADLINE_WITH_SPEAKER = (
+    "RTX 5090 not dead, says Nvidia-but it's mysteriously vanished from the company's official marketplace"
+)
+
+
+def with_evidence(item, speaker="", speaker_type="none", ok=True):
+    item["evidence"] = [{"speaker": speaker, "speaker_type": speaker_type, "ok": ok, "reason": ""}]
+    return item
+
+
+def says_claim(**overrides):
+    values = dict(
+        claim="RTX 5090 status according to Nvidia",
+        value="RTX 5090 is not dead, according to Nvidia",
+        origin="unstated",
+        kind="confirmed",
+    )
+    values.update(overrides)
+    return claim(**values)
+
+
+def vanished_claim():
+    return with_evidence(
+        claim(
+            claim="Disappearance of RTX 5090 from marketplace",
+            value=(
+                "The card has disappeared from Nvidia's official US marketplace, "
+                "and has reached near-unobtanium levels elsewhere"
+            ),
+            origin="unstated",
+            kind="reported",
+        ),
+        ok=False,
+    )
+
+
+def test_a_headline_naming_its_speaker_picks_the_speakers_verified_claim():
+    # The outlet's own observation shares more headline words, but only Nvidia's
+    # claim carries a speaker no one else can confirm for it.
+    says = with_evidence(says_claim(), "Nvidia", "organization")
+    chosen = facts.central_claim([vanished_claim(), says], title=HEADLINE_WITH_SPEAKER)
+    assert chosen is says
+
+
+def test_without_the_speakers_evidence_the_best_overlap_still_wins():
+    says = says_claim()
+    vanished = vanished_claim()
+    assert facts.central_claim([says, vanished], title=HEADLINE_WITH_SPEAKER) is vanished
+
+
+def test_a_speaker_whose_evidence_failed_is_not_preferred():
+    says = with_evidence(says_claim(), "Nvidia", "organization", ok=False)
+    vanished = vanished_claim()
+    assert facts.central_claim([says, vanished], title=HEADLINE_WITH_SPEAKER) is vanished
+
+
+def test_only_confirmed_and_statement_claims_are_preferred_for_their_speaker():
+    says = with_evidence(says_claim(kind="reported"), "Nvidia", "organization")
+    vanished = vanished_claim()
+    assert facts.central_claim([says, vanished], title=HEADLINE_WITH_SPEAKER) is vanished
+    statement = with_evidence(says_claim(kind="statement"), "Nvidia", "organization")
+    assert facts.central_claim([vanished, statement], title=HEADLINE_WITH_SPEAKER) is statement
+
+
+def test_a_headline_that_does_not_name_the_speaker_keeps_the_best_overlap():
+    says = with_evidence(says_claim(), "Nvidia", "organization")
+    vanished = vanished_claim()
+    # Nvidia's claim shares enough of this headline to pass the overlap floor
+    # (rtx, 5090, is, not, dead); only the unnamed speaker keeps it from winning.
+    title = "RTX 5090 is not dead and has vanished from the official marketplace"
+    assert "nvidia" not in title.lower()
+    assert facts._title_overlap_score(says, facts._word_tokens(title)) >= 4
+    assert facts.central_claim([says, vanished], title=title) is vanished
+
+
+def test_a_speaker_claim_that_shares_too_little_of_the_headline_is_not_preferred():
+    # It names Nvidia like the headline does, but restates almost nothing of it.
+    unrelated = with_evidence(
+        claim(claim="Nvidia schedules a keynote", value="Nvidia will hold a keynote", origin="unstated", kind="statement"),
+        "Nvidia",
+        "organization",
+    )
+    vanished = vanished_claim()
+    assert facts.central_claim([unrelated, vanished], title=HEADLINE_WITH_SPEAKER) is vanished
+
+
+def test_a_person_named_by_surname_in_the_headline_is_matched():
+    title = "Fisher says the RTX 5090 has not been discontinued, but supply stays tight"
+    fisher = with_evidence(
+        claim(
+            claim="RTX 5090 has not been discontinued",
+            value="The RTX 5090 has not been discontinued",
+            origin="unstated",
+            kind="statement",
+        ),
+        "Jeff Fisher",
+        "person",
+    )
+    longer = claim(
+        claim="Supply of the RTX 5090 stays tight and the card has not been discontinued but is rare",
+        value="Supply stays tight, but the card has not been discontinued and is very hard to find",
+        origin="unstated",
+        kind="reported",
+    )
+    assert facts.central_claim([longer, fisher], title=title) is fisher
+
+
+def test_an_outlet_or_anonymous_evidence_speaker_is_never_preferred():
+    vanished = vanished_claim()
+    for speaker_type in ("outlet", "anonymous", "none"):
+        says = with_evidence(says_claim(), "Nvidia", speaker_type)
+        assert facts.central_claim([vanished, says], title=HEADLINE_WITH_SPEAKER) is vanished
+
+
+def test_two_speaker_claims_still_rank_by_the_existing_rules():
+    first = with_evidence(says_claim(), "Nvidia", "organization")
+    second = with_evidence(
+        says_claim(claim="RTX 5090 is not dead says Nvidia", value="RTX 5090 not dead, says Nvidia", kind="confirmed"),
+        "Nvidia",
+        "organization",
+    )
+    chosen = facts.central_claim([vanished_claim(), first, second], title=HEADLINE_WITH_SPEAKER)
+    assert chosen in (first, second)
+
+
 def test_corroborating_claims_count_toward_two_independent_origins():
     sources = [
         source(link="https://a.example/1", text="Sony said the thing."),

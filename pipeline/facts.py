@@ -4948,6 +4948,42 @@ def _headline_restated(
     return bool(claim_words & (hard | verbs))
 
 
+#: A claim whose verified speaker the headline names ("... says Nvidia") may be
+#: the central claim even when another claim shares more headline words, as long
+#: as it still shares this fraction of the best claim's headline words (and at
+#: least ``_MIN_SPEAKER_CENTRAL_TOKENS`` of them).
+_SPEAKER_CENTRAL_FRACTION = 0.4
+_MIN_SPEAKER_CENTRAL_TOKENS = 2
+
+
+def _headline_names_verified_speaker(
+    claim: dict, title_keys: str, aliases: dict[str, str]
+) -> bool:
+    """True when the headline names a person or organization whose statement is this claim.
+
+    The speaker must have passed evidence verification for this very claim, and
+    the claim must be something the speaker said (``confirmed`` or ``statement``).
+    The headline "RTX 5090 not dead, says Nvidia ..." then names Nvidia, the
+    claim "RTX 5090 is not dead, according to Nvidia" carries Nvidia's verified
+    attribution, and an outlet's own observation about the same card does not.
+    """
+    if str(claim.get("kind")) not in ("confirmed", "statement"):
+        return False
+    for entry in claim.get("evidence") or []:
+        if not isinstance(entry, dict) or not entry.get("ok"):
+            continue
+        speaker = str(entry.get("speaker") or "").strip()
+        speaker_type = _normalize_speaker_type(entry.get("speaker_type"))
+        if not speaker or speaker_type not in ("person", "organization"):
+            continue
+        for name in _evidence_speaker_names(
+            speaker, aliases, speaker_type=speaker_type, sheet_speakers=None
+        ):
+            if name and f" {name} " in title_keys:
+                return True
+    return False
+
+
 def central_claim(claims: list[dict], *, title: str = "") -> Optional[dict]:
     """Pick the claim that restates the cluster's seed headline.
 
@@ -4957,12 +4993,25 @@ def central_claim(claims: list[dict], *, title: str = "") -> Optional[dict]:
     the headline states is the claim this story must confirm. Among claims whose
     overlap is within 80% of the best, a confirmed claim with a named origin
     wins over a longer unstated statement; ties then break to the longer text.
+    A headline that names its speaker ("... says Nvidia") is about what that
+    speaker said: a ``confirmed`` or ``statement`` claim carrying that speaker's
+    verified evidence is preferred even when an outlet's own observation (the
+    other half of the headline) shares more of its words, provided it still
+    shares enough of them. Otherwise a story whose headline reads "X, says Y,
+    but Z" would be judged on Z, a single outlet's observation that no named
+    speaker can confirm.
+
     Returns None when no headline is given or no extracted claim overlaps it.
     """
     title = str(title or "").strip()
     if not title:
         return None
     title_tokens = _word_tokens(title)
+    title_keys = f" {cluster.normalize_title(cluster.strip_diacritics(title.lower()))} "
+    try:
+        aliases = load_origin_aliases()
+    except Exception:  # an unreadable alias file must not stop the central pick
+        aliases = {}
     scored: list[tuple[float, dict]] = []
     for claim in claims or []:
         score = _title_overlap_score(claim, title_tokens)
@@ -4971,17 +5020,24 @@ def central_claim(claims: list[dict], *, title: str = "") -> Optional[dict]:
     if not scored:
         return None
     best_score = max(score for score, _ in scored)
-    ranked: list[tuple[int, float, int, str, dict]] = []
+    ranked: list[tuple[int, int, float, int, str, dict]] = []
     for score, claim in scored:
-        if score < 0.8 * best_score:
+        speaker_named = _headline_names_verified_speaker(claim, title_keys, aliases)
+        if speaker_named:
+            floor = max(_MIN_SPEAKER_CENTRAL_TOKENS, _SPEAKER_CENTRAL_FRACTION * best_score)
+            if score < floor and score < 0.8 * best_score:
+                continue
+        elif score < 0.8 * best_score:
             continue
         origin_key = _origin_key(claim.get("origin"))
         named = bool(origin_key) and origin_key != UNSTATED_ORIGIN
         confirmed_named = 1 if str(claim.get("kind")) == "confirmed" and named else 0
         length = len(str(claim.get("claim", ""))) + len(str(claim.get("value", "")))
-        ranked.append((confirmed_named, score, length, str(claim.get("claim", "")), claim))
-    ranked.sort(key=lambda item: item[:4])
-    return ranked[-1][4]
+        ranked.append(
+            (1 if speaker_named else 0, confirmed_named, score, length, str(claim.get("claim", "")), claim)
+        )
+    ranked.sort(key=lambda item: item[:5])
+    return ranked[-1][5]
 
 
 #: How much of the shared wording two claims must share -- the Jaccard overlap
