@@ -162,6 +162,76 @@ def test_shipped_config_sources_validate():
     assert all(s["topic"] in ("gaming", "mixed") for s in sources)
 
 
+def test_shipped_sources_have_unique_names_and_feeds():
+    sources = ingest.load_sources()
+    names = [s["name"] for s in sources]
+    feeds = [ingest.normalize_url(s["feed_url"]) for s in sources]
+    assert len(names) == len(set(names)), "duplicate source name"
+    assert len(feeds) == len(set(feeds)), "duplicate feed url"
+
+
+def test_shipped_owner_names_are_lowercase_kebab_case():
+    # "Valnet" and "valnet" would count one owner as two independent voices.
+    import re
+
+    for source in ingest.load_sources():
+        assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", source["owner"]), source
+
+
+def test_shipped_sources_never_give_one_site_two_owners():
+    owners_by_domain: dict[str, set[str]] = {}
+    for source in ingest.load_sources():
+        domain = ingest.registered_domain(source["site"])
+        owners_by_domain.setdefault(domain, set()).add(source["owner"])
+    assert {d: o for d, o in owners_by_domain.items() if len(o) > 1} == {}
+
+
+# Outlets checked against their own pages or press coverage (October 2026). A
+# split owner would count one voice twice and could confirm a story on one
+# outlet's reporting, so every group below must share a single `owner`.
+KNOWN_OWNERS = {
+    "future": ["PC Gamer", "Tom's Hardware"],
+    "ign-entertainment": ["Eurogamer", "Rock Paper Shotgun", "VG247"],
+    "keleops": ["Kotaku"],
+    "valnet": ["Polygon"],
+    "1981-media": ["VGC"],
+    "gematsu": ["Gematsu"],
+    "insider-gaming": ["Insider Gaming"],
+    "dexerto": ["Dexerto"],
+    "kitguru": ["KitGuru"],
+}
+
+
+def test_known_ownership_groups_share_one_owner_string():
+    by_name = {s["name"]: s["owner"] for s in ingest.load_sources()}
+    for owner, names in KNOWN_OWNERS.items():
+        for name in names:
+            assert by_name[name] == owner, f"{name} should be owned by {owner}, not {by_name[name]}"
+
+
+def test_each_known_owner_is_a_distinct_voice():
+    assert len(KNOWN_OWNERS) == len(set(KNOWN_OWNERS))
+    owners = {s["owner"] for s in ingest.load_sources()}
+    assert set(KNOWN_OWNERS) <= owners
+
+
+def test_outlets_that_block_article_downloads_are_headline_only():
+    by_name = {s["name"]: s for s in ingest.load_sources()}
+    for name in ("VGC", "Gematsu"):
+        assert by_name[name].get("fetch") is False, name
+
+
+def test_outlets_with_off_topic_feeds_are_mixed_so_the_relevance_filter_applies():
+    by_name = {s["name"]: s for s in ingest.load_sources()}
+    for name in ("Dexerto", "Kotaku", "Polygon", "KitGuru"):
+        assert by_name[name]["topic"] == "mixed", name
+
+
+def test_a_blocked_feed_is_not_in_the_config():
+    # Wccftech answers its feed with HTTP 403; the pipeline never works around a block.
+    assert all("wccftech" not in s["feed_url"] for s in ingest.load_sources())
+
+
 # --- URL normalization -------------------------------------------------------
 
 

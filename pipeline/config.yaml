@@ -1158,3 +1158,68 @@ sources:
     owner: outlook-india
     region: india
     categories: [india, gaming-news, esports]
+  # Added October 2026 so a story is covered by two different owners more often.
+  # Owners were checked against each outlet's own pages or press coverage; two
+  # sites with one owner must share one `owner` string (Polygon, Game Rant and
+  # TheGamer are all Valnet). Feeds and article text were tested with
+  # outlet_check.py: VGC and Gematsu block article downloads (HTTP 403) and
+  # their feeds carry only a headline, so they are headline-only (`fetch: false`).
+  # Wccftech blocks its feed (HTTP 403) and is left out.
+  - name: Insider Gaming
+    site: https://insider-gaming.com
+    feed_url: https://insider-gaming.com/feed/
+    topic: gaming
+    tier: 2
+    owner: insider-gaming
+    region: global
+    categories: [gaming-news]
+  - name: Dexerto
+    site: https://www.dexerto.com
+    feed_url: https://www.dexerto.com/feed/
+    topic: mixed
+    tier: 2
+    owner: dexerto
+    region: uk
+    categories: [gaming-news]
+  - name: Kotaku
+    site: https://kotaku.com
+    feed_url: https://kotaku.com/rss
+    topic: mixed
+    tier: 2
+    owner: keleops
+    region: us
+    categories: [gaming-news]
+  - name: Polygon
+    site: https://www.polygon.com
+    feed_url: https://www.polygon.com/rss/index.xml
+    topic: mixed
+    tier: 2
+    owner: valnet
+    region: us
+    categories: [gaming-news]
+  - name: KitGuru
+    site: https://www.kitguru.net
+    feed_url: https://www.kitguru.net/feed/
+    topic: mixed
+    tier: 2
+    owner: kitguru
+    region: uk
+    categories: [hardware, pc, tech]
+  - name: VGC
+    site: https://www.videogameschronicle.com
+    feed_url: https://www.videogameschronicle.com/feed/
+    topic: gaming
+    tier: 2
+    owner: 1981-media
+    region: uk
+    categories: [gaming-news]
+    fetch: false
+  - name: Gematsu
+    site: https://www.gematsu.com
+    feed_url: https://www.gematsu.com/feed
+    topic: gaming
+    tier: 2
+    owner: gematsu
+    region: us
+    categories: [gaming-news]
+    fetch: false
