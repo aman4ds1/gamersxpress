@@ -391,6 +391,15 @@ _DEFAULT_ATTRIBUTION_CUES = (
     "according to", "told", "wrote", "posted", "claims", "reports",
     "noted", "explained", "added", "in a statement", "in a blog post",
     "unveiled", "detailed", "shared",
+    # Present tense and perfect forms of the same verbs: outlets that write
+    # "Collum writes" or "has written" attribute as surely as "wrote".
+    # "announces", "confirms" and "reveals" stay out on purpose: in a headline
+    # they belong to the headline-announcement mode, which credits them only
+    # on a tier-1 or press-release source.
+    "writes", "written", "adds", "tells", "explains",
+    # Reporting verbs that credit a statement to its speaker.
+    "clarifies", "clarified", "concedes", "conceded", "admits", "admitted",
+    "acknowledges", "acknowledged", "insists", "insisted", "warns", "warned",
 )
 
 _ANONYMOUS_VOCABULARY_CACHE: tuple[tuple[int, int] | None, frozenset[str]] | None = None
@@ -5076,6 +5085,8 @@ def _headline_names_verified_speaker(
 
     The speaker must have passed evidence verification for this very claim, and
     the claim must be something the speaker said (``confirmed`` or ``statement``).
+    A person also matches through their company when the claim's own evidence
+    names that company as their employer and the headline names the company.
     The headline "RTX 5090 not dead, says Nvidia ..." then names Nvidia, the
     claim "RTX 5090 is not dead, according to Nvidia" carries Nvidia's verified
     attribution, and an outlet's own observation about the same card does not.
@@ -5094,6 +5105,20 @@ def _headline_names_verified_speaker(
         ):
             if name and f" {name} " in title_keys:
                 return True
+        # "Creative Assembly exec pins the blame ..." names the company, not
+        # the executive: a person whose own evidence names that company as
+        # their employer (never a former one) speaks for it in the headline.
+        affiliation = str(claim.get("affiliation") or "").strip()
+        if (
+            speaker_type == "person"
+            and affiliation
+            and _affiliation_stated_in_evidence(entry, affiliation, aliases)
+        ):
+            for name in _evidence_speaker_names(
+                affiliation, aliases, speaker_type="organization", sheet_speakers=None
+            ):
+                if name and f" {name} " in title_keys:
+                    return True
     return False
 
 
@@ -6514,6 +6539,97 @@ def _first_attribution_span(sentences: list[str], names: set[str], speaker: str)
     return ""
 
 
+#: Double quotation marks, straight and curly. Single quotes are left out:
+#: they double as apostrophes.
+_DOUBLE_QUOTE_RE = re.compile(r'["\u201c\u201d]')
+
+
+def _locate_sentence(body: str, sentence: str) -> int:
+    """Where ``sentence`` starts in ``body``, tolerant of collapsed whitespace; -1 if absent."""
+    position = body.find(sentence)
+    if position >= 0:
+        return position
+    words = sentence.split()
+    if not words:
+        return -1
+    match = re.search(r"\s+".join(re.escape(word) for word in words), body)
+    return match.start() if match else -1
+
+
+def _is_opening_mark(body: str, index: int, line_start: int) -> bool:
+    """True when the double quote at ``index`` opens a quotation.
+
+    A curly \u201c opens and \u201d closes; a straight quote opens at the start of
+    a line or after a space, colon, dash or bracket, and closes after anything
+    else ('call."' closes a quotation begun earlier).
+    """
+    mark = body[index]
+    if mark == "\u201c":
+        return True
+    if mark == "\u201d":
+        return False
+    if index <= line_start:
+        return True
+    return body[index - 1] in " \t(:\u2014\u2013-"
+
+
+def _continued_quotation_attribution(body: str, sentence: str, names: set[str]) -> str:
+    """The attribution of the quotation a sentence sits inside, on the same line.
+
+    News copy attributes a multi-sentence quotation once: '"I get many of you
+    are angry," Collum writes. "We are too. This was not a Creative Assembly
+    developed game."' Every sentence inside that quotation is Collum's,
+    though only the first segment names him. A cited sentence counts as inside
+    a quotation when an odd number of double quotes precede it on its line;
+    it then takes the attribution of the sentence just before the quotation
+    opened, or the one right after it closes ('"...," Ruiz adds.'). Only the
+    claim's own speaker counts, so a quotation another speaker introduced
+    ('Sam Lee disagreed: "..."') never credits anyone else, and the search
+    never leaves the line.
+    """
+    if not names or not body or not sentence:
+        return ""
+    position = _locate_sentence(body, sentence)
+    if position < 0:
+        return ""
+    line_start = body.rfind("\n", 0, position) + 1
+    line_end = body.find("\n", position)
+    if line_end < 0:
+        line_end = len(body)
+    marks_before = [match.start() for match in _DOUBLE_QUOTE_RE.finditer(body, line_start, position)]
+    marks_in = [
+        match.start()
+        for match in _DOUBLE_QUOTE_RE.finditer(body, position, min(position + len(sentence), line_end))
+    ]
+    if len(marks_before) % 2 == 1:
+        # The sentence continues a quotation opened earlier on the line.
+        opened_at = marks_before[-1]
+        search_from = position
+    elif len(marks_in) % 2 == 1 and _is_opening_mark(body, marks_in[0], line_start):
+        # The sentence opens a quotation that runs past its end.
+        opened_at = marks_in[0]
+        search_from = opened_at + 1
+    else:
+        return ""
+    # The sentence right before the quotation opened, on this line.
+    before = body[line_start:opened_at].strip()
+    if before:
+        pieces = [piece for piece in re.split(r"(?<=[.!?:])\s+", before) if piece.strip()]
+        if pieces:
+            span = _attribution_span(pieces[-1], names)
+            if span:
+                return span
+    # The text right after the quotation closes, up to the end of that sentence.
+    closing = _DOUBLE_QUOTE_RE.search(body, search_from, line_end)
+    if closing is not None:
+        after = body[closing.end():line_end]
+        end = re.search(r"[.!?](?:\s|$)", after)
+        tail = after[: end.end()] if end else after
+        if tail.strip():
+            return _attribution_span(tail.strip(), names)
+    return ""
+
+
 def _preceding_quoted_sentence(
     quote_ids: list[int], sentences: list[str], paragraphs: list[int] | None
 ) -> str:
@@ -6547,6 +6663,7 @@ def _cite_claim_evidence(
     aliases: dict[str, str],
     entities: list[str] | None = None,
     paragraphs: list[int] | None = None,
+    body: str | None = None,
 ) -> dict:
     """Fill a claim's quote fields from the sentences it cites by id.
 
@@ -6622,6 +6739,9 @@ def _cite_claim_evidence(
         preceding = _preceding_quoted_sentence(quote_ids, sentences, paragraphs)
         if preceding:
             attribution = _attribution_span(preceding, names)
+    if not attribution and body and quoted and not cited_attribution:
+        # A sentence inside a quotation the speaker opened earlier on the line.
+        attribution = _continued_quotation_attribution(body, quoted[0], names)
     return {
         **claim,
         "quote": _clip_field(" ".join(quoted), MAX_QUOTE_CHARS),
@@ -7008,7 +7128,8 @@ def facts(
         paragraphs = _sentence_paragraphs(text, sentences)
         part = [
             _cite_claim_evidence(
-                item, sentences, aliases=aliases, entities=entities, paragraphs=paragraphs
+                item, sentences, aliases=aliases, entities=entities, paragraphs=paragraphs,
+                body=str(text or "")[:MAX_SOURCE_CHARS],
             )
             for item in part
         ]

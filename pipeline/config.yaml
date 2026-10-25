@@ -558,6 +558,23 @@ facts:
     - shared
     - denied
     - denies
+    - writes
+    - written
+    - adds
+    - tells
+    - explains
+    - clarifies
+    - clarified
+    - concedes
+    - conceded
+    - admits
+    - admitted
+    - acknowledges
+    - acknowledged
+    - insists
+    - insisted
+    - warns
+    - warned
     - rejected
     - responded
     - replied

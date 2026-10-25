@@ -7054,3 +7054,192 @@ def test_a_full_run_keeps_the_demotion_and_still_confirms_the_story(monkeypatch,
     assert result["confirmation"]["confirmed"] is True
     central = [claim for claim in result["claims"] if claim.get("central")]
     assert central and central[0]["kind"] == "confirmed"
+
+
+# --- present-tense attribution words ---------------------------------------------
+
+RUIZ_NAMES = facts._evidence_speaker_names("Ana Ruiz", {}, speaker_type="person")
+
+
+@pytest.mark.parametrize("cue", [
+    "writes", "has written", "adds", "tells reporters", "explains",
+    "clarifies", "clarified", "concedes", "conceded", "admits", "admitted",
+    "acknowledges", "acknowledged", "insists", "insisted", "warns", "warned",
+])
+def test_present_tense_and_reporting_verbs_attribute(cue):
+    span = facts._attribution_span(f"Ana Ruiz {cue} that the game is late.", RUIZ_NAMES)
+    assert "Ana Ruiz" in span
+
+
+def test_a_sentence_with_no_reporting_verb_still_attributes_nothing():
+    assert facts._attribution_span("Ana Ruiz plays the game every week.", RUIZ_NAMES) == ""
+
+
+# --- a sentence inside a quotation takes that quotation's attribution -------------
+
+QUOTE_TITLE = "Studio lead apologises for the remaster"
+QUOTE_TEXT = (
+    "Last week the studio pulled the remaster from sale after complaints about bugs.\n"
+    '"I know many of you are upset about the launch," Ana Ruiz writes on the studio forum. '
+    '"We are upset too. This was not a game our studio built. It skipped our usual testing."\n'
+    '"We do not use generated art. We ask partners to do the same," Ruiz adds.\n'
+    '"It is fine," Sam Lee said. Lee went on: "It is not. The tests failed."\n'
+    'Ana Ruiz writes: "We are listening. We hear you.\n'
+    'The patch is due soon. This was not our call."\n'
+    "The remaster returns next month."
+)
+
+
+def cite(start, speaker="Ana Ruiz", attribution_ids=(), text=None):
+    text = QUOTE_TEXT if text is None else text
+    sentences = facts._numbered_sentences(text, QUOTE_TITLE)
+    paragraphs = facts._sentence_paragraphs(text, sentences)
+    index = next(i for i, sentence in enumerate(sentences) if start in sentence)
+    claim = {
+        "claim": start, "value": sentences[index], "speaker": speaker, "speaker_type": "person",
+        "quote_ids": [index], "attribution_ids": list(attribution_ids), "kind": "statement",
+    }
+    out = facts._cite_claim_evidence(
+        claim, sentences, aliases={}, entities=[], paragraphs=paragraphs, body=text
+    )
+    return out["attribution_quote"]
+
+
+@pytest.mark.parametrize("start", [
+    "We are upset too.", "This was not a game our studio built.", "It skipped our usual testing.",
+])
+def test_a_sentence_inside_a_continued_quotation_takes_its_attribution(start):
+    assert cite(start) == "Ana Ruiz writes"
+
+
+def test_an_attribution_after_the_quotation_closes_counts():
+    assert cite("We do not use generated art.") == "Ruiz adds"
+
+
+def test_narration_outside_any_quotation_takes_no_attribution():
+    assert cite("Last week the studio pulled") == ""
+    assert cite("The remaster returns next month.") == ""
+
+
+def test_another_speakers_quotation_never_credits_the_claims_speaker():
+    assert cite("The tests failed.") == ""
+
+
+def test_a_quotation_opened_on_an_earlier_line_is_not_followed():
+    # Its closing mark ends the sentence; it must not be read as opening one,
+    # and the rule never reaches back to the previous line.
+    assert cite("This was not our call.") == ""
+
+
+def test_without_the_source_text_nothing_changes():
+    sentences = facts._numbered_sentences(QUOTE_TEXT, QUOTE_TITLE)
+    paragraphs = facts._sentence_paragraphs(QUOTE_TEXT, sentences)
+    index = next(i for i, s in enumerate(sentences) if s.startswith("This was not a game"))
+    claim = {"claim": "x", "value": sentences[index], "speaker": "Ana Ruiz", "speaker_type": "person",
+             "quote_ids": [index], "attribution_ids": [], "kind": "statement"}
+    out = facts._cite_claim_evidence(claim, sentences, aliases={}, entities=[], paragraphs=paragraphs)
+    assert out["attribution_quote"] == ""
+
+
+def test_a_full_run_verifies_a_statement_inside_a_continued_quotation(monkeypatch, tmp_path):
+    use_mode(monkeypatch, "evidence")
+    sentences = facts._numbered_sentences(QUOTE_TEXT, QUOTE_TITLE)
+    index = next(i for i, s in enumerate(sentences) if s.startswith("This was not a game our studio built."))
+    sources = [
+        source(link="https://a.example/ruiz", name="Alpha", owner="co-a", text=QUOTE_TEXT, title=QUOTE_TITLE),
+        source(link="https://b.example/ruiz", name="Beta", owner="co-b", text=QUOTE_TEXT, title=QUOTE_TITLE),
+    ]
+    payloads = [
+        {"claims": [{
+            "claim": "Ana Ruiz said the remaster was not built by the studio",
+            "value": "This was not a game our studio built", "source_url": item["link"],
+            "confidence": 0.9, "origin": "Ana Ruiz", "kind": "statement", "affiliation": "",
+            "speaker": "Ana Ruiz", "speaker_type": "person", "quote_ids": [index], "attribution_ids": [],
+        }]}
+        for item in sources
+    ]
+    generate, calls = grouping_generate(payloads, [["c0", "c1"]])
+    try:
+        result = facts.facts(
+            gathered("ruiz", sources), id="ruiz", title=QUOTE_TITLE, entities=["Ana Ruiz"],
+            output_dir=tmp_path, now=NOW, generate=generate,
+        )
+    except facts.UnconfirmedStory:
+        result = json.loads((tmp_path / "unconfirmed" / "ruiz.json").read_text(encoding="utf-8"))
+    evidence = [entry for claim in result["claims"] for entry in claim["evidence"]]
+    assert evidence and all(entry["ok"] for entry in evidence), evidence
+    assert all("writes" in entry["attribution_quote"] for entry in evidence)
+
+
+# --- a headline naming the company matches its executive -------------------------
+
+COMPANY_HEADLINE = "Acme Studio exec blames partner for the remaster mess: 'This was not an Acme Studio game'"
+
+
+def outlet_framing():
+    return {
+        "claim": "Acme Studio exec blames partner for the remaster mess",
+        "value": "Acme Studio exec blames partner for the remaster mess: 'This was not an Acme Studio game'",
+        "kind": "reported", "origin": "unstated", "affiliation": "",
+        "evidence": [{"speaker": "Alpha", "speaker_type": "outlet", "ok": False}],
+    }
+
+
+def executive_statement(attribution="Ana Ruiz, vice president at Acme Studio, has posted",
+                        quote="This was not an Acme Studio game.", affiliation="Acme Studio"):
+    return {
+        "claim": "Ana Ruiz stated that the remaster was not an Acme Studio game",
+        "value": "Ana Ruiz stated that the remaster was not an Acme Studio game",
+        "kind": "statement", "origin": "unstated", "affiliation": affiliation,
+        "evidence": [{"speaker": "Ana Ruiz", "speaker_type": "person", "ok": True,
+                      "attribution_quote": attribution, "quote": quote}],
+    }
+
+
+def test_a_headline_naming_the_company_picks_its_executives_verified_statement():
+    executive = executive_statement()
+    assert facts.central_claim([outlet_framing(), executive], title=COMPANY_HEADLINE) is executive
+
+
+def test_an_executive_whose_evidence_does_not_name_the_company_is_not_matched():
+    executive = executive_statement(attribution="Ruiz says", quote="This was not our game.")
+    framing = outlet_framing()
+    assert facts.central_claim([framing, executive], title=COMPANY_HEADLINE) is framing
+
+
+def test_a_former_employee_is_not_matched_through_the_company():
+    executive = executive_statement(attribution="Ana Ruiz, a former Acme Studio producer, said")
+    framing = outlet_framing()
+    assert facts.central_claim([framing, executive], title=COMPANY_HEADLINE) is framing
+
+
+def test_an_executive_is_not_matched_when_the_headline_names_another_company():
+    executive = executive_statement()
+    framing = dict(outlet_framing(), claim="Beta Games exec blames partner for the remaster mess",
+                   value="Beta Games exec blames partner for the remaster mess")
+    title = "Beta Games exec blames partner for the remaster mess"
+    assert facts.central_claim([framing, executive], title=title) is framing
+
+
+@pytest.mark.parametrize("verb", ["announces", "confirms", "reveals"])
+def test_headline_announcement_verbs_stay_out_of_the_general_cues(verb):
+    # They credit a headline only on a tier-1 or press-release source.
+    assert verb not in facts.attribution_cues()
+
+
+def test_narration_does_not_take_a_later_quotations_attribution():
+    # Not inside any quotation, so Ruiz's later quote on the same line never credits it.
+    text = (
+        "Ana Ruiz runs the studio. The update is large. The game launched in May. "
+        '"We fixed it," Ruiz adds.'
+    )
+    assert cite("The game launched in May.", text=text) == ""
+
+
+def test_a_closing_mark_from_another_speakers_quotation_is_not_read_as_opening():
+    # Sam Lee opened the quotation on the line before; Ruiz's later quote must not claim it.
+    text = (
+        'Sam Lee writes: "We are listening.\n'
+        'This was not our call." Ruiz disagreed. "It is late," Ruiz adds.'
+    )
+    assert cite("This was not our call.", text=text) == ""
