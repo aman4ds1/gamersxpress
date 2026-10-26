@@ -1157,3 +1157,60 @@ def test_keeping_the_first_report_never_fails_the_replay(tmp_path):
     assert kept == tmp_path / "verify-abc-first.json"
     # A second call must not treat the copy as a new report.
     assert replay._keep_first_verify_report(tmp_path) == tmp_path / "verify-abc-first.json"
+
+
+# --- the central restatement check shows up in the report --------------------------
+
+
+def restatement_sheet(**record):
+    sheet = {
+        "confirmation": {"rule": "unconfirmed", "confirmed": False, "reason": "not enough evidence"},
+        "fact_groups": {"accepted": [], "dropped": []},
+        "claims": [],
+    }
+    if record:
+        sheet["fact_groups"]["central_restatements"] = record
+    return sheet
+
+
+def report_for(sheet):
+    return replay.build_report(
+        sheet, cluster_id="story", title="t", entities=[], model_calls=4, sheet_path=None
+    )
+
+
+def test_the_report_lists_each_candidate_the_restatement_check_asked_about():
+    sheet = restatement_sheet(
+        asked=["c3", "c4"], accepted=["c3"], failed=None,
+        central="Acme ships | in May",
+        labels={"c3": "Acme confirmed the date | May", "c4": "Acme price | $60"},
+    )
+    printed = replay.render_report(report_for(sheet))
+    assert "restatement check: asked=['c3', 'c4'] accepted=['c3'] failed=None" in printed
+    assert "  central: Acme ships | in May" in printed
+    assert "  c3 ACCEPTED: Acme confirmed the date | May" in printed
+    assert "  c4 declined: Acme price | $60" in printed
+
+
+def test_the_report_says_nothing_when_the_check_never_ran():
+    assert report_for(restatement_sheet())["restatements"] is None
+    assert "restatement check" not in replay.render_report(report_for(restatement_sheet()))
+
+
+def test_the_report_says_nothing_when_nothing_was_asked():
+    sheet = restatement_sheet(asked=[], accepted=[], failed=None)
+    assert report_for(sheet)["restatements"] is None
+
+
+def test_the_report_shows_why_a_restatement_check_failed():
+    sheet = restatement_sheet(asked=["c1"], accepted=[], failed="restatement check failed: provider down", labels={})
+    printed = replay.render_report(report_for(sheet))
+    assert "failed=restatement check failed: provider down" in printed
+    assert "  c1 declined: " in printed
+
+
+def test_a_label_with_curly_quotes_prints_without_breaking_the_report():
+    sheet = restatement_sheet(asked=["c1"], accepted=[], failed=None, labels={"c1": "Ubisoft\u2019s \u201cNew Game+\u201d"})
+    printed = replay.render_report(report_for(sheet))
+    printed.encode("ascii")
+    assert "Ubisoft's" in printed

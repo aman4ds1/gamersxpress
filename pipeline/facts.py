@@ -749,8 +749,17 @@ RESTATEMENT_INSTRUCTION = (
     "different date, number, feature, reaction, background detail or "
     "consequence is a different fact. When you are not sure, leave the "
     "candidate out.\n"
+    "Each claim is shown with its label and, after \"sentence:\", the sentence of "
+    "the article it comes from; judge by what the sentences say.\n"
+    "Example: \"Acme confirmed a sequel is in development\" and \"Acme is making a "
+    "sequel, the company confirmed\" are the SAME fact. \"Acme confirmed a sequel "
+    "is in development\" and \"Acme confirmed the sequel launches in 2027\" are "
+    "DIFFERENT facts: one is about development, the other about a launch date.\n"
     "Return JSON: {\"ids\": [\"<id>\"]}, with an empty list when none match."
 )
+
+#: How much of a claim's cited sentence the restatement prompt shows.
+RESTATEMENT_SENTENCE_CHARS = 240
 
 
 def _extraction_chain() -> list[dict]:
@@ -5715,9 +5724,33 @@ def restatement_candidates(
     return [(cid, claim) for _rank, _index, cid, claim in found[:max_candidates]]
 
 
-def build_restatement_prompt(central: dict, candidates: list[tuple[str, dict]], source_ids: dict[str, str]) -> str:
+def _claim_sentence(claim: dict) -> str:
+    """The sentence a claim cites, clipped for a prompt; "" when it cites none."""
+    quote = " ".join(str(claim.get("quote") or "").split())
+    return _clip_field(quote, RESTATEMENT_SENTENCE_CHARS) if quote else ""
+
+
+def _central_sentence(central_members: list[dict]) -> str:
+    """The sentence of the central group's best-evidenced claim (verified first)."""
+    ordered = sorted(central_members, key=lambda claim: 0 if _verified_speaker(claim) else 1)
+    for claim in ordered:
+        sentence = _claim_sentence(claim)
+        if sentence:
+            return sentence
+    return ""
+
+
+def build_restatement_prompt(
+    central: dict,
+    candidates: list[tuple[str, dict]],
+    source_ids: dict[str, str],
+    central_sentence: str = "",
+) -> str:
     label = f"{central.get('claim', '')} {central.get('value', '')}"
-    parts = [RESTATEMENT_INSTRUCTION, "", f"CENTRAL CLAIM: {_clip_field(label, GROUPING_LABEL_CHARS)}", "", "CANDIDATES:"]
+    parts = [RESTATEMENT_INSTRUCTION, "", f"CENTRAL CLAIM: {_clip_field(label, GROUPING_LABEL_CHARS)}"]
+    if central_sentence:
+        parts.append(f'  sentence: "{central_sentence}"')
+    parts += ["", "CANDIDATES:"]
     for cid, claim in candidates:
         text = f"{claim.get('claim', '')} {claim.get('value', '')}"
         source_id = source_ids.get(_source_url_key(claim.get("source_url")), "s?")
@@ -5725,6 +5758,9 @@ def build_restatement_prompt(central: dict, candidates: list[tuple[str, dict]], 
             f"- {cid} | {source_id} | said by {_verified_speaker(claim)} | "
             f"{_clip_field(text, GROUPING_LABEL_CHARS)}"
         )
+        sentence = _claim_sentence(claim)
+        if sentence:
+            parts.append(f'    sentence: "{sentence}"')
     return "\n".join(parts)
 
 
@@ -5763,13 +5799,18 @@ def central_restatements(
     only ever picks among the offered ids. Failure never fails the story; the
     record keeps the reason and the confirmation stays as it was.
     """
-    record: dict = {"asked": [], "accepted": [], "claims": [], "failed": None}
+    record: dict = {"asked": [], "accepted": [], "claims": [], "failed": None, "labels": {}}
     candidates = restatement_candidates(
         kept, central_members, sources_by_url, max_candidates=max_candidates
     )
     if not candidates:
         return record
     record["asked"] = [cid for cid, _claim in candidates]
+    # What was asked, kept so the decision can be audited from the saved sheet.
+    record["labels"] = {
+        cid: _clip_field(f"{claim.get('claim', '')} | {claim.get('value', '')}", 110)
+        for cid, claim in candidates
+    }
     if (
         run_state is not None
         and model_call_budget is not None
@@ -5784,7 +5825,9 @@ def central_restatements(
     try:
         generation = generate(
             "verifier",
-            build_restatement_prompt(central, candidates, source_ids),
+            build_restatement_prompt(
+                central, candidates, source_ids, _central_sentence(central_members)
+            ),
             json_schema=RESTATEMENT_SCHEMA,
             run_state=run_state,
             exclude_families=set(exclude_families or ()),
@@ -7610,6 +7653,12 @@ def facts(
                 len(restatement["accepted"]),
                 f" ({restatement['failed']})" if restatement["failed"] else "",
             )
+        for cid in restatement["asked"]:
+            logger.info(
+                "story %s: restatement candidate %s %s: %s",
+                name, cid, "ACCEPTED" if cid in restatement["accepted"] else "declined",
+                restatement["labels"].get(cid, ""),
+            )
         if restatement["claims"]:
             evidence_conf = evidence_confirmation(
                 list(central_members) + list(restatement["claims"]),
@@ -7645,6 +7694,8 @@ def facts(
             "asked": list(restatement["asked"]),
             "accepted": list(restatement["accepted"]),
             "failed": restatement["failed"],
+            "central": _clip_field(f"{central.get('claim', '')} | {central.get('value', '')}", 110),
+            "labels": dict(restatement["labels"]),
         }
 
     # Only sources that contributed at least one claim are listed in the sheet;

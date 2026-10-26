@@ -346,6 +346,20 @@ def _claim_report(claim: dict) -> dict:
     }
 
 
+def _restatement_report(record: object) -> dict | None:
+    """The central restatement check as the sheet recorded it, or None if it never ran."""
+    if not isinstance(record, dict) or not record.get("asked"):
+        return None
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    return {
+        "asked": [str(cid) for cid in record.get("asked") or []],
+        "accepted": [str(cid) for cid in record.get("accepted") or []],
+        "failed": record.get("failed"),
+        "central": str(record.get("central") or ""),
+        "labels": {str(cid): str(label) for cid, label in labels.items()},
+    }
+
+
 def build_report(
     sheet: dict,
     *,
@@ -374,6 +388,7 @@ def build_report(
             "accepted": len(fact_groups.get("accepted") or []),
             "dropped": len(fact_groups.get("dropped") or []),
         },
+        "restatements": _restatement_report(fact_groups.get("central_restatements")),
         "claims": [_claim_report(claim) for claim in claims[:CLAIM_REPORT_LIMIT]],
         "claims_total": len(claims),
         "sheet_path": str(sheet_path) if sheet_path is not None else None,
@@ -410,6 +425,18 @@ def render_report(report: dict, *, limit: int | None = CLAIM_REPORT_LIMIT) -> st
         f"fact_groups: accepted={fact_groups.get('accepted')} "
         f"dropped={fact_groups.get('dropped')}"
     )
+    restatement = report.get("restatements")
+    if restatement:
+        lines.append(
+            f"restatement check: asked={restatement.get('asked')} "
+            f"accepted={restatement.get('accepted')} failed={restatement.get('failed')}"
+        )
+        if restatement.get("central"):
+            lines.append(f"  central: {_ascii_punct(restatement['central'])}")
+        for cid in restatement.get("asked") or []:
+            verdict = "ACCEPTED" if cid in (restatement.get("accepted") or []) else "declined"
+            label = (restatement.get("labels") or {}).get(cid, "")
+            lines.append(f"  {cid} {verdict}: {_ascii_punct(label)}")
     claims = list(report.get("claims") or [])
     shown = claims if limit is None else claims[:limit]
     lines.append(f"claims: showing {len(shown)} of {report.get('claims_total')}")

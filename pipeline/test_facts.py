@@ -7400,18 +7400,32 @@ def test_the_restatement_check_pairs_the_other_outlets_verified_claim_and_confir
     assert result["confirmation"]["confirmed"] is True
     assert result["confirmation"]["rule"] == "first-party"
     assert result["confirmation"]["restatements"] == ["c1"]
-    assert result["fact_groups"]["central_restatements"] == {"asked": ["c1"], "accepted": ["c1"], "failed": None}
+    assert result["fact_groups"]["central_restatements"] == {
+        "asked": ["c1"], "accepted": ["c1"], "failed": None,
+        "central": "Acme Arena is Acme Games' fastest-selling game | fastest-selling game",
+        "labels": {"c1": "Acme Games confirmed a record opening week for its new shooter | record first week"},
+    }
     assert log["calls"] == 1
     prompt = log["prompts"][0]
     assert "CENTRAL CLAIM" in prompt and "fastest-selling" in prompt
     assert "- c1 |" in prompt and "said by Acme Games" in prompt and "record opening week" in prompt
+    # Both claims are shown with the sentence of the article they come from.
+    assert 'sentence: "Acme Arena is the fastest-selling game"' in prompt
+    assert 'sentence: "Acme Games confirmed its new shooter had a record first week."' in prompt
+    sheet = result["fact_groups"]["central_restatements"]
+    assert sheet["central"].startswith("Acme Arena is Acme Games' fastest-selling game")
+    assert "record opening week" in sheet["labels"]["c1"]
 
 
 def test_an_empty_answer_leaves_the_story_unconfirmed(tmp_path, monkeypatch):
     result, log = run_restatement_story(tmp_path, monkeypatch, answer=[])
     assert result["confirmation"]["confirmed"] is False
     assert "restatements" not in result["confirmation"]
-    assert result["fact_groups"]["central_restatements"] == {"asked": ["c1"], "accepted": [], "failed": None}
+    assert result["fact_groups"]["central_restatements"] == {
+        "asked": ["c1"], "accepted": [], "failed": None,
+        "central": "Acme Arena is Acme Games' fastest-selling game | fastest-selling game",
+        "labels": {"c1": "Acme Games confirmed a record opening week for its new shooter | record first week"},
+    }
 
 
 def test_an_id_that_was_never_offered_is_ignored(tmp_path, monkeypatch):
@@ -7615,3 +7629,40 @@ def test_the_restatement_prompt_states_the_rule_and_lists_only_offered_claims():
     assert "SAME fact" in prompt and "When you are not sure, leave the candidate out" in prompt
     assert "CENTRAL CLAIM: Acme Arena is the fastest-selling game fastest-selling" in prompt
     assert "- c4 | s1 | said by Acme Games | record first week record first week" in prompt
+
+
+def test_the_restatement_prompt_draws_the_line_between_wording_and_a_different_fact():
+    prompt = facts.build_restatement_prompt({"claim": "x", "value": "y"}, [], {})
+    assert "are the SAME fact" in prompt
+    assert "DIFFERENT facts" in prompt
+    assert "a different date, number, feature" in prompt
+
+
+def test_the_prompt_shows_each_claims_own_sentence_when_it_has_one():
+    central = {"claim": "Acme ships", "value": "in May"}
+    with_quote = dict(verified("https://b/1", label="ships"), quote="Acme   Games\nconfirmed the shipment.")
+    without_quote = verified("https://c/1", label="other")
+    prompt = facts.build_restatement_prompt(
+        central, [("c1", with_quote), ("c2", without_quote)], {}, central_sentence="Acme will ship in May."
+    )
+    assert '  sentence: "Acme will ship in May."' in prompt
+    assert '    sentence: "Acme Games confirmed the shipment."' in prompt
+    # A claim that cites no sentence gets no sentence line.
+    sentence_lines = [line for line in prompt.splitlines() if line.lstrip().startswith("sentence:")]
+    assert len(sentence_lines) == 2
+
+
+def test_a_long_sentence_is_clipped_in_the_prompt():
+    long_claim = dict(verified("https://b/1", label="x"), quote="word " * 200)
+    prompt = facts.build_restatement_prompt({"claim": "c", "value": "v"}, [("c1", long_claim)], {})
+    line = next(line for line in prompt.splitlines() if line.startswith("    sentence:"))
+    assert len(line) <= len('    sentence: ""') + facts.RESTATEMENT_SENTENCE_CHARS
+
+
+def test_the_central_sentence_comes_from_the_best_evidenced_member():
+    unverified = dict(verified("https://a/1", ok=False, label="a"), quote="An unverified sentence.")
+    good = dict(verified("https://b/1", label="b"), quote="The verified sentence.")
+    assert facts._central_sentence([unverified, good]) == "The verified sentence."
+    assert facts._central_sentence([unverified]) == "An unverified sentence."
+    assert facts._central_sentence([verified("https://c/1", label="c")]) == ""
+    assert facts._central_sentence([]) == ""
