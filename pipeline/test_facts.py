@@ -7666,3 +7666,232 @@ def test_the_central_sentence_comes_from_the_best_evidenced_member():
     assert facts._central_sentence([unverified]) == "An unverified sentence."
     assert facts._central_sentence([verified("https://c/1", label="c")]) == ""
     assert facts._central_sentence([]) == ""
+
+
+# --- the single-origin rule: one named origin, several independent outlets ----------
+
+SO_SOURCES = {
+    facts._source_url_key("https://a/1"): {"owner": "co-a", "source_name": "Alpha"},
+    facts._source_url_key("https://b/1"): {"owner": "co-b", "source_name": "Beta"},
+    facts._source_url_key("https://c/1"): {"owner": "co-c", "source_name": "Gamma"},
+}
+
+
+def so_claim(url, speaker="Romain Toutain", speaker_type="person", kind="statement", ok=True):
+    item = ev_claim(url, speaker=speaker, speaker_type=speaker_type, kind=kind, ok=ok)
+    item["evidence"] = {"ok": ok, "attribution_mode": "explicit"}
+    return item
+
+
+def so_confirm(claims, **kwargs):
+    kwargs.setdefault("allow_single_origin", True)
+    return facts.evidence_confirmation(claims, SO_SOURCES, aliases={}, **kwargs)
+
+
+def test_one_named_person_verified_in_two_independent_outlets_is_single_origin():
+    result = so_confirm([so_claim("https://a/1"), so_claim("https://b/1")])
+    assert result["confirmed"] is True
+    assert result["rule"] == "single-origin"
+    assert result["single_origin"]["speaker"] == "Romain Toutain"
+    assert result["single_origin"]["origin"] == "romain toutain"
+    assert result["single_origin"]["outlets"] == ["Alpha", "Beta"]
+    assert len(result["single_origin"]["owners"]) == 2
+    assert "not an independently confirmed fact" in result["reason"]
+
+
+def test_the_rule_is_off_unless_it_is_switched_on():
+    result = so_confirm([so_claim("https://a/1"), so_claim("https://b/1")], allow_single_origin=False)
+    assert result["confirmed"] is False
+    assert result["rule"] == "unconfirmed"
+    assert "single_origin" not in result
+
+
+def test_a_named_outlet_can_be_the_one_origin():
+    result = so_confirm([so_claim("https://a/1", "Le Monde", "outlet"), so_claim("https://b/1", "Le Monde", "outlet")])
+    assert result["rule"] == "single-origin"
+    assert result["single_origin"]["speaker"] == "Le Monde"
+
+
+def test_an_organization_in_two_outlets_is_first_party_before_it_is_single_origin():
+    claims = [so_claim("https://a/1", "Mataboo", "organization"), so_claim("https://b/1", "Mataboo", "organization")]
+    result = so_confirm(claims)
+    assert result["rule"] == "first-party"
+    assert "single_origin" not in result
+
+
+def test_two_claims_from_one_owner_are_one_outlet_not_two():
+    result = so_confirm([so_claim("https://a/1"), so_claim("https://a/1")])
+    assert result["rule"] == "unconfirmed"
+
+
+def test_the_origin_must_be_verified_in_the_required_number_of_owners():
+    claims = [so_claim("https://a/1"), so_claim("https://b/1")]
+    assert so_confirm(claims, min_single_origin_owners=3)["rule"] == "unconfirmed"
+    claims.append(so_claim("https://c/1"))
+    result = so_confirm(claims, min_single_origin_owners=3)
+    assert result["rule"] == "single-origin"
+    assert len(result["single_origin"]["owners"]) == 3
+
+
+@pytest.mark.parametrize("speaker, speaker_type", [
+    ("a source familiar with the situation", "anonymous"),
+    ("a former developer", "anonymous"),
+    ("", "none"),
+])
+def test_an_anonymous_or_missing_speaker_never_makes_a_single_origin_draft(speaker, speaker_type):
+    result = so_confirm([so_claim("https://a/1", speaker, speaker_type), so_claim("https://b/1", speaker, speaker_type)])
+    assert result["rule"] == "unconfirmed"
+
+
+def test_a_claim_whose_evidence_failed_does_not_count():
+    result = so_confirm([so_claim("https://a/1"), so_claim("https://b/1", ok=False)])
+    assert result["rule"] == "unconfirmed"
+
+
+@pytest.mark.parametrize("kind", ["rumor", "opinion", "estimate"])
+def test_a_rumor_opinion_or_estimate_is_never_a_single_origin_story(kind):
+    result = so_confirm([so_claim("https://a/1", kind=kind), so_claim("https://b/1", kind=kind)])
+    assert result["rule"] == "unconfirmed"
+
+
+@pytest.mark.parametrize("kind", ["confirmed", "statement", "reported"])
+def test_confirmed_statement_and_reported_claims_count(kind):
+    result = so_confirm([so_claim("https://a/1", kind=kind), so_claim("https://b/1", kind=kind)])
+    assert result["rule"] == "single-origin"
+
+
+def test_the_first_party_rule_still_wins_when_it_applies():
+    claims = [
+        so_claim("https://a/1", "Acme Games", "organization", "confirmed"),
+        so_claim("https://b/1", "Acme Games", "organization", "confirmed"),
+    ]
+    result = so_confirm(claims)
+    assert result["rule"] == "first-party"
+    assert "single_origin" not in result
+
+
+def test_two_independent_origins_still_win_when_they_apply():
+    claims = [so_claim("https://a/1", "Romain Toutain"), so_claim("https://b/1", "Ana Ruiz")]
+    result = so_confirm(claims)
+    assert result["rule"] == "two-independent-origins"
+    assert "single_origin" not in result
+
+
+def test_a_tier_one_source_still_wins_when_it_applies():
+    result = so_confirm([so_claim("https://a/1")], tier1_confirms=True)
+    assert result["rule"] == "tier1"
+
+
+def test_the_speaker_is_named_as_most_often_written():
+    claims = [
+        so_claim("https://a/1", "Romain Toutain"),
+        so_claim("https://b/1", "Romain Toutain"),
+        so_claim("https://c/1", "ROMAIN TOUTAIN"),
+    ]
+    result = so_confirm(claims)
+    assert result["rule"] == "single-origin"
+    assert result["single_origin"]["speaker"] == "Romain Toutain"
+    assert len(result["single_origin"]["owners"]) == 3
+
+
+def test_a_story_with_no_verified_claims_is_never_single_origin():
+    assert so_confirm([])["rule"] == "unconfirmed"
+
+
+def test_the_shipped_config_turns_the_rule_on_with_two_owners():
+    assert facts._single_origin_settings() == (True, 2)
+
+
+@pytest.mark.parametrize("value, expected", [
+    (True, True), (False, False), ("yes", False), (1, False), (None, False),
+])
+def test_the_single_origin_switch_accepts_only_a_real_boolean(monkeypatch, value, expected):
+    real = facts.load_config
+    monkeypatch.setattr(
+        facts, "load_config",
+        lambda path=None: {**real(path), "facts": {**real(path).get("facts", {}), "single_origin_drafts": value}},
+    )
+    assert facts._single_origin_settings()[0] is expected
+
+
+@pytest.mark.parametrize("owners", [0, 1, -3, True, "two", None])
+def test_a_bad_owner_count_falls_back_to_two(monkeypatch, owners):
+    real = facts.load_config
+    monkeypatch.setattr(
+        facts, "load_config",
+        lambda path=None: {**real(path), "facts": {**real(path).get("facts", {}), "single_origin_min_owners": owners}},
+    )
+    assert facts._single_origin_settings()[1] == 2
+
+
+def so_story(tmp_path, monkeypatch, *, groups=(["c0", "c1"],), answer=None, enabled=True, story="so-story"):
+    """Two outlets quote one named person; the grouping call pairs them (or not)."""
+    use_mode(monkeypatch, "evidence")
+    real = facts.load_config
+    monkeypatch.setattr(
+        facts, "load_config",
+        lambda path=None: {**real(path), "facts": {**real(path).get("facts", {}), "single_origin_drafts": enabled}},
+    )
+    sentence = "Ana Ruiz said the studio will ship in May."
+    sources = [
+        source(link=f"https://outlet{i}.example/ruiz", name=f"Outlet {i}", owner=f"co-{i}", tier=2,
+               title=ACME_TITLE, text=f"{sentence} Retailers had no comment.")
+        for i in range(2)
+    ]
+    wordings = [
+        ("Ana Ruiz said the studio ships in May", "ships in May"),
+        ("Ana Ruiz confirmed a May release for the game", "a May release"),
+    ]
+    payloads = [
+        {"claims": [acme_claim(
+            src["link"], claim=wordings[i][0], value=wordings[i][1],
+            quote=sentence, attribution_quote="Ana Ruiz said", speaker="Ana Ruiz", speaker_type="person",
+            origin="Ana Ruiz", kind="statement",
+        )]}
+        for i, src in enumerate(sources)
+    ]
+    inner, _calls = grouping_generate(payloads, [list(group) for group in groups])
+    generate, log = restatement_generate(inner, answer=answer)
+    try:
+        result = facts.facts(
+            gathered(story, sources), id=story, title=ACME_TITLE, entities=ACME_ENTITIES,
+            output_dir=tmp_path, now=NOW, generate=generate,
+        )
+    except facts.UnconfirmedStory:
+        result = json.loads((tmp_path / "unconfirmed" / f"{story}.json").read_text(encoding="utf-8"))
+    return result, log
+
+
+def test_a_full_run_confirms_a_story_one_person_stated_in_two_outlets_as_single_origin(tmp_path, monkeypatch):
+    result, log = so_story(tmp_path, monkeypatch)
+    assert result["confirmation"]["confirmed"] is True
+    assert result["confirmation"]["rule"] == "single-origin"
+    assert result["confirmation"]["single_origin"]["speaker"] == "Ana Ruiz"
+    assert result["confirmation"]["single_origin"]["outlets"] == ["Outlet 0", "Outlet 1"]
+    assert log["calls"] == 0, "a story the rule confirms needs no restatement call"
+
+
+def test_the_same_story_stays_unconfirmed_when_the_rule_is_off(tmp_path, monkeypatch):
+    result, log = so_story(tmp_path, monkeypatch, enabled=False)
+    assert result["confirmation"]["confirmed"] is False
+
+
+def test_the_rule_applies_after_the_restatement_check_pairs_the_outlets(tmp_path, monkeypatch):
+    # The grouping call pairs nothing; the restatement check finds the other outlet's
+    # claim and the rule then sees one origin in two owners.
+    # Which outlet's claim is central depends on the headline overlap, so the stub
+    # names both ids; the parser keeps only the one that was offered.
+    result, log = so_story(tmp_path, monkeypatch, groups=(), answer=["c0", "c1"])
+    assert log["calls"] == 1
+    assert result["confirmation"]["rule"] == "single-origin"
+    assert len(result["confirmation"]["restatements"]) == 1
+    assert result["confirmation"]["single_origin"]["speaker"] == "Ana Ruiz"
+
+
+def test_the_restatement_instruction_says_a_channel_is_not_the_fact():
+    text = facts.RESTATEMENT_INSTRUCTION
+    assert "who revealed, reported or posted something" in text
+    assert "a livestream, an interview, a post, a memo" in text
+    assert "counts only when its sentence also says what was revealed" in text
+    # The same-fact and different-fact examples are still there.
+    assert "are the SAME fact" in text and "DIFFERENT facts" in text

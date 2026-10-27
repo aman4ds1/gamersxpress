@@ -228,6 +228,12 @@ facts:
   # unconfirmed stories only). Set false to rely on the grouping call alone.
   central_restatement_check: true
   central_restatement_max_candidates: 12
+  # A story whose central fact has one named origin (a person, organization or outlet)
+  # verified in this many independent owners' articles becomes a DRAFT labeled
+  # single-origin: a relayed report, written as that origin's statement and never
+  # auto-published. It applies only when no stronger rule confirms the story.
+  single_origin_drafts: true
+  single_origin_min_owners: 2
   # How the central fact is confirmed (PLAN.md pipeline stage 6). "legacy" is
   # the origin/tier/first-party rule only. "shadow" lets the legacy verdict
   # decide but also computes the evidence verdict (claims grouped by a model
@@ -798,10 +804,14 @@ score:
   # keyed by their member-URL hash, and skipped for the same membership until
   # the failed cooldown lapses.
   min_distinct_owners: 2
-  max_candidates_per_run: 5
+  max_candidates_per_run: 3
   # One call per extracted source, plus one verification call per candidate with
-  # two or more contributing sources (the facts-stage grouping call).
-  model_call_budget: 20
+  # two or more contributing sources (the facts-stage grouping call), plus one
+  # restatement call for a candidate that would otherwise stay unconfirmed. Most
+  # candidates cost 3 to 5 calls, so 15 covers about three attempts per run; the
+  # rest are tried by the next run (October 2026: lowered from 5 and 20 to cut
+  # free-tier usage).
+  model_call_budget: 15
   # Cost control (pipeline/facts.py): extract claims from at most this many
   # sources per candidate, chosen by tier first, then one per distinct owner,
   # then by text length. A candidate with more sources is capped so a single

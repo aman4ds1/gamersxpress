@@ -987,6 +987,7 @@ def run(
                     cover_path=cover.get("path"), cluster_id=cluster_id, cluster=chosen,
                     articles_dir=paths.articles_dir, covers_dir=paths.covers_dir,
                     log_path=paths.log, seen_path=paths.seen, now=now,
+                    verification=publish_stage.verification_label(facts),
                 )
         finally:
             shutil.rmtree(cover_staging, ignore_errors=True)
@@ -998,11 +999,11 @@ def run(
         cluster.save_failed(failed, paths.failed)
         reset_breaker(breaker)
         save_breaker(breaker, paths.breaker)
-        logger.info("run completed: slug=%s mode=%s", slug, publish_mode)
+        logger.info("run completed: slug=%s mode=%s", slug, result["mode"])
         return finish(
             "completed", None, slug=slug, cluster_id=cluster_id, category=seo["category"],
-            mode=publish_mode, article_path=result["article_path"], score=chosen.get("score"),
-            gates=gate_result.to_dict(),
+            mode=result["mode"], article_path=result["article_path"], score=chosen.get("score"),
+            gates=gate_result.to_dict(), verification=result["verification"],
         )
 
     except SkipRun as exc:

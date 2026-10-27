@@ -139,7 +139,35 @@ def writer_view(facts: Any) -> Any:
     if isinstance(claims, list):
         url_names = _source_url_names(sources)
         view["claims"] = [_writer_claim(claim, url_names) for claim in claims]
+    note = single_origin_note(facts)
+    if note:
+        view["single_origin_note"] = note
     return view
+
+
+def single_origin_note(facts: dict) -> str:
+    """The instruction a single-origin story adds to the writer's facts, or "".
+
+    One named origin is reported by several outlets; nothing independent backs
+    it. The note rides in the facts view, not the static prompt, so the prompt
+    keeps its Groq size budget and only these stories pay for the extra tokens.
+    """
+    confirmation = facts.get("confirmation") if isinstance(facts, dict) else None
+    if not isinstance(confirmation, dict) or confirmation.get("rule") != "single-origin":
+        return ""
+    origin = confirmation.get("single_origin") or {}
+    speaker = str(origin.get("speaker") or "").strip()
+    if not speaker:
+        return ""
+    outlets = ", ".join(str(name) for name in origin.get("outlets") or [] if name)
+    reported = f" Name the outlets that reported it ({outlets})." if outlets else ""
+    return (
+        f"This story rests on one named source, {speaker}, and nothing independent confirms it. "
+        f"Write every claim as {speaker}'s statement, in the same sentence "
+        f"(\"{speaker} said ...\", \"according to {speaker}\"); never state a claim in the "
+        f"publication's own voice. Open by naming {speaker}.{reported} "
+        "Do not call it confirmed."
+    )
 
 
 def load_template(path: str | Path = DEFAULT_PROMPT_PATH) -> str:

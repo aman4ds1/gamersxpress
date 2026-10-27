@@ -64,10 +64,33 @@ def build_front_matter(
             for source in facts.get("sources") or []
         ],
     }
+    if verification_label(facts):
+        front["verification"] = verification_label(facts)
     if cover and cover.get("image"):
         front["image"] = cover["image"]
         front["imageAlt"] = cover.get("imageAlt")
     return front
+
+
+#: The one confirmation rule whose articles carry a label and are never auto-published.
+SINGLE_ORIGIN = "single-origin"
+
+
+def verification_label(facts: dict | None) -> str | None:
+    """``"single-origin"`` for a relayed report, ``None`` for every other story.
+
+    Other stories carry no label, so existing articles and their front matter
+    are unchanged.
+    """
+    confirmation = (facts or {}).get("confirmation") if isinstance(facts, dict) else None
+    if isinstance(confirmation, dict) and confirmation.get("rule") == SINGLE_ORIGIN:
+        return SINGLE_ORIGIN
+    return None
+
+
+def effective_mode(mode: str, verification: str | None) -> str:
+    """A single-origin article is always a draft, whatever mode the run asked for."""
+    return "draft" if verification == SINGLE_ORIGIN else mode
 
 
 def _generated_date(facts: dict) -> dt.date:
@@ -219,10 +242,20 @@ def publish(
     log_path: str | Path | None = None,
     seen_path: str | Path | None = None,
     now: dt.datetime | None = None,
+    verification: str | None = None,
 ) -> dict:
-    """Write the article, cover, published-log entry and seen marker."""
+    """Write the article, cover, published-log entry and seen marker.
+
+    ``verification`` is the story's label (``"single-origin"`` or None). A
+    single-origin story is a relayed report: it is recorded and returned as a
+    ``draft`` even when the run asked for ``auto``.
+    """
     if mode not in PUBLISH_MODES:
         raise ValueError(f"publish mode must be one of {PUBLISH_MODES}, got {mode!r}")
+    requested_mode = mode
+    mode = effective_mode(mode, verification)
+    if mode != requested_mode:
+        logger.warning("single-origin story %s is a draft, not %s", slug, requested_mode)
 
     articles_dir = Path(articles_dir) if articles_dir else DEFAULT_ARTICLES_DIR
     covers_dir = Path(covers_dir) if covers_dir else DEFAULT_COVERS_DIR
@@ -241,7 +274,11 @@ def publish(
         shutil.copyfile(cover_path, destination_cover)
 
     append_log(
-        {"slug": slug, "title": title, "category": category, "mode": mode, "cluster_id": cluster_id},
+        {
+            "slug": slug, "title": title, "category": category, "mode": mode,
+            "cluster_id": cluster_id,
+            **({"verification": verification} if verification else {}),
+        },
         path=log_path,
         now=now,
     )
@@ -255,6 +292,7 @@ def publish(
         "article_path": str(article_path),
         "cover_path": str(destination_cover) if destination_cover else None,
         "mode": mode,
+        "verification": verification,
     }
 
 
@@ -365,8 +403,11 @@ __all__ = [
     "DEFAULT_SEEN_PATH",
     "PUBLISH_MODES",
     "append_log",
+    "SINGLE_ORIGIN",
     "assemble_article",
     "build_front_matter",
+    "effective_mode",
+    "verification_label",
     "count_today",
     "load_log",
     "publish",

@@ -749,6 +749,9 @@ RESTATEMENT_INSTRUCTION = (
     "different date, number, feature, reaction, background detail or "
     "consequence is a different fact. When you are not sure, leave the "
     "candidate out.\n"
+    "A claim that only says who revealed, reported or posted something, or where "
+    "it was shown (a livestream, an interview, a post, a memo), does not state the "
+    "fact; it counts only when its sentence also says what was revealed.\n"
     "Each claim is shown with its label and, after \"sentence:\", the sentence of "
     "the article it comes from; judge by what the sentences say.\n"
     "Example: \"Acme confirmed a sequel is in development\" and \"Acme is making a "
@@ -5673,6 +5676,17 @@ def _central_restatement_settings() -> tuple[bool, int]:
     return enabled, int(limit)
 
 
+def _single_origin_settings() -> tuple[bool, int]:
+    """``(enabled, min_owners)`` for the single-origin draft rule (off unless configured)."""
+    section = load_config().get("facts") or {}
+    enabled = section.get("single_origin_drafts", False)
+    enabled = enabled if isinstance(enabled, bool) else False
+    owners = section.get("single_origin_min_owners", 2)
+    if isinstance(owners, bool) or not isinstance(owners, (int, float)) or owners < 2:
+        owners = 2
+    return enabled, int(owners)
+
+
 def _evidence_entries(claim: dict) -> list[dict]:
     evidence = claim.get("evidence")
     if isinstance(evidence, dict):
@@ -5871,6 +5885,8 @@ def evidence_confirmation(
     tier1_confirms: bool = False,
     aliases: dict[str, str] | None = None,
     min_first_party: int | None = None,
+    allow_single_origin: bool = False,
+    min_single_origin_owners: int = 2,
 ) -> dict:
     """Confirm the central fact from verified evidence over the central group.
 
@@ -5893,11 +5909,23 @@ def evidence_confirmation(
     two distinct owners. Only claims whose stored evidence ``ok`` is true count,
     so an anonymous speaker, a product, the outlet citing itself or an
     unverified quote never confirms anything. Owners count once.
+
+    A fourth rule, ``single-origin``, applies only when ``allow_single_origin``
+    is set and the three rules above all fail: one named person, organization
+    or outlet states the central fact in at least ``min_single_origin_owners``
+    independent owners' articles (``confirmed``, ``statement`` or ``reported``
+    claims only, never a rumor or an opinion). That is a relayed report, not an
+    independently confirmed fact; the result says so, names the speaker and the
+    outlets, and the caller writes it as that speaker's statement and never
+    publishes it without review.
     """
     aliases = load_origin_aliases() if aliases is None else aliases
     if min_first_party is None:
         min_first_party = _min_first_party_sources()
     resolved: list[tuple[str, str, str, str]] = []
+    # (canonical, owner, speaker type, kind, speaker as written, outlet name):
+    # what the single-origin rule needs to name its speaker and outlets.
+    rows: list[tuple[str, str, str, str, str, str]] = []
     verified = 0
     for claim in claims or []:
         evidence = claim.get("evidence")
@@ -5958,6 +5986,16 @@ def evidence_confirmation(
                 speaks_for_org,
             )
         )
+        rows.append(
+            (
+                canonical,
+                owner,
+                speaker_type,
+                str(claim.get("kind") or ""),
+                str(claim.get("speaker") or claim.get("origin") or "").strip(),
+                str(source.get("source_name") or "").strip(),
+            )
+        )
 
     # One organization spelled two ways is one speaker: collapse every canonical
     # name to a single identity before any rule counts it.
@@ -5994,7 +6032,17 @@ def evidence_confirmation(
     else:
         confirmed, rule = False, "unconfirmed"
         reason = "the central fact is not backed by enough verified cross-source evidence"
-    return {
+    single_origin = None
+    if not confirmed and allow_single_origin:
+        single_origin = _single_origin(rows, identities, min_single_origin_owners)
+        if single_origin is not None:
+            confirmed, rule = True, "single-origin"
+            reason = (
+                f"{single_origin['speaker']} is the one named origin of the central fact, "
+                f"reported by {len(single_origin['owners'])} independent outlets: "
+                "a relayed report, not an independently confirmed fact"
+            )
+    result = {
         "tier1_sources": 1 if tier1_confirms else 0,
         "tier3_sources": 0,
         "origins": origins,
@@ -6008,6 +6056,49 @@ def evidence_confirmation(
         "confirmed": confirmed,
         "reason": reason,
         "rule_source": "evidence",
+    }
+    if single_origin is not None:
+        result["single_origin"] = single_origin
+    return result
+
+
+def _single_origin(
+    rows: list[tuple[str, str, str, str, str, str]],
+    identities: dict[str, str],
+    min_owners: int,
+) -> dict | None:
+    """The one named origin several independent owners attribute the fact to, or None.
+
+    Only a person, organization or outlet counts, and only a claim whose kind
+    may be first party. An origin needs ``min_owners`` distinct owners; the most
+    widely reported origin wins, and a tie is no pick at all (two different
+    origins that tie would already have been two independent origins).
+    """
+    owners: dict[str, set[str]] = {}
+    speakers: dict[str, Counter] = {}
+    outlets: dict[str, set[str]] = {}
+    for canonical, owner, speaker_type, kind, speaker, outlet in rows:
+        if speaker_type not in ("person", "organization", "outlet") or kind not in FIRST_PARTY_KINDS:
+            continue
+        identity = identities.get(canonical, canonical)
+        owners.setdefault(identity, set()).add(owner)
+        if speaker:
+            speakers.setdefault(identity, Counter())[speaker] += 1
+        if outlet:
+            outlets.setdefault(identity, set()).add(outlet)
+    ranked = sorted(
+        ((len(found), identity) for identity, found in owners.items() if len(found) >= min_owners),
+        reverse=True,
+    )
+    if not ranked or (len(ranked) > 1 and ranked[0][0] == ranked[1][0]):
+        return None
+    identity = ranked[0][1]
+    named = speakers.get(identity)
+    return {
+        "origin": identity,
+        "speaker": named.most_common(1)[0][0] if named else identity,
+        "owners": sorted(owners[identity]),
+        "outlets": sorted(outlets.get(identity, ())),
     }
 
 
@@ -7610,12 +7701,15 @@ def facts(
     # evidence mode, and is stored beside the legacy verdict in the shadow mode.
     evidence_conf = None
     if confirmation_mode != "legacy" and grouping is not None:
+        single_origin_on, single_origin_owners = _single_origin_settings()
         evidence_conf = evidence_confirmation(
             evidence_central_claims(grouping, central_group),
             sources_by_url,
             tier1_confirms=tier1_confirms,
             aliases=aliases,
             min_first_party=min_first_party,
+            allow_single_origin=single_origin_on,
+            min_single_origin_owners=single_origin_owners,
         )
 
     # The grouping call can leave the central claim alone in its group while
@@ -7666,6 +7760,8 @@ def facts(
                 tier1_confirms=tier1_confirms,
                 aliases=aliases,
                 min_first_party=min_first_party,
+                allow_single_origin=single_origin_on,
+                min_single_origin_owners=single_origin_owners,
             )
             evidence_conf["restatements"] = list(restatement["accepted"])
 

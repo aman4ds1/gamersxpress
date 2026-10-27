@@ -1404,3 +1404,59 @@ def test_countable_sources_fall_back_to_length_without_a_body_status():
     legacy = {"link": "https://legacy.example/1", "status": "ok", "tier": 1, "text": "y" * 500}
     assert run_module._source_body_ok(legacy) is True
     assert run_module._source_body_ok({**legacy, "text": "too short"}) is False
+
+
+# --- a single-origin story is a labeled draft, never auto-published -----------------
+
+
+def single_origin_run(tmp_path, *, mark):
+    paths = make_paths(tmp_path)
+    items = [
+        item(dryrun.SAMPLE_TITLE, "https://b.example/1", owner="owner-c", age_hours=12),
+        item(dryrun.SAMPLE_TITLE, "https://b.example/2", owner="owner-d", age_hours=12),
+    ]
+    writer_prompts: list[str] = []
+    real_generate = dryrun.make_generate("pass")
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        if role == "writer":
+            writer_prompts.append(prompt)
+        return real_generate(role, prompt, json_schema, run_state=run_state, **kwargs)
+
+    def facts_fn(gathered, *, id, output_dir, generate, run_state, now, title, entities, **kwargs):
+        sheet = run_module.facts_stage.facts(
+            gathered, id=id, output_dir=output_dir, generate=generate,
+            run_state=run_state, now=now, title=title, entities=entities,
+        )
+        if mark:
+            sheet["confirmation"] = {
+                **sheet["confirmation"], "rule": "single-origin",
+                "single_origin": {"origin": "ana ruiz", "speaker": "Ana Ruiz", "owners": ["c", "d"], "outlets": ["Alpha", "Beta"]},
+            }
+        return sheet
+
+    result = run_with_items(
+        tmp_path, items, env={"PUBLISH_MODE": "auto"}, facts_fn=facts_fn, generate=generate,
+    )
+    report = json.loads(paths.last_run.read_text(encoding="utf-8"))
+    article = next(paths.articles_dir.glob("*.md")).read_text(encoding="utf-8")
+    return result, report, article, writer_prompts
+
+
+def test_a_single_origin_story_run_in_auto_mode_comes_out_as_a_labeled_draft(tmp_path):
+    result, report, article, prompts = single_origin_run(tmp_path, mark=True)
+    assert result.status == "completed"
+    assert report["mode"] == "draft"
+    assert report["verification"] == "single-origin"
+    assert "verification: single-origin" in article
+    # The writer was told to attribute everything to the one source.
+    assert any("rests on one named source, Ana Ruiz" in prompt for prompt in prompts)
+
+
+def test_an_ordinary_story_run_in_auto_mode_stays_auto_with_no_label(tmp_path):
+    result, report, article, prompts = single_origin_run(tmp_path, mark=False)
+    assert result.status == "completed"
+    assert report["mode"] == "auto"
+    assert report["verification"] is None
+    assert "verification:" not in article
+    assert not any("rests on one named source" in prompt for prompt in prompts)

@@ -15,6 +15,9 @@ const articles = defineCollection({
       tags: z.array(z.string()),
       entities: z.array(z.string()),
       sources: z.array(z.object({ name: z.string(), url: z.url() })).min(2),
+      // Set only on a relayed report (one named origin, several outlets): a draft to read
+      // harder, never auto-published.
+      verification: z.enum(['single-origin']).optional(),
       image: z.string().optional(),
       imageAlt: z.string().optional(),
     })

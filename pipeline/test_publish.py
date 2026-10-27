@@ -167,3 +167,72 @@ def test_publish_writes_long_description_readable_by_the_gate_parser(tmp_path):
     assert len(desc_lines) == 1
     parsed, _ = gates.parse_front_matter(written)
     assert parsed["description"] == LONG_DESCRIPTION
+
+
+# --- single-origin articles carry a label and are never auto-published ---------------
+
+SINGLE_ORIGIN_FACTS = {
+    **FACTS,
+    "confirmation": {"rule": "single-origin", "confirmed": True, "single_origin": {"speaker": "Ana Ruiz"}},
+}
+
+
+def test_a_single_origin_story_gets_a_verification_label_in_its_front_matter():
+    front = publish.build_front_matter(SINGLE_ORIGIN_FACTS, SEO, {"image": "/covers/x.webp", "imageAlt": "Cover."})
+    assert front["verification"] == "single-origin"
+    keys = list(front)
+    assert keys.index("sources") < keys.index("verification") < keys.index("image")
+
+
+@pytest.mark.parametrize("confirmation", [
+    {"rule": "first-party"}, {"rule": "two-independent-origins"}, {"rule": "tier1"},
+    {"rule": "unconfirmed"}, {}, None, "single-origin",
+])
+def test_every_other_story_has_no_verification_label(confirmation):
+    front = publish.build_front_matter({**FACTS, "confirmation": confirmation}, SEO)
+    assert "verification" not in front
+
+
+def test_the_label_survives_the_article_round_trip():
+    front = publish.build_front_matter(SINGLE_ORIGIN_FACTS, SEO, {"image": "/covers/x.webp", "imageAlt": "Cover."})
+    article = publish.assemble_article("## Body\n\nAna Ruiz said so.", front)
+    parsed, _body = gates.parse_front_matter(article)
+    assert parsed["verification"] == "single-origin"
+    assert publish._front_matter_dict(article)["verification"] == "single-origin"
+
+
+@pytest.mark.parametrize("verification, mode, expected", [
+    ("single-origin", "auto", "draft"),
+    ("single-origin", "draft", "draft"),
+    (None, "auto", "auto"),
+    (None, "draft", "draft"),
+])
+def test_effective_mode_never_lets_a_single_origin_story_be_auto(verification, mode, expected):
+    assert publish.effective_mode(mode, verification) == expected
+
+
+def test_publish_records_a_single_origin_article_as_a_draft_even_when_asked_for_auto(tmp_path):
+    result = publish.publish(
+        "---\ntitle: x\n---\nbody\n", slug="relay", title="Relay", category="hardware", mode="auto",
+        cluster_id="abc", articles_dir=tmp_path / "articles", covers_dir=tmp_path / "covers",
+        log_path=tmp_path / "log.json", seen_path=tmp_path / "seen.json", now=NOW,
+        verification="single-origin",
+    )
+    assert result["mode"] == "draft"
+    assert result["verification"] == "single-origin"
+    entry = json.loads((tmp_path / "log.json").read_text(encoding="utf-8"))
+    entries = entry["articles"] if isinstance(entry, dict) and "articles" in entry else entry
+    last = entries[-1] if isinstance(entries, list) else list(entries.values())[-1]
+    assert last["mode"] == "draft"
+    assert last["verification"] == "single-origin"
+
+
+def test_publish_keeps_auto_and_adds_no_label_for_an_ordinary_story(tmp_path):
+    result = publish.publish(
+        "---\ntitle: x\n---\nbody\n", slug="plain", title="Plain", category="hardware", mode="auto",
+        cluster_id="abc", articles_dir=tmp_path / "articles", covers_dir=tmp_path / "covers",
+        log_path=tmp_path / "log.json", seen_path=tmp_path / "seen.json", now=NOW,
+    )
+    assert result["mode"] == "auto"
+    assert result["verification"] is None
+    assert "verification" not in tmp_path.joinpath("log.json").read_text(encoding="utf-8")

@@ -698,3 +698,79 @@ def test_writer_template_stays_within_its_token_ceiling():
         f"writer template is {tokens:.0f} tokens; the Groq fallback needs the compact "
         "prompt under 5000, so make room before adding a rule"
     )
+
+
+# --- a single-origin story tells the writer to attribute everything ------------------
+
+
+def single_origin_sheet(**origin):
+    sheet = facts_sheet()
+    sheet["confirmation"] = {
+        "rule": "single-origin",
+        "confirmed": True,
+        "single_origin": {
+            "origin": "romain toutain", "speaker": "Romain Toutain",
+            "owners": ["a", "b"], "outlets": ["Eurogamer", "Xbox Wire"], **origin,
+        },
+    }
+    return sheet
+
+
+def test_a_single_origin_story_adds_a_note_to_the_writers_facts():
+    view = write_module.writer_view(single_origin_sheet())
+    note = view["single_origin_note"]
+    assert "Romain Toutain" in note
+    assert "Eurogamer, Xbox Wire" in note
+    assert "never state a claim in the publication's own voice" in note
+    assert "Do not call it confirmed" in note
+
+
+@pytest.mark.parametrize("confirmation", [
+    {"rule": "first-party", "confirmed": True},
+    {"rule": "two-independent-origins", "confirmed": True},
+    {"rule": "tier1", "confirmed": True},
+    {"rule": "unconfirmed", "confirmed": False},
+    {"tier1_sources": 1, "confirmed": True},
+    None,
+    "single-origin",
+])
+def test_any_other_story_gets_no_note(confirmation):
+    sheet = facts_sheet()
+    sheet["confirmation"] = confirmation
+    assert "single_origin_note" not in write_module.writer_view(sheet)
+
+
+@pytest.mark.parametrize("rule", ["first-party", "two-independent-origins", "tier1", "unconfirmed", None])
+def test_a_stale_single_origin_block_under_another_rule_gets_no_note(rule):
+    # Only the rule decides; a leftover block of speaker details must not.
+    sheet = single_origin_sheet()
+    sheet["confirmation"]["rule"] = rule
+    assert write_module.single_origin_note(sheet) == ""
+    assert "single_origin_note" not in write_module.writer_view(sheet)
+
+
+def test_a_single_origin_sheet_without_a_named_speaker_gets_no_note():
+    assert write_module.single_origin_note(single_origin_sheet(speaker="")) == ""
+    assert write_module.single_origin_note(single_origin_sheet(speaker=None)) == ""
+
+
+def test_the_note_names_no_outlets_when_none_are_recorded():
+    note = write_module.single_origin_note(single_origin_sheet(outlets=[]))
+    assert "Name the outlets" not in note
+    assert "Romain Toutain" in note
+
+
+def test_the_prompt_carries_the_note_only_for_a_single_origin_story():
+    assert "single_origin_note" in write_module.build_prompt(single_origin_sheet())
+    assert "rests on one named source" in write_module.build_prompt(single_origin_sheet())
+    assert "single_origin_note" not in write_module.build_prompt(facts_sheet())
+
+
+def test_the_static_template_stays_free_of_the_single_origin_text():
+    # The note rides in the facts, so the template keeps its Groq size budget.
+    template = write_module.load_template()
+    assert "single-origin" not in template and "rests on one named source" not in template
+
+
+def test_a_non_dict_sheet_is_passed_through_without_a_note():
+    assert write_module.single_origin_note("a pre-rendered sheet") == ""
