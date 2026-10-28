@@ -86,6 +86,11 @@ def _palette(category: str) -> tuple[tuple[int, int, int], tuple[int, int, int],
 
 def load_font(size: int, fonts_dir: str | Path | None = None) -> ImageFont.FreeTypeFont:
     path = Path(fonts_dir or DEFAULT_FONTS_DIR) / FONT_FILENAME
+    # ImageFont.truetype() falls back to a system copy of the same filename when
+    # the given path is missing, which would silently break the bundled-font
+    # guarantee. Check the file first so a missing asset always raises.
+    if not path.is_file():
+        raise CoverError(f"bundled font not found: {path}")
     try:
         return ImageFont.truetype(str(path), size)
     except OSError as exc:
