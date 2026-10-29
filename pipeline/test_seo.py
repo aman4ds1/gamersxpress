@@ -593,3 +593,94 @@ def test_generate_seo_avoids_slug_collision(tmp_path):
     assert result["slug"] == f"{LONG_SLUG_CUT}-2"
     assert len(result["slug"]) <= seo.MAX_SLUG
     assert len(generate.calls) == 1
+
+
+# --- entity names in text and required entities -------------------------------
+
+
+def test_canonicalize_text_does_not_double_a_name_that_contains_an_alias():
+    # "Nintendo Switch 2" already holds the alias "Switch 2"; a second pass over
+    # the finished name used to produce "Nintendo Nintendo Switch 2".
+    entities = [{"canonical": "Nintendo Switch 2", "aliases": ["Switch 2"]}]
+    text = "Nintendo Switch 2 owners and Switch 2 fans"
+    assert seo.canonicalize_text(text, entities) == "Nintendo Switch 2 owners and Nintendo Switch 2 fans"
+
+
+DUSK_ARTICLE = """---
+title: Draft
+description: Draft description.
+---
+
+## What happened
+
+FromSoftware's Nintendo Switch 2 exclusive, The Duskbloods, has been delayed into 2027.
+"""
+
+
+def dusk_facts(top="Duskbloods"):
+    facts = make_facts(
+        claim="FromSoft's Switch 2 exclusive, The Duskbloods, has been delayed into 2027",
+        value="2027",
+    )
+    facts["coherence"] = {"canonical_entities": [top, "FromSoft Switch 2"]}
+    return facts
+
+
+def dusk_seo(**overrides):
+    return seo_data(
+        title="FromSoftware delays The Duskbloods into 2027",
+        description=(
+            "FromSoftware has delayed its Nintendo Switch 2 exclusive game The Duskbloods into 2027 "
+            "to allow time for final adjustments to game rules and balancing."
+        ),
+        slug="fromsoftware-delays-the-duskbloods",
+        category="gaming-news",
+        tags=["fromsoftware", "switch-2", "delay"],
+        entities=["FromSoftware", "Nintendo Switch 2"],
+        imageAlt="GamersXpress cover image for FromSoftware delaying The Duskbloods with the Gaming News label.",
+        **overrides,
+    )
+
+
+def run_dusk_seo(tmp_path, facts):
+    entities_path = tmp_path / "entities.json"
+    seo.save_entities(
+        [{"canonical": "FromSoftware", "aliases": []}, {"canonical": "Nintendo Switch 2", "aliases": ["Switch 2"]}],
+        entities_path,
+    )
+    (tmp_path / "articles").mkdir()
+    (tmp_path / "drafts").mkdir()
+    return seo.generate_seo(
+        DUSK_ARTICLE,
+        facts,
+        generate=make_generate(dusk_seo()),
+        entities_path=entities_path,
+        articles_dir=tmp_path / "articles",
+        drafts_dir=tmp_path / "drafts",
+    ), entities_path
+
+
+def test_generate_seo_adds_the_headline_game_the_model_left_out(tmp_path):
+    result, entities_path = run_dusk_seo(tmp_path, dusk_facts())
+    assert "Duskbloods" in result["entities"]
+    assert "Nintendo Nintendo" not in result["description"]
+    assert "Nintendo Switch 2 exclusive game" in result["description"]
+    assert "Duskbloods" in [e["canonical"] for e in seo.load_entities(entities_path)]
+
+
+def test_generate_seo_does_not_add_a_top_entity_the_article_never_names(tmp_path):
+    # The facts sheet supports "Elden Ring" (so the entity filter would keep it),
+    # but neither the title nor the article names it: only the mention check
+    # stops it from being added.
+    facts = dusk_facts(top="Elden Ring")
+    facts["claims"].append(
+        {
+            "claim": "The Elden Ring developer announced the delay",
+            "value": "Elden Ring",
+            "source_url": "https://nvidia.example/5090",
+            "confidence": 0.95,
+            "kind": "reported",
+        }
+    )
+    result, _ = run_dusk_seo(tmp_path, facts)
+    assert "Elden Ring" not in result["entities"]

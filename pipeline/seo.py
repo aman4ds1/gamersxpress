@@ -49,7 +49,12 @@ from typing import Any, Callable, Iterable
 
 import cluster
 import verify
-from gates import load_content_limits, load_content_rules
+from gates import (
+    entity_mention_failures,
+    load_content_limits,
+    load_content_rules,
+    title_entity_coverage,
+)
 from json_schema import schema_errors
 from providers import (
     PROJECT_ROOT,
@@ -296,15 +301,50 @@ def canonicalize_entities(
 
 
 def canonicalize_text(text: str, entities: list[dict]) -> str:
-    """Rewrite aliases in ``text`` to their canonical entity names."""
-    for canonical, aliases in ((e["canonical"], e.get("aliases", [])) for e in entities):
-        candidates = sorted({canonical, *aliases}, key=len, reverse=True)
-        for candidate in candidates:
-            if not candidate:
-                continue
-            pattern = re.compile(rf"(?<![\w-]){re.escape(candidate)}(?![\w-])", re.IGNORECASE)
-            text = pattern.sub(canonical, text)
-    return text
+    """Rewrite aliases in ``text`` to their canonical entity names.
+
+    One pass over every entity's names, longest first, so a name that already
+    contains an alias ("Nintendo Switch 2" holds the alias "Switch 2") is never
+    rewritten a second time. When two entities share a name, the first wins.
+    """
+    mapping: dict[str, str] = {}
+    for entity in entities:
+        canonical = entity["canonical"]
+        for candidate in {canonical, *entity.get("aliases", [])}:
+            if candidate:
+                mapping.setdefault(candidate.lower(), canonical)
+    if not mapping:
+        return text
+    names = sorted((re.escape(name) for name in mapping), key=len, reverse=True)
+    pattern = re.compile(rf"(?<![\w-])(?:{'|'.join(names)})(?![\w-])", re.IGNORECASE)
+    return pattern.sub(lambda m: mapping.get(m.group(0).lower(), m.group(0)), text)
+
+
+def add_required_entities(
+    names: list[str],
+    *,
+    title: str,
+    article: Any,
+    facts: dict,
+    entities: list[dict],
+) -> tuple[list[str], list[dict]]:
+    """Add the entities the draft gates demand when the model left them out.
+
+    The gates require the headline's main game or product and the facts sheet's
+    top canonical entity among the front-matter entities. Both are known in
+    code, so a model that forgets one never costs the draft a gate failure. The
+    top entity is only added when the title or body names it. Returns the final
+    canonical names and the new entities to persist.
+    """
+    required = list(title_entity_coverage(title, names, facts))
+    canonical = ((facts or {}).get("coherence") or {}).get("canonical_entities") or []
+    top = str(canonical[0]).strip() if canonical else ""
+    if top and not entity_mention_failures(title, [top], article if isinstance(article, str) else str(article)):
+        required.append(top)
+    if not required:
+        return names, []
+    merged, new_entities = canonicalize_entities([*names, *required], facts, entities)
+    return merged, new_entities
 
 
 # --- slugs -------------------------------------------------------------------
@@ -724,6 +764,13 @@ def generate_seo(
 
         raw_entities = data.get("entities", [])
         data["entities"], new_entities = canonicalize_entities(raw_entities, sheet, entities)
+        with_required, required_new = add_required_entities(
+            data["entities"], title=str(data.get("title") or ""), article=article,
+            facts=sheet, entities=entities,
+        )
+        if with_required != data["entities"]:
+            logger.info("seo added required entities: %r -> %r", data["entities"], with_required)
+            data["entities"], new_entities = with_required, required_new
         if data["entities"] != raw_entities:
             logger.info("seo normalized entities: %r -> %r", raw_entities, data["entities"])
 
