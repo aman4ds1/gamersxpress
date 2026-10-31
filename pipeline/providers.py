@@ -1135,6 +1135,7 @@ def generate(
     rand: Callable[[], float] = random.random,
     run_state: RunState | None = None,
     exclude_families: set[str] | None = None,
+    fallback_prompt: str | None = None,
 ) -> Generation:
     """Generate for a role and return the provider/model/family that served it.
 
@@ -1289,23 +1290,40 @@ def generate(
             logger.warning("fallback role=%s: missing env %s for provider %s", role, provider.env_key, name)
             continue
         entry_options = entry.get("options")
+        entry_prompt = prompt
         cap_for_length = length_budget_cap
         sized = entry_options
         shrunk_once = False
         # Pre-size for OpenAI-compatible.
         if isinstance(provider, OpenAICompatibleProvider):
             try:
-                sized, cap = _sized_options_for_openai(name, model, prompt, entry_options, role, limits_cfg, min_outputs)
+                sized, cap = _sized_options_for_openai(name, model, entry_prompt, entry_options, role, limits_cfg, min_outputs)
                 if cap is not None:
                     cap_for_length = min(length_budget_cap, cap) if length_budget_cap else cap
                 entry_options = sized
             except PromptTooLargeError as exc:
-                fallbacks.append(f"role={role} {name} ({model}, family={family}): prompt too large for provider rate limit")
-                logger.warning("fallback role=%s provider=%s model=%s family=%s: prompt too large for provider rate limit", role, name, model, family)
-                continue
+                if fallback_prompt and fallback_prompt != entry_prompt:
+                    logger.info(
+                        "role=%s provider=%s model=%s family=%s: retrying with the trimmed fallback prompt",
+                        role, name, model, family,
+                    )
+                    entry_prompt = fallback_prompt
+                    try:
+                        sized, cap = _sized_options_for_openai(name, model, entry_prompt, entry_options, role, limits_cfg, min_outputs)
+                        if cap is not None:
+                            cap_for_length = min(length_budget_cap, cap) if length_budget_cap else cap
+                        entry_options = sized
+                    except PromptTooLargeError:
+                        fallbacks.append(f"role={role} {name} ({model}, family={family}): prompt too large for provider rate limit")
+                        logger.warning("fallback role=%s provider=%s model=%s family=%s: prompt too large for provider rate limit", role, name, model, family)
+                        continue
+                else:
+                    fallbacks.append(f"role={role} {name} ({model}, family={family}): prompt too large for provider rate limit")
+                    logger.warning("fallback role=%s provider=%s model=%s family=%s: prompt too large for provider rate limit", role, name, model, family)
+                    continue
         try:
             completion = _complete_with_retry(
-                provider, model, prompt, json_schema, api_key,
+                provider, model, entry_prompt, json_schema, api_key,
                 max_attempts, base_delay, max_delay, sleep, role,
                 options=entry_options,
                 length_retries=length_retries,
@@ -1329,7 +1347,7 @@ def generate(
                 limit_from_err = _limit_from_error_message(str(exc)) or None
                 limit_use = limit_from_err or _tpm_limit(name, model, limits_cfg)
                 if limit_use is not None:
-                    est = estimate_prompt_tokens(prompt)
+                    est = estimate_prompt_tokens(entry_prompt)
                     fit = int(limit_use - est)
                     min_out = int(min_outputs.get(role, 0))
                     if fit >= min_out:
@@ -1339,7 +1357,7 @@ def generate(
                         cap_for_length_s = min(length_budget_cap, cap_shrink) if length_budget_cap else cap_shrink
                         try:
                             completion = _complete_with_retry(
-                                provider, model, prompt, json_schema, api_key,
+                                provider, model, entry_prompt, json_schema, api_key,
                                 max_attempts, base_delay, max_delay, sleep, role,
                                 options=sized_shrink,
                                 length_retries=length_retries,

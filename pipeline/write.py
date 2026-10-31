@@ -16,12 +16,20 @@ being sent to the model.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Callable
 
 from gates import find_leaks
-from providers import Generation, RunState, generate as default_generate
+from providers import (
+    Generation,
+    RunState,
+    estimate_prompt_tokens,
+    generate as default_generate,
+)
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROMPT_PATH = PROJECT_ROOT / "prompts" / "writer.md"
@@ -213,6 +221,92 @@ def build_prompt(
     return template.replace(FACTS_SHEET_TOKEN, sheet)
 
 
+#: The trimmed writer prompt aims under this many tokens, leaving the Groq
+#: fallback room for its output minimum inside the provider's TPM limit.
+WRITER_FALLBACK_TOKEN_BUDGET = 4300
+
+#: Which claims the trimmed prompt keeps first. Central claims never drop.
+_FALLBACK_KIND_PRIORITY = {
+    "confirmed": 4,
+    "statement": 4,
+    "reported": 3,
+    "estimate": 2,
+    "opinion": 1,
+    "rumor": 1,
+}
+
+
+def _fallback_claim_score(claim: dict, entities: set[str]) -> int:
+    """How important ``claim`` is to the trimmed writer prompt."""
+    score = _FALLBACK_KIND_PRIORITY.get(str(claim.get("kind") or "").lower(), 2)
+    if claim.get("central"):
+        score += 10
+    text = _fold(f"{claim.get('claim') or ''} {claim.get('value') or ''}")
+    if any(entity and entity in text for entity in entities):
+        score += 2
+    return score
+
+
+def build_fallback_prompt(
+    facts: Any,
+    *,
+    primary: str | None = None,
+    template: str | None = None,
+    template_path: str | Path = DEFAULT_PROMPT_PATH,
+    budget: float = WRITER_FALLBACK_TOKEN_BUDGET,
+) -> str:
+    """The writer prompt with low-priority claims dropped to fit ``budget``.
+
+    Only used when the primary prompt is too large for a provider's TPM limit.
+    The primary prompt itself is never changed. Identical values are deduped
+    first, then claims are ranked central > gate-needed entities >
+    confirmed/statement > reported > estimate > opinion/rumor. The source list
+    and single-origin note stay; central claims are never dropped.
+    """
+    primary = primary if primary is not None else build_prompt(
+        facts, template=template, template_path=template_path
+    )
+    if estimate_prompt_tokens(primary) <= budget:
+        return primary
+    if not isinstance(facts, dict) or not isinstance(facts.get("claims"), list):
+        return primary
+    claims = [claim for claim in facts["claims"] if isinstance(claim, dict)]
+    if not claims:
+        return primary
+    entities = {
+        _fold(str(entity)) for entity in facts.get("entities") or [] if str(entity).strip()
+    }
+    deduped: dict[str, tuple[int, int, dict]] = {}
+    for index, claim in enumerate(claims):
+        key = _fold(str(claim.get("value") or claim.get("claim") or "")) or f"__{index}"
+        score = _fallback_claim_score(claim, entities)
+        if key not in deduped or score > deduped[key][0]:
+            deduped[key] = (score, index, claim)
+    kept = [
+        claim
+        for _, _, claim in sorted(
+            deduped.values(), key=lambda item: (-item[0], item[1])
+        )
+    ]
+    removed = 0
+    text = primary
+    while True:
+        text = build_prompt({**facts, "claims": kept}, template=template, template_path=template_path)
+        if estimate_prompt_tokens(text) <= budget:
+            break
+        droppable = [index for index, claim in enumerate(kept) if not claim.get("central")]
+        if not droppable:
+            break
+        kept.pop(droppable[-1])
+        removed += 1
+    if removed:
+        logger.info(
+            "writer prompt trimmed: %d claim(s) dropped to fit %d tokens",
+            removed, budget,
+        )
+    return text
+
+
 def _numbered_facts(facts: Any) -> str:
     """Render a facts sheet with claims numbered F1, F2, ... for the repair prompt."""
     if not isinstance(facts, dict):
@@ -309,7 +403,13 @@ def write(
     **kwargs: Any,
 ) -> Generation:
     """Generate the draft and record the writer's family on ``run_state``."""
-    prompt = prompt if prompt is not None else build_prompt(facts, template_path=prompt_path)
+    if prompt is None:
+        prompt = build_prompt(facts, template_path=prompt_path)
+        fallback = build_fallback_prompt(
+            facts, primary=prompt, template_path=prompt_path
+        )
+        if fallback != prompt:
+            kwargs["fallback_prompt"] = fallback
     return generate("writer", prompt, run_state=run_state, **kwargs)
 
 
@@ -426,17 +526,54 @@ def _starts_with_anaphoric(sentence: str) -> bool:
     return False
 
 
+#: A flagged clause needs at least this many tokens to match a sentence fuzzily.
+REPAIR_MIN_CLAUSE_TOKENS = 4
+#: Share of a flagged clause's tokens a sentence must contain to be its source.
+REPAIR_CLAUSE_OVERLAP = 0.8
+
+
+def _clause_tokens(text: str) -> tuple[str, ...]:
+    """Lowercased, punctuation-free tokens of a clause or sentence."""
+    return tuple(re.findall(r"[a-z0-9]+", _fold(text)))
+
+
 def _flagged_flags(sentences: list[str], flagged_clauses: list[Any]) -> list[bool]:
-    """Which of ``sentences`` carry a flagged clause, by folded containment."""
-    folded_clauses = [
-        folded
-        for folded in (_fold(_clause_parts(clause)[0]) for clause in flagged_clauses)
-        if folded
-    ]
-    return [
-        any(clause in _fold(sentence) for clause in folded_clauses)
-        for sentence in sentences
-    ]
+    """Which of ``sentences`` carry a flagged clause.
+
+    An exact folded match wins first. The verifier usually returns a paraphrase
+    or a trimmed clause, so a clause that is not contained verbatim is mapped to
+    the one sentence holding at least :data:`REPAIR_CLAUSE_OVERLAP` of its
+    tokens (a clause needs :data:`REPAIR_MIN_CLAUSE_TOKENS` tokens to qualify).
+    """
+    folded_sentences = [_fold(sentence) for sentence in sentences]
+    sentence_tokens = [set(_clause_tokens(sentence)) for sentence in sentences]
+    is_flagged = [False] * len(sentences)
+    for entry in flagged_clauses:
+        folded = _fold(_clause_parts(entry)[0])
+        if not folded:
+            continue
+        exact = [
+            index for index, sentence in enumerate(folded_sentences) if folded in sentence
+        ]
+        if exact:
+            for index in exact:
+                is_flagged[index] = True
+            continue
+        tokens = set(_clause_tokens(folded))
+        if len(tokens) < REPAIR_MIN_CLAUSE_TOKENS:
+            continue
+        best_index = 0
+        best_score = 0.0
+        for index, candidate in enumerate(sentence_tokens):
+            if not candidate:
+                continue
+            score = len(tokens & candidate) / len(tokens)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        if sentences and best_score >= REPAIR_CLAUSE_OVERLAP:
+            is_flagged[best_index] = True
+    return is_flagged
 
 
 def _dependent_sentences(text: str, is_flagged: list[bool]) -> list[str]:
@@ -581,13 +718,7 @@ def validate_repair(original: str, repaired: str, flagged_clauses: list[str]) ->
     repaired_sentences = _sentences(repaired)
     original_norm = [_norm(sentence) for sentence in original_sentences]
     repaired_norm = [_norm(sentence) for sentence in repaired_sentences]
-    original_folded = [_fold(sentence) for sentence in original_sentences]
-    flagged: list[str] = []
-    for clause in flagged_clauses:
-        folded = _fold(_clause_parts(clause)[0])
-        if folded:
-            flagged.append(folded)
-    is_flagged = [any(clause in sentence for clause in flagged) for sentence in original_folded]
+    is_flagged = _flagged_flags(original_sentences, flagged_clauses)
     original_set = set(original_norm)
 
     # A sentence that leans on a flagged sentence may not survive its removal:

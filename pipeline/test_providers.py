@@ -1284,6 +1284,64 @@ def test_a_prompt_leaving_less_than_min_output_is_skipped_without_a_request():
     assert "prompt too large for provider rate limit" in str(excinfo.value)
 
 
+def test_a_too_large_prompt_retries_the_same_provider_with_the_fallback_prompt():
+    provider = FakeOpenAIProvider("groq")
+    config = make_config([{"provider": "groq", "model": "openai/gpt-oss-120b", "family": "openai"}])
+    primary = "x" * 21000  # ~6000 tokens: below the writer minimum
+    fallback = "y" * 14000  # ~4000 tokens: leaves a 3200 cap
+
+    result = providers.generate(
+        "writer", primary, config=config, providers={"groq": provider}, env=keyed("groq"),
+        fallback_prompt=fallback,
+    )
+
+    assert result.provider == "groq"
+    assert len(provider.calls) == 1, "the same entry is retried, not skipped"
+    assert provider.calls[0]["prompt"] == fallback
+
+
+def test_a_fallback_prompt_never_replaces_a_primary_prompt_that_fits():
+    provider = FakeOpenAIProvider("groq")
+    config = make_config([{"provider": "groq", "model": "openai/gpt-oss-120b", "family": "openai"}])
+
+    providers.generate(
+        "writer", "primary prompt", config=config, providers={"groq": provider},
+        env=keyed("groq"), fallback_prompt="fallback",
+    )
+
+    assert provider.calls[0]["prompt"] == "primary prompt"
+
+
+def test_the_fallback_prompt_is_only_tried_on_the_entry_that_needs_it():
+    groq = FakeOpenAIProvider("groq")
+    other = FakeOpenAIProvider("b")
+    config = make_config(
+        chain(("groq", "openai/gpt-oss-120b", "openai"), ("b", "m2", "fb"))
+    )
+
+    result = providers.generate(
+        "writer", "x" * 21000, config=config, providers={"groq": groq, "b": other},
+        env=keyed("groq", "b"), fallback_prompt="y" * 14000,
+    )
+
+    assert result.provider == "groq"
+    assert groq.calls[0]["prompt"] == "y" * 14000
+    assert other.calls == []
+
+
+def test_a_fallback_prompt_that_is_still_too_large_skips_the_entry():
+    provider = FakeOpenAIProvider("groq")
+    config = make_config([{"provider": "groq", "model": "openai/gpt-oss-120b", "family": "openai"}])
+
+    with pytest.raises(providers.SkipRun):
+        providers.generate(
+            "writer", "x" * 21000, config=config, providers={"groq": provider},
+            env=keyed("groq"), fallback_prompt="y" * 21000,
+        )
+
+    assert provider.calls == []
+
+
 def test_a_413_shrinks_the_cap_and_retries_once():
     too_large = providers.ProviderError(
         "HTTP 413 from groq: Request too large ... Limit 3000 TPM",

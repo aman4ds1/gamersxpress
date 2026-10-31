@@ -4514,6 +4514,59 @@ def apply_rumor_label(claim: dict) -> dict:
     return {**claim, "kind": "rumor", "kind_changed": f"{kind}->rumor (the claim describes a rumor)"}
 
 
+#: Distinctive content words a confirmed claim must share with a demoted rumor
+#: before the rumor is restored to a report.
+RUMOR_RESTORE_OVERLAP = 2
+
+
+def _rumor_words(text: str, excluded: set[str]) -> set[str]:
+    """Stemmed content words of ``text`` without stop words, numbers or entities."""
+    return _topic_words(text) - excluded
+
+
+def restore_confirmed_rumors(
+    claims: list[dict], *, entities: Optional[Iterable[str]] = None
+) -> tuple[list[dict], int]:
+    """Restore a demoted rumor to ``reported`` when the event it doubts is confirmed.
+
+    "Fans had been speculating that the game would be delayed" is a true report
+    once the sheet also carries a confirmed "Delayed until 2027": the speculation
+    happened, and its subject is not in doubt. A demoted rumor whose distinctive
+    content words (entity and product names excluded) overlap a confirmed or
+    statement claim by at least :data:`RUMOR_RESTORE_OVERLAP` is restored. A rumor
+    about something unrelated stays a rumor.
+    """
+    excluded: set[str] = set()
+    for entity in entities or ():
+        excluded.update(_stem(token) for token in _word_tokens(entity))
+    confirmed = [
+        _rumor_words(
+            f"{claim.get('claim') or ''} {claim.get('value') or ''}", excluded
+        )
+        for claim in claims or []
+        if str(claim.get("kind") or "").lower() in ("confirmed", "statement")
+    ]
+    restored: list[dict] = []
+    count = 0
+    for claim in claims or []:
+        if str(claim.get("kind") or "").lower() != "rumor":
+            restored.append(claim)
+            continue
+        words = _rumor_words(
+            f"{claim.get('claim') or ''} {claim.get('value') or ''}", excluded
+        )
+        if any(len(words & other) >= RUMOR_RESTORE_OVERLAP for other in confirmed):
+            restored.append({
+                **claim,
+                "kind": "reported",
+                "kind_restored": "rumor->reported (the speculated event is confirmed)",
+            })
+            count += 1
+        else:
+            restored.append(claim)
+    return restored, count
+
+
 #: Where a quote splits into separately asserted clauses: sentence ends,
 #: semicolons, dashes, and a comma before a coordinating or relative word.
 _CLAUSE_SPLIT_RE = re.compile(
@@ -7623,6 +7676,16 @@ def facts(
             "story %s: %d claim value(s) trimmed to the clause their speaker said", name, trimmed
         )
     evidence_summary = _evidence_summary(kept)
+
+    # A demoted rumor whose subject the sheet confirms is a true report: the
+    # speculation happened and the event is no longer in doubt. Restore it so the
+    # writer does not file a confirmed story's context under "What is unconfirmed".
+    kept, restored_rumors = restore_confirmed_rumors(kept, entities=canonical)
+    if restored_rumors:
+        logger.info(
+            "story %s: %d rumor claim(s) restored to reported (the speculated event is confirmed)",
+            name, restored_rumors,
+        )
 
     tier1_present = any(int(source.get("tier") or 0) == 1 for source in sources)
 

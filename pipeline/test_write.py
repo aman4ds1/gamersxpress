@@ -421,6 +421,78 @@ def test_validate_repair_rejects_any_wording_change_to_an_unflagged_sentence():
     assert any("unflagged sentence was changed or dropped" in problem for problem in problems), problems
 
 
+CASE_A_SENTENCE = (
+    "Satoshi Aoyagi of the color, material, and finish design team stated that the "
+    "high-gloss clear finish extends across the back of the controller, offering a look "
+    "at the technology that powers the DualSense controller while maintaining a sleek, "
+    "monochromatic look."
+)
+CASE_A_CLAUSE = (
+    "Satoshi Aoyagi stated the high-gloss clear finish extends across the back of the "
+    "controller, offering a look at the technology that powers the DualSense controller "
+    "while maintaining a sleek, monochromatic look"
+)
+CASE_A_REPAIRED = (
+    "Satoshi Aoyagi stated that the high-gloss clear finish extends across the back of "
+    "the controller, offering a look at the technology that powers the DualSense "
+    "controller while maintaining a sleek, monochromatic look."
+)
+CASE_B_SENTENCE = (
+    "Revealed on October 28, 2026, the new Prism Collection includes both controllers "
+    "and console covers, allowing PlayStation 5 owners to customize their setups with "
+    "matching accessories."
+)
+CASE_B_CLAUSE = "The new Prism Collection was revealed on October 28, 2026"
+CASE_B_REPAIRED = (
+    "The new Prism Collection includes both controllers and console covers, allowing "
+    "PlayStation 5 owners to customize their setups with matching accessories."
+)
+
+
+def test_validate_repair_accepts_a_paraphrased_flagged_clause_case_a():
+    original = repair_article(CASE_A_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(CASE_A_REPAIRED, OVERVIEW_SENTENCE)
+    assert write_module.validate_repair(original, repaired, [CASE_A_CLAUSE]) == []
+
+
+def test_validate_repair_accepts_a_trimmed_flagged_clause_case_b():
+    original = repair_article(CASE_B_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(CASE_B_REPAIRED, OVERVIEW_SENTENCE)
+    assert write_module.validate_repair(original, repaired, [CASE_B_CLAUSE]) == []
+
+
+def test_validate_repair_still_rejects_an_unrelated_sentence_when_a_clause_matches():
+    original = repair_article(CASE_B_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(CASE_B_REPAIRED, "The glasses ship in three colors worldwide.")
+    problems = write_module.validate_repair(original, repaired, [CASE_B_CLAUSE])
+    assert any("unflagged sentence was changed or dropped" in problem for problem in problems), problems
+
+
+def test_flagged_flags_matches_nothing_for_a_clause_no_sentence_resembles():
+    clause = "A completely unrelated clause about bananas and oranges"
+    assert write_module._flagged_flags(["The glasses ship in two colors."], [clause]) == [False]
+
+
+def test_validate_repair_flags_nothing_for_a_clause_no_sentence_resembles():
+    clause = "A completely unrelated clause about bananas and oranges"
+    original = repair_article(CASE_B_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article(CASE_B_SENTENCE, "The glasses ship in three colors worldwide.")
+    problems = write_module.validate_repair(original, repaired, [clause])
+    assert any("unflagged sentence was changed or dropped" in problem for problem in problems), problems
+
+
+def test_validate_repair_flags_only_the_best_matching_sentence():
+    overlapping = "The Prism Collection was revealed in 2026 with new controllers."
+    original = repair_article(CASE_B_SENTENCE, overlapping, OVERVIEW_SENTENCE)
+    repaired = repair_article(
+        CASE_B_REPAIRED,
+        "The Prism Collection arrived in 2026 with new controllers.",
+        OVERVIEW_SENTENCE,
+    )
+    problems = write_module.validate_repair(original, repaired, [CASE_B_CLAUSE])
+    assert any("unflagged sentence was changed or dropped" in problem for problem in problems), problems
+
+
 def test_validate_repair_rejects_a_changed_front_matter_field():
     original = repair_article(OVERVIEW_SENTENCE)
     repaired = original.replace("title: Synthetic title for the repair validation tests",
@@ -595,6 +667,94 @@ def test_repair_prompt_uses_the_compact_view():
     assert "F1: 'A game was announced'" in prompt
     assert "- A sentence" in prompt
     assert "grounding" not in prompt
+
+
+def big_sheet(count=40, *, central_kind="confirmed"):
+    claims = []
+    for index in range(count):
+        kind = central_kind if index == 0 else ("rumor" if index % 3 == 0 else "reported")
+        claims.append({
+            "claim": f"Claim {index}",
+            "value": f"token{index} " + ("detail " * 80),
+            "source_url": "https://news.xbox.com/a",
+            "confidence": 0.9,
+            "kind": kind,
+            "central": index == 0,
+        })
+    return {**facts_sheet(), "claims": claims}
+
+
+def test_a_small_prompt_needs_no_fallback():
+    primary = write_module.build_prompt(facts_sheet())
+    assert write_module.build_fallback_prompt(facts_sheet(), primary=primary) == primary
+
+
+def test_the_fallback_prompt_fits_the_budget_and_keeps_central_claims():
+    sheet = big_sheet()
+    primary = write_module.build_prompt(sheet)
+    fallback = write_module.build_fallback_prompt(sheet, primary=primary)
+    assert providers.estimate_prompt_tokens(primary) > write_module.WRITER_FALLBACK_TOKEN_BUDGET
+    assert providers.estimate_prompt_tokens(fallback) <= write_module.WRITER_FALLBACK_TOKEN_BUDGET
+    assert "token0" in fallback
+    assert "https://news.xbox.com/a" in fallback
+
+
+def test_the_fallback_prompt_never_drops_a_central_claim():
+    sheet = big_sheet(count=1)
+    sheet["claims"][0]["value"] = "centraltoken " + ("detail " * 2000)
+    sheet["claims"].extend({
+        "claim": f"Extra {index}",
+        "value": f"extra{index} " + ("detail " * 80),
+        "source_url": "https://news.xbox.com/a",
+        "confidence": 0.9,
+        "kind": "reported",
+        "central": False,
+    } for index in range(5))
+    fallback = write_module.build_fallback_prompt(sheet, primary=write_module.build_prompt(sheet))
+    assert "centraltoken" in fallback
+
+
+def test_the_fallback_prompt_drops_rumors_before_confirmed_claims():
+    sheet = big_sheet()
+    fallback = write_module.build_fallback_prompt(sheet, primary=write_module.build_prompt(sheet))
+    assert "token0" in fallback
+    assert "token3" not in fallback
+
+
+def test_the_primary_prompt_is_never_changed_by_the_fallback_builder():
+    sheet = big_sheet()
+    primary = write_module.build_prompt(sheet)
+    write_module.build_fallback_prompt(sheet, primary=primary)
+    assert write_module.build_prompt(sheet) == primary
+
+
+def test_the_fallback_prompt_keeps_the_single_origin_note():
+    sheet = {
+        **big_sheet(),
+        "confirmation": {
+            "rule": "single-origin",
+            "single_origin": {"speaker": "Romain Toutain", "outlets": ["Eurogamer"]},
+        },
+    }
+    fallback = write_module.build_fallback_prompt(sheet, primary=write_module.build_prompt(sheet))
+    assert "rests on one named source" in fallback
+
+
+def test_write_passes_the_trimmed_prompt_only_when_the_primary_is_too_large():
+    seen = {}
+
+    def fake_generate(role, prompt, *, run_state, **kwargs):
+        seen["prompt"] = prompt
+        seen["kwargs"] = kwargs
+        return Generation(role=role, provider="mock", model="m", family="google", value="D")
+
+    write_module.write(big_sheet(), run_state=RunState(), generate=fake_generate)
+    assert "fallback_prompt" in seen["kwargs"]
+    assert len(seen["kwargs"]["fallback_prompt"]) < len(seen["prompt"])
+    assert seen["prompt"] == write_module.build_prompt(big_sheet())
+
+    write_module.write(facts_sheet(), run_state=RunState(), generate=fake_generate)
+    assert "fallback_prompt" not in seen["kwargs"]
 
 
 def test_saved_sheet_writer_prompt_fits_groq_after_compaction():

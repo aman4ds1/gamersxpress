@@ -6719,6 +6719,71 @@ def test_merge_hedge_count_uses_the_original_word_list():
     assert facts._hedge_count("may launch with up to 4 players") == 2
 
 
+DELAY_RUMOR = claim(
+    claim="Fan speculation regarding the release schedule",
+    value="Fans had been speculating for months that the game would be delayed following the closed network test",
+    kind="rumor", source_url="https://a.example/1",
+)
+DELAY_CONFIRMED = claim(
+    claim="Release delay announced",
+    value="Delayed until 2027",
+    kind="confirmed", source_url="https://b.example/1",
+)
+TEST_CONFIRMED = claim(
+    claim="Observations from the network test",
+    value="Active interest in the core concepts of the game, including combat, strategic depth, and player expression",
+    kind="confirmed", source_url="https://c.example/1",
+)
+ZELDA_RUMOR = claim(
+    claim="Remake speculation",
+    value="The Legend of Zelda: Ocarina of Time remake taking the focus",
+    kind="rumor", source_url="https://d.example/1",
+)
+
+
+def test_a_confirmed_claim_restores_a_rumor_about_the_same_event():
+    claims, count = facts.restore_confirmed_rumors(
+        [DELAY_RUMOR, DELAY_CONFIRMED, TEST_CONFIRMED],
+        entities=["The Duskbloods", "FromSoftware"],
+    )
+    assert count == 1
+    assert claims[0]["kind"] == "reported"
+    assert claims[0]["kind_restored"] == "rumor->reported (the speculated event is confirmed)"
+
+
+def test_a_rumor_without_a_confirming_claim_stays_a_rumor():
+    claims, count = facts.restore_confirmed_rumors(
+        [ZELDA_RUMOR, DELAY_CONFIRMED, TEST_CONFIRMED],
+        entities=["The Legend of Zelda", "The Duskbloods"],
+    )
+    assert count == 0
+    assert claims[0]["kind"] == "rumor"
+
+
+def test_entity_and_product_names_do_not_restore_a_rumor():
+    rumor = claim(
+        claim="Prism Collection release speculation",
+        value="Prism Collection release speculation continues",
+        kind="rumor",
+    )
+    confirmed = claim(
+        claim="Prism Collection release date",
+        value="Prism Collection release date announced",
+        kind="confirmed",
+    )
+    claims, count = facts.restore_confirmed_rumors(
+        [rumor, confirmed], entities=["Prism Collection"],
+    )
+    assert count == 0
+    assert claims[0]["kind"] == "rumor"
+
+
+def test_restored_rumor_claims_keep_their_other_fields():
+    claims, _ = facts.restore_confirmed_rumors([DELAY_RUMOR, TEST_CONFIRMED])
+    assert claims[0]["value"] == DELAY_RUMOR["value"]
+    assert claims[0]["source_url"] == DELAY_RUMOR["source_url"]
+
+
 def strict_yaml_loader():
     import yaml
 

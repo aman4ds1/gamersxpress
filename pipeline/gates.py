@@ -509,12 +509,182 @@ def _date_token(sentence: str) -> str | None:
     return None
 
 
+#: Organization match keys from ``data/orgs.json``; loaded once per process.
+_ORGANIZATION_KEYS: frozenset[str] | None = None
+
+
+def _origin_match_key(origin: object) -> str:
+    """Punctuation-free, lowercased key for an origin name."""
+    text = re.sub(r"['\u2019]s\b", "", str(origin or "").lower())
+    return " ".join(_ALNUM_RE.findall(_fold(text)))
+
+
+def _organization_keys() -> frozenset[str]:
+    """Known organization match keys from ``data/orgs.json`` (cached)."""
+    global _ORGANIZATION_KEYS
+    if _ORGANIZATION_KEYS is not None:
+        return _ORGANIZATION_KEYS
+    path = PROJECT_ROOT / "data" / "orgs.json"
+    keys: set[str] = set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    raw = data.get("organizations") if isinstance(data, dict) else data
+    if isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, str):
+                key = _origin_match_key(entry)
+                if key:
+                    keys.add(key)
+            elif isinstance(entry, dict):
+                for name in [entry.get("canonical"), *(entry.get("aliases") or [])]:
+                    key = _origin_match_key(name)
+                    if key:
+                        keys.add(key)
+    _ORGANIZATION_KEYS = frozenset(keys)
+    return _ORGANIZATION_KEYS
+
+
+def _origin_is_organization(origin: str) -> bool:
+    """True when ``origin`` names a known organization, not a person."""
+    key = _origin_match_key(origin)
+    if not key:
+        return False
+    if key in _organization_keys():
+        return True
+    return any(word in _ORG_ORIGIN_WORDS for word in key.split())
+
+
 def _is_person_origin(origin: str) -> bool:
     """True when a claim origin looks like a named person, not an organisation."""
-    words = _WORD_RE.findall(str(origin or "").lower())
-    if not words:
+    if not _WORD_RE.findall(str(origin or "").lower()):
         return False
-    return not any(word in _ORG_ORIGIN_WORDS for word in words)
+    return not _origin_is_organization(origin)
+
+
+def _claim_person_speaker(claim: dict) -> bool:
+    """True when a claim's named speaker is a person the writer can quote."""
+    origin = str(claim.get("origin") or "").strip()
+    if not origin or origin.lower() == "unstated":
+        return False
+    speaker_type = str(claim.get("speaker_type") or "").strip().lower()
+    if speaker_type == "person":
+        return True
+    if speaker_type in ("organization", "outlet", "anonymous"):
+        return False
+    return _is_person_origin(origin)
+
+
+#: Verbs that turn a following generic group name into the speaker of a statement.
+_SPEECH_VERBS = (
+    "said", "says", "say", "stated", "states", "state", "told", "tells",
+    "confirmed", "confirms", "announced", "announces", "noted", "notes",
+    "added", "adds", "explained", "explains", "revealed", "reveals",
+    "claimed", "claims", "argued", "argues", "wrote", "writes", "commented",
+    "comments", "insisted", "insists", "hopes", "hope", "wants", "want",
+)
+_SPEECH_VERB_PATTERN = "|".join(_SPEECH_VERBS)
+
+
+def _generic_phrase_used_as_speaker(sentence: str, phrase: str) -> bool:
+    """True when ``phrase`` names the speaker of a statement in ``sentence``.
+
+    A plain mention ("is the developer of the title") is not attribution. The
+    group must be introduced by "according to", followed within three words by a
+    speech verb, or be the agent of a passive attribution ("explained by the
+    team").
+    """
+    escaped = re.escape(phrase)
+    text = str(sentence or "")
+    if re.search(
+        rf"(?<![\w-]){escaped}(?![\w-])(?:\s+[A-Za-z0-9'\u2019-]+){{0,3}}\s+"
+        rf"(?:{_SPEECH_VERB_PATTERN})\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(rf"\baccording\s+to\s+{escaped}\b", text, re.IGNORECASE):
+        return True
+    return bool(
+        re.search(
+            rf"\b(?:{_SPEECH_VERB_PATTERN})\s+by\s+{escaped}\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _claim_source_names(claim: dict, sources: object) -> set[str]:
+    """Display names of the sources a claim cites."""
+    urls = claim.get("source_urls")
+    if not isinstance(urls, list):
+        single = claim.get("source_url")
+        urls = [single] if single else []
+    wanted = {_normalize(str(url)) for url in urls if url}
+    names: set[str] = set()
+    for source in sources if isinstance(sources, list) else []:
+        if not isinstance(source, dict):
+            continue
+        link = source.get("link") or source.get("url")
+        name = source.get("source_name") or source.get("name")
+        if isinstance(link, str) and isinstance(name, str) and name and _normalize(link) in wanted:
+            names.add(name)
+    return names
+
+
+def _names_origin(sentence: str, claim: dict, sources: object) -> bool:
+    """True when ``sentence`` names the claim's origin or its source's name."""
+    tokens = tuple(re.findall(r"[a-z0-9]+", _fold(sentence)))
+    if not tokens:
+        return False
+    origin = str(claim.get("origin") or "").strip()
+    candidates: set[str] = set()
+    if origin and origin.lower() != "unstated":
+        candidates.add(origin)
+        if _is_person_origin(origin):
+            surname = re.findall(r"[a-z0-9]+", _fold(origin))
+            if len(surname) > 1:
+                candidates.add(surname[-1])
+    candidates.update(_claim_source_names(claim, sources))
+    for name in candidates:
+        needle = tuple(re.findall(r"[a-z0-9]+", _fold(name)))
+        if needle and _contains_run(tokens, needle):
+            return True
+    return False
+
+
+def _opinion_origin_failures(body: str, facts: dict | None) -> list[str]:
+    """Opinion claims whose best-matching body sentence credits someone else."""
+    failures: list[str] = []
+    sentences = _sentences(body)
+    source_list = (facts or {}).get("sources")
+    for claim in (facts or {}).get("claims") or []:
+        if not isinstance(claim, dict) or str(claim.get("kind") or "").lower() != "opinion":
+            continue
+        origin = str(claim.get("origin") or "").strip()
+        if not origin or origin.lower() == "unstated":
+            continue
+        value_words = _content_words(str(claim.get("value") or ""))
+        if len(value_words) < 4:
+            continue
+        best_sentence = None
+        best_score = 0.0
+        for sentence in sentences:
+            sentence_words = _content_words(sentence)
+            if not sentence_words:
+                continue
+            score = len(value_words & sentence_words) / len(value_words)
+            if score > best_score:
+                best_score = score
+                best_sentence = sentence
+        if best_sentence is None or best_score < 0.6:
+            continue
+        if not _names_origin(best_sentence, claim, source_list):
+            failures.append(
+                f"opinion by {origin!r} is not attributed to them: {best_sentence!r}"
+            )
+    return failures
 
 
 def _fold(text: str) -> str:
@@ -1072,17 +1242,23 @@ def run_gates(
     speakers = sorted({
         str(claim.get("origin") or "").strip()
         for claim in facts.get("claims") or []
-        if claim.get("kind") == "statement"
-        and str(claim.get("origin") or "").strip().lower() not in ("", "unstated")
-        and _is_person_origin(str(claim.get("origin") or ""))
+        if claim.get("kind") == "statement" and _claim_person_speaker(claim)
     })
     if speakers:
+        body_sentences = _sentences(body)
         for phrase in config["generic_attribution_phrases"]:
-            if phrase and phrase in body_lower and phrase not in facts_text:
+            if not phrase or phrase in facts_text:
+                continue
+            if any(_generic_phrase_used_as_speaker(sentence, phrase) for sentence in body_sentences):
                 attribution_failures.append(
                     f"body attributes a statement to a group ({phrase!r}); the sheet names {speakers}"
                 )
     record("attribution", attribution_failures)
+
+    # 5b2. an opinion belongs to the party that voiced it, not to whoever the
+    # writer finds nearby.
+    opinion_failures = _opinion_origin_failures(body, facts)
+    record("opinion_attribution", opinion_failures)
 
     # 5c. limited-time offers need a date the sheet states
     offer_failures: list[str] = []

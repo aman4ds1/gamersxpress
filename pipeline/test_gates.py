@@ -372,6 +372,143 @@ def test_attribution_to_a_group_fails_when_the_sheet_names_a_speaker():
     assert any("rather than" in failure for failure in failures)
 
 
+def statement_facts(origin, *, speaker_type="person", kind="statement"):
+    facts = make_facts()
+    facts["claims"] = [{
+        "claim": "The delay is final",
+        "value": "The delay is final",
+        "source_url": "https://a.example/1",
+        "confidence": 1.0,
+        "kind": kind,
+        "origin": origin,
+        "speaker_type": speaker_type,
+    }]
+    return facts
+
+
+def test_generic_phrase_that_speaks_still_fails_with_a_person_speaker():
+    body = "## What happened\n\n" + filler() + "\n\nThe developer said the delay is final.\n"
+    result = run(make_article(body=body)[0], facts=statement_facts("Hidetaka Miyazaki"))
+    failures = result.checks["attribution"]["failures"]
+    assert any("the developer" in failure for failure in failures), failures
+
+
+def test_according_to_a_group_still_fails_with_a_person_speaker():
+    body = "## What happened\n\n" + filler() + "\n\nAccording to the studio, the game is delayed.\n"
+    result = run(make_article(body=body)[0], facts=statement_facts("Hidetaka Miyazaki"))
+    failures = result.checks["attribution"]["failures"]
+    assert any("the studio" in failure for failure in failures), failures
+
+
+def test_a_plain_mention_of_a_group_is_not_attribution():
+    body = (
+        "## What happened\n\n" + filler()
+        + "\n\nPolygon reports that FromSoftware is the developer of the title.\n"
+    )
+    result = run(make_article(body=body)[0], facts=statement_facts("Hidetaka Miyazaki"))
+    assert result.checks["attribution"]["failures"] == []
+
+
+def test_a_generic_phrase_never_fails_when_the_sheet_names_only_an_organization():
+    body = (
+        "## What happened\n\n" + filler()
+        + "\n\nThe studio said the decision was made to further enhance core aspects.\n"
+    )
+    result = run(
+        make_article(body=body)[0],
+        facts=statement_facts("fromsoftware", speaker_type="organization"),
+    )
+    assert result.checks["attribution"]["failures"] == []
+
+
+def opinion_facts(value, origin="kitguru", source_name="KitGuru", kind="opinion"):
+    facts = make_facts()
+    facts["sources"][0]["source_name"] = source_name
+    facts["claims"] = [{
+        "claim": "An opinion about the design",
+        "value": value,
+        "source_url": "https://a.example/1",
+        "confidence": 1.0,
+        "kind": kind,
+        "origin": origin,
+    }]
+    return facts
+
+
+def test_an_opinion_attributed_to_the_wrong_party_fails():
+    value = "Translucent shells always carry a heavy dose of late-90s nostalgia."
+    body = (
+        "## What happened\n\n" + filler()
+        + "\n\nAccording to the color, material, and finish design team, "
+        + "translucent shells always carry a heavy dose of late-90s nostalgia.\n"
+    )
+    result = run(make_article(body=body)[0], facts=opinion_facts(value))
+    failures = result.checks["opinion_attribution"]["failures"]
+    assert failures == [
+        f"opinion by 'kitguru' is not attributed to them: "
+        f"'According to the color, material, and finish design team, translucent shells "
+        f"always carry a heavy dose of late-90s nostalgia.'"
+    ]
+
+
+def test_an_opinion_attributed_to_its_origin_passes():
+    value = "Translucent shells always carry a heavy dose of late-90s nostalgia."
+    body = (
+        "## What happened\n\n" + filler()
+        + "\n\nKitGuru says translucent shells always carry a heavy dose of late-90s nostalgia.\n"
+    )
+    result = run(make_article(body=body)[0], facts=opinion_facts(value))
+    assert result.checks["opinion_attribution"]["failures"] == []
+
+
+def test_an_opinion_attributed_to_a_source_display_name_passes():
+    value = "The gameplay was far too weighted toward PvP aspects."
+    body = (
+        "## What happened\n\n" + filler()
+        + "\n\nKotaku also reported an opinion that the gameplay was far too weighted "
+        + "toward PvP aspects.\n"
+    )
+    result = run(
+        make_article(body=body)[0],
+        facts=opinion_facts(value, origin="kotaku", source_name="Kotaku"),
+    )
+    assert result.checks["opinion_attribution"]["failures"] == []
+
+
+def test_an_opinion_attributed_to_a_display_name_with_a_different_origin_passes():
+    value = "The gameplay was far too weighted toward PvP aspects."
+    body = (
+        "## What happened\n\n" + filler()
+        + "\n\nKotaku also reported an opinion that the gameplay was far too weighted "
+        + "toward PvP aspects.\n"
+    )
+    result = run(
+        make_article(body=body)[0],
+        facts=opinion_facts(value, origin="kotaku.com", source_name="Kotaku"),
+    )
+    assert result.checks["opinion_attribution"]["failures"] == []
+
+
+def test_an_opinion_no_body_sentence_resembles_is_not_checked():
+    body = "## What happened\n\n" + filler() + "\n"
+    result = run(
+        make_article(body=body)[0],
+        facts=opinion_facts("The soundtrack is outstanding and memorable throughout."),
+    )
+    assert result.checks["opinion_attribution"]["failures"] == []
+
+
+def test_non_opinion_claims_are_never_checked_for_origin():
+    value = "Translucent shells always carry a heavy dose of late-90s nostalgia."
+    body = (
+        "## What happened\n\n" + filler()
+        + "\n\nAccording to the color, material, and finish design team, "
+        + "translucent shells always carry a heavy dose of late-90s nostalgia.\n"
+    )
+    result = run(make_article(body=body)[0], facts=opinion_facts(value, kind="confirmed"))
+    assert result.checks["opinion_attribution"]["failures"] == []
+
+
 def test_limited_time_offer_without_a_date_fails():
     body = "## What happened\n\n" + filler() + "\n\nThe game is available at a discount for players.\n"
     result = run(make_article(body=body)[0])
