@@ -7895,3 +7895,85 @@ def test_the_restatement_instruction_says_a_channel_is_not_the_fact():
     assert "counts only when its sentence also says what was revealed" in text
     # The same-fact and different-fact examples are still there.
     assert "are the SAME fact" in text and "DIFFERENT facts" in text
+
+
+# --- coherence: long headline phrases and headline-joined sources -------------
+
+HAVN_TITLE = "HAVN HS 360 VGPU Case Review"
+PBZ_TITLE = "Phantom Blade Zero Just Rocketed Onto Steam With +700,000 Concurrent Players"
+SONY_TITLE = "Sony reveals new translucent PS5 controllers and console covers"
+PALWORLD_TITLE = "Palworld Switch 2 port legal battle Nintendo"
+
+
+def test_lead_names_cut_long_headline_phrases_to_the_name():
+    assert facts._lead_names(["havn hs 360 vgpu case"]) == ["havn hs 360", "havn hs 360 vgpu"]
+    # Three words or fewer is already a name: nothing is cut from it.
+    assert facts._lead_names(["phantom blade zero"]) == []
+
+
+def test_coherence_keeps_claims_naming_the_lead_name_of_a_long_headline_phrase():
+    # The headline phrase is "havn hs 360 vgpu case" (a review title's trailing
+    # words are glued on), but PC Gamer's claims name only "Havn HS 360", and its
+    # own headline is unrelated. The claims are about the product and are kept; a
+    # claim from an unrelated Palworld source is still dropped.
+    sources = [
+        source(link="https://kitguru.net/havn", name="KitGuru", owner="kitguru", title=HAVN_TITLE),
+        source(link="https://pcgamer.com/havn", name="PC Gamer", owner="future", title="Hands-on with a new PC enclosure"),
+        source(link="https://eurogamer.net/palworld", name="Eurogamer", owner="ign", title=PALWORLD_TITLE),
+    ]
+    claims = [
+        claim(claim="Havn HS 360 US pricing", value="$149", source_url="https://pcgamer.com/havn"),
+        claim(claim="Havn HS 360 maximum GPU length", value="400mm", source_url="https://pcgamer.com/havn"),
+        claim(claim="Pocketpair wants a port", value="a Switch 2 port", source_url="https://eurogamer.net/palworld"),
+    ]
+    kept, dropped, _ = facts.coherence_check(claims, sources, title=HAVN_TITLE, story_id="havn")
+    assert [entry["claim"] for entry in kept] == ["Havn HS 360 US pricing", "Havn HS 360 maximum GPU length"]
+    assert [entry["claim"] for entry in dropped] == ["Pocketpair wants a port"]
+
+
+def test_coherence_keeps_a_source_whose_headline_names_the_lead_name():
+    # Eurogamer's claims ("Steam wishlists generated") never repeat the game's
+    # name, but its headline does, and the headline phrase of the story is the
+    # long title-case "phantom blade zero just rocketed onto steam".
+    eurogamer_title = "More Chinese success as Phantom Blade Zero enjoys a big launch and becomes one of Steam's most played games"
+    sources = [
+        source(link="https://kotaku.com/pbz", name="Kotaku", owner="keleops", title=PBZ_TITLE),
+        source(link="https://eurogamer.net/pbz", name="Eurogamer", owner="ign", title=eurogamer_title),
+    ]
+    claims = [claim(claim="Steam wishlists generated", value="over a million", source_url="https://eurogamer.net/pbz")]
+    kept, dropped, _ = facts.coherence_check(claims, sources, title=PBZ_TITLE, story_id="pbz")
+    assert [entry["claim"] for entry in kept] == ["Steam wishlists generated"]
+    assert dropped == []
+
+
+def test_coherence_does_not_treat_a_two_word_start_as_the_name():
+    # "Phantom Blade" alone (a different book) is not "Phantom Blade Zero".
+    sources = [
+        source(link="https://kotaku.com/pbz", name="Kotaku", owner="keleops", title=PBZ_TITLE),
+        source(link="https://b.example/novel", name="Beta", owner="co-b", title="Bookshop adds a new fantasy shelf"),
+    ]
+    claims = [claim(claim="Phantom Blade novel adaptation", value="a novel", source_url="https://b.example/novel")]
+    kept, dropped, _ = facts.coherence_check(claims, sources, title=PBZ_TITLE, story_id="pbz")
+    assert kept == []
+    assert len(dropped) == 1
+
+
+def test_coherence_keeps_every_claim_of_a_source_joined_by_headline_similarity():
+    # Kotaku's headline is 0.75 similar to the story's, so the cluster joined it on
+    # headline similarity; its claims name PS5 or the collection, never "Sony",
+    # and are kept. A Palworld source (similarity 0.34) is still dropped.
+    kotaku_title = "PS5 Finally Gets Really Cool-Looking Translucent Controllers And Console Covers"
+    assert facts.cluster.similarity(kotaku_title, SONY_TITLE) >= facts.cluster.SIMILARITY_THRESHOLD
+    sources = [
+        source(link="https://dexerto.com/sony", name="Dexerto", owner="dexerto", title=SONY_TITLE),
+        source(link="https://kotaku.com/sony", name="Kotaku", owner="keleops", title=kotaku_title),
+        source(link="https://eurogamer.net/palworld", name="Eurogamer", owner="ign", title=PALWORLD_TITLE),
+    ]
+    claims = [
+        claim(claim="Controller price", value="$84.99", source_url="https://kotaku.com/sony"),
+        claim(claim="Prism Collection names", value="three colors", source_url="https://kotaku.com/sony"),
+        claim(claim="Pocketpair wants a port", value="a Switch 2 port", source_url="https://eurogamer.net/palworld"),
+    ]
+    kept, dropped, _ = facts.coherence_check(claims, sources, title=SONY_TITLE, story_id="sony")
+    assert [entry["claim"] for entry in kept] == ["Controller price", "Prism Collection names"]
+    assert [entry["claim"] for entry in dropped] == ["Pocketpair wants a port"]

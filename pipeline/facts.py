@@ -6336,6 +6336,31 @@ def _expand_entities(entities: list[str]) -> list[str]:
     return sorted(expanded)
 
 
+#: Shortest leading run of words kept as a name when a headline phrase is long.
+LEAD_NAME_MIN_WORDS = 3
+
+
+def _lead_names(entities: list[str]) -> list[str]:
+    """Leading names inside long headline phrases.
+
+    A title-case headline glues its words into one long phrase ("Phantom Blade
+    Zero Just Rocketed Onto Steam", "HAVN HS 360 VGPU Case"), so a claim that
+    names only the game ("Phantom Blade Zero", "Havn HS 360") would never match
+    it. Each phrase of four or more words also yields its leading runs of at
+    least :data:`LEAD_NAME_MIN_WORDS` words, shorter than the whole phrase.
+    """
+    names: list[str] = []
+    for entity in entities:
+        words = str(entity).split()
+        if len(words) <= LEAD_NAME_MIN_WORDS:
+            continue
+        for end in range(LEAD_NAME_MIN_WORDS, len(words)):
+            lead = " ".join(words[:end])
+            if lead not in entities and lead not in names:
+                names.append(lead)
+    return names
+
+
 def _claim_on_topic(claim: dict, source: dict, entities: list[str]) -> bool:
     """True when a claim or its source headline names any entity or sub-entity.
 
@@ -6349,6 +6374,19 @@ def _claim_on_topic(claim: dict, source: dict, entities: list[str]) -> bool:
     if source_title:
         return any(cluster.contains_entity(source_title, entity) for entity in entities)
     return False
+
+
+def _source_joined_by_headline(source: dict, title: str | None) -> bool:
+    """True when the source's headline is as similar to the story's as clustering requires.
+
+    A source the cluster step joined on direct headline similarity is about the
+    story by construction, whatever entities it happens to name. Only a source
+    that joined through shared entities alone has to name the story's entities.
+    """
+    source_title = str(source.get("title") or "")
+    if not title or not source_title:
+        return False
+    return cluster.similarity(source_title, title) >= cluster.SIMILARITY_THRESHOLD
 
 
 def coherence_check(
@@ -6376,6 +6414,7 @@ def coherence_check(
         logger.warning("story %s: no primary entity found; skipping coherence check", story_id or "?")
         return list(claims), [], []
     by_url = _sources_by_url(sources)
+    match_entities = [*primary, *_lead_names(primary)]
     kept: list[dict] = []
     dropped: list[dict] = []
     totals: Counter[str] = Counter()
@@ -6384,7 +6423,7 @@ def coherence_check(
         key = _source_url_key(claim.get("source_url"))
         source = by_url.get(key) or {}
         totals[key] += 1
-        if _claim_on_topic(claim, source, primary):
+        if _source_joined_by_headline(source, title) or _claim_on_topic(claim, source, match_entities):
             kept.append(claim)
         else:
             dropped.append(claim)
