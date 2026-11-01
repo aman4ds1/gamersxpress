@@ -1,0 +1,78 @@
+name: Site check
+
+# Runs on every push to main and on every pull request: the site build and
+# checks, then the pipeline tests and the three dry runs. Needs no secrets, so
+# it is safe for pull requests from forks.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  site:
+    name: Site (check, build, SEO, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Git does not track empty folders, and the article checks expect this one.
+      - name: Make sure the articles folder exists
+        run: mkdir -p src/content/articles
+
+      - run: npm run check
+      - run: npm run build
+      - run: npm run check:seo
+      - run: npm test
+
+  pipeline:
+    name: Pipeline (tests, dry runs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements-dev.txt
+
+      # The pipeline's publish gates run the Node article checks.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: mkdir -p src/content/articles
+      - run: pip install -r pipeline/requirements-dev.txt
+      - run: python -m pytest -q
+
+      - name: Dry runs exit 0, 3 and 3
+        run: |
+          for pair in pass:0 fail-verify:3 fail-gate:3; do
+            scenario="${pair%%:*}"
+            want="${pair##*:}"
+            set +e
+            python -m pipeline.run --dry-run --dry-run-scenario "$scenario" > /dev/null 2>&1
+            got=$?
+            set -e
+            echo "dry run $scenario exited $got (want $want)"
+            [ "$got" -eq "$want" ] || exit 1
+          done

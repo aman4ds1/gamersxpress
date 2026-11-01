@@ -1,0 +1,54 @@
+name: Deploy
+
+# Builds the site and deploys it to Cloudflare Workers (static assets). Runs when
+# a change that affects the site lands on main, which includes merging a draft
+# article's pull request. Run it by hand from the Actions tab if needed.
+#
+# If Cloudflare's own Git integration also deploys this repository, turn that
+# off: two deploys of the same commit only waste time.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "public/**"
+      - "astro.config.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - "wrangler.jsonc"
+      - "tsconfig.json"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: mkdir -p src/content/articles
+
+      # A site that does not pass its own checks is not deployed.
+      - run: npm run check
+
+      - name: Build and deploy
+        run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

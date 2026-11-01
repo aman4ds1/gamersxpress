@@ -1,0 +1,195 @@
+name: Pipeline
+
+# Runs the news pipeline on a schedule, in DRAFT mode only (docs/PLAN.md section 11):
+# a finished article goes to its own branch and a pull request. Merging that pull
+# request publishes it, and the Deploy workflow then ships the site.
+#
+# One-time setup, secrets, variables and how to reset the circuit breaker are in
+# docs/CI-SETUP.md.
+#
+# Run state (item pool, seen and failed lists, circuit breaker, published log, feed
+# cache) lives on the "pipeline-state" branch, never on main.
+
+on:
+  schedule:
+    # Hourly, at minute 23 (the top of the hour is when GitHub is busiest).
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run on sample data: no API keys, no saved state, no pull request"
+        type: boolean
+        default: false
+      reset_breaker:
+        description: "Close the circuit breaker before running"
+        type: boolean
+        default: false
+      telegram_test:
+        description: "Only send a Telegram test message"
+        type: boolean
+        default: false
+
+# One run at a time, always. A queued run waits instead of cancelling the one in progress.
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  telegram-test:
+    name: Telegram test message
+    if: ${{ inputs.telegram_test }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Send the test message
+        run: python -m pipeline.ci telegram-test
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+  run:
+    name: Run pipeline
+    # Kill switch: set the repository variable PAUSED to true. The pipeline also reads it.
+    if: ${{ !inputs.telegram_test && vars.PAUSED != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PUBLISH_MODE: ${{ vars.PUBLISH_MODE || 'draft' }}
+      DAILY_CAP: ${{ vars.DAILY_CAP || '2' }}
+      PAUSED: ${{ vars.PAUSED || 'false' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Only draft mode is supported here
+        run: |
+          if [ "$PUBLISH_MODE" != "draft" ]; then
+            echo "::error::PUBLISH_MODE is '$PUBLISH_MODE'. This workflow only supports 'draft'. Set the PUBLISH_MODE variable to draft."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      # The publish gates run the Node article checks.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: pip install -r pipeline/requirements.txt
+      - run: npm ci
+      - run: mkdir -p src/content/articles public/covers drafts
+
+      - name: Restore saved state
+        id: restore
+        if: ${{ !inputs.dry_run }}
+        run: python -m pipeline.ci restore
+
+      - name: Close the circuit breaker
+        if: ${{ inputs.reset_breaker && !inputs.dry_run }}
+        run: python -m pipeline.ci reset-breaker
+
+      - name: Run the pipeline
+        id: pipeline
+        timeout-minutes: 30
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        run: |
+          set +e
+          if [ "$DRY_RUN" = "true" ]; then
+            python -m pipeline.run --dry-run
+          else
+            python -m pipeline.run
+          fi
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "pipeline exited $code"
+          exit 0
+
+      # Saved even when the run failed, but never when restoring failed: that could
+      # replace good state with an empty one.
+      - name: Save state
+        if: ${{ always() && !inputs.dry_run && steps.restore.outcome == 'success' }}
+        run: python -m pipeline.ci save
+
+      - name: Push the draft branch
+        id: draft
+        if: ${{ !inputs.dry_run && steps.pipeline.outputs.exit_code == '0' }}
+        run: python -m pipeline.ci draft-branch --run-url "$RUN_URL" --pr-body-file "$RUNNER_TEMP/pr-body.md"
+
+      - name: Open the pull request
+        id: pr
+        if: ${{ steps.draft.outputs.has_draft == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.draft.outputs.branch }}
+          TITLE: ${{ steps.draft.outputs.title }}
+        run: |
+          if url=$(gh pr create --base main --head "$BRANCH" --title "Draft: $TITLE" --body-file "$RUNNER_TEMP/pr-body.md"); then
+            echo "pr_url=$url" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::The draft branch $BRANCH was pushed, but no pull request could be opened. Check Settings > Actions > General > 'Allow GitHub Actions to create and approve pull requests'."
+          fi
+
+      - name: Check the circuit breaker
+        id: breaker
+        if: ${{ always() && !inputs.dry_run && steps.restore.outcome == 'success' }}
+        run: python -m pipeline.ci breaker-status
+
+      - name: Open an issue when the breaker opens
+        if: ${{ always() && steps.breaker.outputs.breaker_open == 'true' && steps.pipeline.outputs.exit_code == '3' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create pipeline-breaker --color B60205 --description "Pipeline paused by the circuit breaker" --force
+          open=$(gh issue list --state open --label pipeline-breaker --json number --jq length)
+          if [ "$open" = "0" ]; then
+            gh issue create --title "Pipeline paused: circuit breaker open" --label pipeline-breaker --body-file data/reports/issue.md
+          else
+            echo "An issue for the open breaker already exists."
+          fi
+
+      # The draft or failed article, the facts sheets and the reports, for review. They are
+      # visible to anyone while the repository is public, and are removed after a week.
+      - name: Upload run files
+        if: ${{ always() && !inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-${{ github.run_id }}
+          path: |
+            drafts/
+            data/facts/
+            data/reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Send the Telegram alert
+        if: ${{ always() && !inputs.dry_run }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+        run: python -m pipeline.ci notify --run-url "$RUN_URL" --pr-url "$PR_URL"
+
+      # A failed or skipped run is reported by Telegram and stays green here; only a
+      # configuration error turns the job red (and emails the owner).
+      - name: Fail on a configuration error
+        if: ${{ always() && steps.pipeline.outputs.exit_code == '1' }}
+        run: |
+          echo "::error::The pipeline reported a configuration error (exit 1). See the log above."
+          exit 1
