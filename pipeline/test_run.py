@@ -1477,3 +1477,24 @@ def test_verify_failure_names_the_sentence_of_an_unmatched_number(tmp_path):
     assert result.status == "failed"
     assert 'number "30" not in the facts: "It sold 30 copies."' in result.report["failures"]
     assert "30" not in result.report["failures"]
+
+
+def test_repair_prompt_gets_the_code_checks_reason(tmp_path):
+    real_verify = run_module.verify_stage.verify
+    clause = "Polygon and Eurogamer reported on the launch."
+    calls = []
+
+    def verify(*args, **kwargs):
+        report = real_verify(*args, **kwargs)
+        report.passed = False
+        report.failure_reason = "article_rejected"
+        report.unsupported = [clause]
+        report.unsupported_detail = [{"clause": clause, "reason": "only says which outlets covered it"}]
+        return report
+
+    def repair(draft, flagged_clauses, facts, **kwargs):
+        calls.append(flagged_clauses)
+        return providers.Generation("writer", "gemini", "g", "google", draft)
+
+    run_once(tmp_path, dry_run=True, scenario="pass", verify_fn=verify, repair_fn=repair)
+    assert calls == [[{"clause": clause, "reason": "only says which outlets covered it"}]]

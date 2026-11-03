@@ -891,6 +891,11 @@ def run(
                 for sentence in verify_report.model_sentences or []
                 if isinstance(sentence, dict)
             }
+            # Code checks record their own reason ("only says which outlets
+            # covered the story", "not in Polygon's report"); it wins.
+            for detail in verify_report.unsupported_detail or []:
+                if isinstance(detail, dict) and str(detail.get("reason") or "").strip():
+                    sentence_reasons[str(detail.get("clause") or "")] = str(detail["reason"]).strip()
             flagged_clauses = [
                 {
                     "clause": clause,

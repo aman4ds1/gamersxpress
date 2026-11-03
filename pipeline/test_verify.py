@@ -2066,3 +2066,207 @@ def test_describe_unmatched_trims_long_sentences_around_the_value():
     assert "sold 30 copies" in line
     assert line.count("…") == 2
     assert len(line) < 120
+
+
+# --- the same quote carried by two outlets ----------------------------------------
+
+STRATTON_SENTENCE = (
+    "Marty Stratton said there was a deliberate effort to keep the studio viable after the layoffs."
+)
+STRATTON_CLAUSE = "there was a deliberate effort to keep the studio viable after the layoffs"
+
+
+def two_copy_quote_sheet(*, person_affiliation="id Software"):
+    """One quote from two outlets: PC Gamer's copy names Stratton, Kotaku's only id Software."""
+    quote = "there was a very deliberate effort to make sure that we were incredibly viable"
+    return {
+        "id": "two-copies",
+        "generated_at": "2026-11-01T12:00:00+00:00",
+        "sources": [
+            {"source_name": "PC Gamer", "link": "https://pcgamer.example/id", "tier": 2},
+            {"source_name": "Kotaku", "link": "https://kotaku.example/id", "tier": 2},
+        ],
+        "claims": [
+            {
+                "claim": "Deliberate effort to keep the studio viable",
+                "value": quote,
+                "source_urls": ["https://pcgamer.example/id"],
+                "kind": "statement",
+                "origin": "Marty Stratton",
+                "affiliation": person_affiliation,
+                "evidence": [{
+                    "source_url": "https://pcgamer.example/id", "speaker": "Marty Stratton",
+                    "speaker_type": "person", "quote": quote, "ok": True,
+                }],
+            },
+            {
+                "claim": "Stratton on the studio's viability",
+                "value": quote,
+                "source_urls": ["https://kotaku.example/id"],
+                "kind": "statement",
+                "origin": "unstated",
+                "affiliation": "id Software",
+                "evidence": [{
+                    "source_url": "https://kotaku.example/id", "speaker": "Marty Stratton",
+                    "speaker_type": "person", "quote": quote, "ok": False,
+                    "reason": "no attribution cue",
+                }],
+            },
+        ],
+    }
+
+
+def run_two_copy_check(tmp_path, facts):
+    payload = model(clauses=[{
+        "clause": STRATTON_CLAUSE, "fact_ids": ["F1", "F2"], "match": "paraphrase",
+        "exceeds_facts": False, "difference": "",
+    }])
+    return verify_module.verify(
+        STRATTON_SENTENCE + "\n", facts, run_state=providers.RunState(),
+        generate=make_generate(payload), report_dir=tmp_path, verify_config=config(),
+    )
+
+
+def test_quote_from_two_outlets_passes_when_the_person_is_named(tmp_path):
+    report = run_two_copy_check(tmp_path, two_copy_quote_sheet())
+    assert report.passed is True, report.unsupported
+
+
+def test_organization_only_copy_still_needs_a_link_to_the_named_person(tmp_path):
+    # Without "id Software" among Stratton's own speakers, nothing ties him to
+    # the organization the second copy names, so the clause stays unsupported.
+    report = run_two_copy_check(tmp_path, two_copy_quote_sheet(person_affiliation=""))
+    assert report.passed is False
+    assert STRATTON_CLAUSE in report.unsupported
+
+
+# --- coverage-only sentences ---------------------------------------------------------
+
+
+def outlets_sheet():
+    return {
+        "id": "outlets",
+        "generated_at": "2026-11-02T12:00:00+00:00",
+        "sources": [
+            {"source_name": "Polygon", "link": "https://polygon.example/pbz", "tier": 2},
+            {"source_name": "Eurogamer", "link": "https://eurogamer.example/pbz", "tier": 2},
+        ],
+        "claims": [
+            {
+                "claim": "Concurrent players at launch",
+                "value": "attracted over 431,000 concurrent players at launch",
+                "source_urls": ["https://eurogamer.example/pbz", "https://polygon.example/pbz"],
+                "kind": "reported",
+                "versions": [
+                    {"source_url": "https://polygon.example/pbz",
+                     "value": "833,000 concurrent players within hours of launch"},
+                    {"source_url": "https://eurogamer.example/pbz",
+                     "value": "attracted over 431,000 concurrent players at launch"},
+                ],
+            },
+            {
+                "claim": "Metacritic score",
+                "value": "a score of 88 on Metacritic",
+                "source_urls": ["https://polygon.example/pbz"],
+                "kind": "reported",
+            },
+        ],
+    }
+
+
+@pytest.mark.parametrize("sentence", [
+    "Kotaku and PC Gamer reported on the executive's statements.",
+    "Polygon and Eurogamer have reported on the launch.",
+    "Polygon covered the announcement.",
+    "Polygon, Eurogamer and Polygon wrote about the sales.",
+])
+def test_coverage_only_sentence_is_flagged(sentence):
+    facts = outlets_sheet()
+    facts["sources"] += [
+        {"source_name": "Kotaku", "link": "https://kotaku.example/a"},
+        {"source_name": "PC Gamer", "link": "https://pcgamer.example/a"},
+    ]
+    flagged = verify_module.coverage_only_check(sentence + "\n", facts)
+    assert [item["clause"] for item in flagged] == [sentence]
+    assert flagged[0]["reason"] == verify_module.COVERAGE_ONLY_REASON
+
+
+@pytest.mark.parametrize("sentence", [
+    "Polygon reports that the game sold 4 million copies.",
+    "Polygon reported that the studio is hiring.",
+    "Critics covered the launch widely.",
+])
+def test_reporting_a_fact_is_not_coverage_only(sentence):
+    assert verify_module.coverage_only_check(sentence + "\n", outlets_sheet()) == []
+
+
+# --- a figure credited to an outlet must be in that outlet's report -------------------
+
+
+def test_figure_credited_to_an_outlet_without_it_is_flagged():
+    article = "Eurogamer and Polygon report that the game attracted over 431,000 concurrent players.\n"
+    flagged = verify_module.outlet_number_check(article, outlets_sheet(), config())
+    assert len(flagged) == 1
+    assert '"431,000" is not in Polygon\'s report' in flagged[0]["reason"]
+    assert "Eurogamer's" not in flagged[0]["reason"]
+
+
+@pytest.mark.parametrize("article", [
+    "Eurogamer reports that the game attracted over 431,000 concurrent players.",
+    "According to Polygon, the game hit 833,000 concurrent players.",
+    "Polygon also reports that the game holds a Metacritic score of 88.",
+    # Two attributions in one sentence are not paired with figures.
+    "Eurogamer reports 431,000 players, while Polygon says 88.",
+    # No outlet credited: the code check's job, not this one's.
+    "The game attracted 431,000 concurrent players.",
+])
+def test_figure_in_the_credited_outlets_report_passes(article):
+    assert verify_module.outlet_number_check(article + "\n", outlets_sheet(), config()) == []
+
+
+def test_figure_from_a_single_outlet_claim_counts_as_that_outlets():
+    article = "According to Eurogamer, the game holds a Metacritic score of 88.\n"
+    flagged = verify_module.outlet_number_check(article, outlets_sheet(), config())
+    assert '"88" is not in Eurogamer\'s report' in flagged[0]["reason"]
+
+
+def test_outlet_checks_reject_the_article_with_their_reason(tmp_path):
+    coverage = "Polygon and Eurogamer reported on the launch."
+    credited = "Polygon reports that the game attracted over 431,000 concurrent players."
+    payload = model(
+        clauses=[{
+            "clause": "the game attracted over 431,000 concurrent players", "fact_ids": ["F1"],
+            "match": "exact", "exceeds_facts": False, "difference": "",
+        }],
+        unsupported=["Polygon and Eurogamer reported on the launch"],
+    )
+    report = verify_module.verify(
+        f"{coverage} {credited}\n", outlets_sheet(), run_state=providers.RunState(),
+        generate=make_generate(payload), report_dir=tmp_path, verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    # The model's copy of the coverage sentence is replaced by the code check's.
+    assert report.unsupported == [coverage, credited]
+    reasons = {item["clause"]: item.get("reason") for item in report.unsupported_detail}
+    assert reasons[coverage] == verify_module.COVERAGE_ONLY_REASON
+    assert "not in Polygon's report" in reasons[credited]
+
+
+def test_headings_are_not_checked_for_credited_figures():
+    article = "## Eurogamer and Polygon report 431,000 players\nThe launch went well.\n"
+    assert verify_module.outlet_number_check(article, outlets_sheet(), config()) == []
+
+
+def test_a_misattributed_figure_alone_rejects_an_article_the_model_passed(tmp_path):
+    credited = "Polygon reports that the game attracted over 431,000 concurrent players."
+    payload = model(clauses=[{
+        "clause": "the game attracted over 431,000 concurrent players", "fact_ids": ["F1"],
+        "match": "exact", "exceeds_facts": False, "difference": "",
+    }])
+    report = verify_module.verify(
+        credited + "\n", outlets_sheet(), run_state=providers.RunState(),
+        generate=make_generate(payload), report_dir=tmp_path, verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.unsupported == [credited]
