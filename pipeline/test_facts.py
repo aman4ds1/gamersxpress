@@ -8093,3 +8093,141 @@ def test_a_value_that_matches_both_parts_equally_stays_hedged():
     ))
     assert result["kind"] == "rumor"
 
+
+
+# --- figures are whole numbers when claims are compared ------------------------------
+
+
+@pytest.mark.parametrize("text, tokens", [
+    ("431,000 players", {"431000"}),
+    ("8.5 million copies", {"8500000"}),
+    ("$69.99", {"69.99"}),
+    ("2,415,714 players", {"2415714"}),
+    ("4m copies", {"4000000"}),
+    ("4 million copies", {"4000000"}),
+    ("4,000,000 copies", {"4000000"}),
+    ("2.5bn", {"2500000000"}),
+    ("13th to 20th October", {"13", "20", "october"}),
+    ("October 13, 2026", {"13", "2026", "october"}),
+    # Not thousands groups or decimals: separate figures, or a version string.
+    ("ranked 1,2,3", {"1", "2", "3"}),
+    ("patch v1.2", set()),
+])
+def test_figures_are_compared_as_whole_scaled_numbers(text, tokens):
+    assert facts._value_key_tokens(text) == tokens
+
+
+def figure_claim(value, url="https://a.example/1", label="Peak concurrent players"):
+    return {"claim": label, "value": value, "source_url": url, "kind": "reported"}
+
+
+@pytest.mark.parametrize("a, b", [
+    ("431,000 concurrent players", "833,000 concurrent players"),
+    ("priced at $69.99", "priced at $59.99"),
+    ("12 players", "13 players"),
+    # Below 1,000 a figure must match exactly: 1% would round 990 to 995.
+    ("990 players", "995 players"),
+])
+def test_different_figures_conflict_even_with_matching_digit_groups(a, b):
+    first, second = figure_claim(a), figure_claim(b, url="https://b.example/1")
+    assert facts._claims_conflict(first, second) is True
+    assert facts._values_hard_conflict(first, second) is True
+
+
+@pytest.mark.parametrize("a, b", [
+    ("sold 4 million copies", "sold 4,000,000 copies"),
+    ("sold 4m copies", "sold 4 million copies"),
+    # A rounded figure is the same figure: 833,921 is 833,000 within 1%.
+    ("833,000 concurrent players", "over 431,000 at launch, settling at 833,921 peak"),
+])
+def test_the_same_figure_at_another_scale_or_precision_does_not_conflict(a, b):
+    first, second = figure_claim(a), figure_claim(b, url="https://b.example/1")
+    assert facts._claims_conflict(first, second) is False
+    assert facts._values_hard_conflict(first, second) is False
+
+
+def test_figures_two_percent_apart_conflict():
+    first = figure_claim("850,000 players")
+    second = figure_claim("833,000 players", url="https://b.example/1")
+    assert facts._claims_conflict(first, second) is True
+
+
+def test_another_games_sales_figure_does_not_merge_on_a_decimal_digit():
+    # Polygon's Resident Evil figure shared only "5" ("8.5") with "PlayStation 5".
+    requiem = {
+        "claim": "Resident Evil: Requiem sales since release",
+        "value": "8.5 million copies since its release on February 27, 2026",
+        "source_url": "https://polygon.example/pbz", "kind": "reported",
+    }
+    platforms = {
+        "claim": "Platforms and sales inclusion",
+        "value": (
+            "Phantom Blade Zero is available on Steam and PlayStation 5, but the 4m figure "
+            "also includes sales made on the China-exclusive Tencent WeGame PC launcher"
+        ),
+        "source_url": "https://eurogamer.example/pbz", "kind": "reported",
+    }
+    assert facts._same_fact(requiem, platforms) is False
+    assert len(facts._claim_groups([requiem, platforms])) == 2
+
+
+def test_claims_do_not_merge_on_a_shared_product_number():
+    digital = {
+        "claim": "Release platforms and edition",
+        "value": "Digital-only release and a timed console exclusive for PlayStation 5",
+        "source_url": "https://polygon.example/pbz", "kind": "reported",
+    }
+    platforms = {
+        "claim": "Platforms and sales inclusion",
+        "value": "Phantom Blade Zero is available on Steam and PlayStation 5",
+        "source_url": "https://eurogamer.example/pbz", "kind": "reported",
+    }
+    assert facts._same_fact(digital, platforms) is False
+
+
+def test_a_shared_sales_figure_still_merges():
+    first = {
+        "claim": "Opening sales", "value": "sold 4 million copies in 72 hours",
+        "source_url": "https://polygon.example/pbz", "kind": "reported",
+    }
+    second = {
+        "claim": "Sales total", "value": "sold more than 4m copies in its first 72 hours",
+        "source_url": "https://eurogamer.example/pbz", "kind": "reported",
+    }
+    assert facts._same_fact(first, second) is True
+
+
+@pytest.mark.parametrize("text, numbers", [
+    ("available on PlayStation 5 and Steam", {"5"}),
+    ("the RTX 5090 sold out", {"5090"}),
+    ("Xbox 360 sold 84 million", {"360"}),
+    ("Over 2 million players", set()),
+    ("Sold 2,000 copies", set()),
+    ("launches October 13", set()),
+])
+def test_name_numbers_are_numbers_that_follow_a_name(text, numbers):
+    assert facts._name_numbers(text) == numbers
+
+
+def test_the_group_guard_drops_a_model_group_with_different_figures():
+    items = [
+        {"id": "c1", "claim": figure_claim("Phantom Blade Zero hit 431,000 concurrent players")},
+        {"id": "c2", "claim": figure_claim(
+            "Phantom Blade Zero hit 833,000 concurrent players", url="https://b.example/1",
+        )},
+    ]
+    accepted, dropped = facts.apply_group_guards([["c1", "c2"]], items, ["Phantom Blade Zero"])
+    assert accepted == []
+    assert dropped[0]["reason"] == "the claims state conflicting figures or dates"
+
+
+def test_the_group_guard_keeps_a_model_group_with_a_rounded_figure():
+    items = [
+        {"id": "c1", "claim": figure_claim("Phantom Blade Zero hit 833,000 concurrent players")},
+        {"id": "c2", "claim": figure_claim(
+            "Phantom Blade Zero attracted over 431,000 players, settling at 833,921 peak",
+            url="https://b.example/1",
+        )},
+    ]
+    accepted, dropped = facts.apply_group_guards([["c1", "c2"]], items, ["Phantom Blade Zero"])
+    assert [group["ids"] for group in accepted] == [["c1", "c2"]]

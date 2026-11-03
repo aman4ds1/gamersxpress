@@ -93,6 +93,7 @@ import datetime as dt
 import json
 import logging
 import re
+from decimal import Decimal, InvalidOperation
 import unicodedata
 from collections import Counter
 from pathlib import Path
@@ -4172,8 +4173,94 @@ def _value_key_tokens(value: str) -> set[str]:
     {october, 13}, so the two values share a figure and can merge, while
     "October 12" shares only the month with "October 13" and stays separate.
     """
+    return _figure_and_month_tokens(value)
+
+
+#: A figure with its scale: "431,000", "8.5", "4m", "4 million", "2.5bn".
+_FIGURE_RE = re.compile(
+    r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?"
+    r"(?:(?:st|nd|rd|th)\b|(k|m|mn|bn)\b|\s?(thousand|million|billion)\b)?",
+    re.IGNORECASE,
+)
+_FIGURE_SCALES = {
+    "k": 10**3, "thousand": 10**3, "m": 10**6, "mn": 10**6, "million": 10**6,
+    "bn": 10**9, "billion": 10**9,
+}
+
+
+def _figure_and_month_tokens(text: object) -> set[str]:
+    """Month names and figures, each figure one normalized token.
+
+    "431,000" is 431000 and "8.5" is 8.5, never "431" + "000" or "8" + "5":
+    split pieces made "431,000" and "833,000" share "000" (so they never
+    conflicted) and "8.5 million" share "5" with "PlayStation 5" (so a Resident
+    Evil sales figure merged into a Phantom Blade fact). The scale is part of
+    the figure, so "4m", "4 million" and "4,000,000" are one token. Ordinals
+    ("13th") keep their number. A dot or comma that is not part of a number
+    ("v1.2", "1,2,3") separates figures as before.
+    """
+    raw = str(text or "").lower()
+    tokens: set[str] = {word for word in re.findall(r"[a-z]+", raw) if word in _MONTHS}
+    for match in _FIGURE_RE.finditer(raw):
+        whole, fraction, suffix, word = match.groups()
+        number = whole.replace(",", "") + (fraction or "")
+        scale = _FIGURE_SCALES.get((suffix or word or "").lower(), 1)
+        try:
+            value = Decimal(number) * scale
+        except InvalidOperation:
+            continue
+        tokens.add(format(value.normalize(), "f"))
+    return tokens
+
+
+#: A number that is part of a name: "PlayStation 5", "RTX 5090", "Modern
+#: Warfare 4" (a capitalized word, then the number, then no scale word).
+_NAME_NUMBER_RE = re.compile(
+    r"\b([A-Z][\w'-]*)\s(\d+)\b(?!\s?(?:k|m|mn|bn|thousand|million|billion|%)\b|[.,]\d)"
+)
+
+
+def _name_numbers(text: str) -> set[str]:
+    """Numbers that name a product rather than state a figure.
+
+    Two claims sharing "PlayStation 5" share a platform, not a fact, so these
+    numbers never count as the shared figure a merge needs. A month ("October
+    13") is a date, not a name, and keeps its day.
+    """
+    return {
+        number
+        for word, number in _NAME_NUMBER_RE.findall(str(text or ""))
+        if word.lower() not in _MONTHS
+    }
+
+
+def _figures_agree(a: set[str], b: set[str]) -> bool:
+    """True when some figure of ``a`` equals one of ``b`` or rounds to it.
+
+    Figures of 1,000 or more within 1% are the same figure stated at different
+    precision ("833,000" and "833,921"); smaller figures must match exactly.
+    """
+    for x in a:
+        for y in b:
+            if x == y:
+                return True
+            try:
+                dx, dy = Decimal(x), Decimal(y)
+            except InvalidOperation:
+                continue
+            if min(dx, dy) >= 1000 and abs(dx - dy) <= max(dx, dy) / 100:
+                return True
+    return False
+
+
+def _title_key_tokens(title: str) -> set[str]:
+    """Month names and digit runs of a headline, split at commas and dots.
+
+    The headline measures compare these against claim words split the same
+    way ("168,000" as "168" + "000"), so they keep the split form.
+    """
     tokens: set[str] = set()
-    for token in re.findall(r"[a-z0-9]+", str(value or "").lower()):
+    for token in re.findall(r"[a-z0-9]+", str(title or "").lower()):
         if token in _MONTHS:
             tokens.add(token)
             continue
@@ -4243,8 +4330,9 @@ def _same_value_fact(a: dict, b: dict, *, entities: Optional[Iterable[str]] = No
     # "5090" in "RTX 5090" names the product, not a figure of the fact: two
     # headlines about the same card must not merge on its model number.
     entity_figures = _entity_figures(entity_set) if entity_set else set()
-    a_keys = _value_key_tokens(str(a.get("value") or "")) - entity_figures
-    b_keys = _value_key_tokens(str(b.get("value") or "")) - entity_figures
+    a_value, b_value = str(a.get("value") or ""), str(b.get("value") or "")
+    a_keys = _value_key_tokens(a_value) - entity_figures - _name_numbers(a_value)
+    b_keys = _value_key_tokens(b_value) - entity_figures - _name_numbers(b_value)
     shared = a_keys & b_keys
     if not shared:
         return False
@@ -4311,7 +4399,7 @@ def _values_hard_conflict(a: dict, b: dict) -> bool:
         token for token in _value_figures(b.get("value"))
         if token not in b_label and not _year_like(token)
     }
-    if a_figures and b_figures and not (a_figures & b_figures):
+    if a_figures and b_figures and not _figures_agree(a_figures, b_figures):
         return True
     a_months = _value_key_tokens(str(a.get("value") or "")) & _MONTHS
     b_months = _value_key_tokens(str(b.get("value") or "")) & _MONTHS
@@ -5042,7 +5130,7 @@ def _headline_significant_units(title: str, canonical: list[str]) -> list[tuple[
     for month in re.findall(r"[a-z]+", cluster.strip_diacritics(title).lower()):
         if month in _MONTHS:
             add("token", month)
-    for token in _value_key_tokens(title):
+    for token in _title_key_tokens(title):
         if token not in _MONTHS:
             add("token", token)
     return units
@@ -5107,7 +5195,7 @@ def _headline_restated(
         return _claim_overlap_fraction(claim, claim_specific) >= threshold
     if _claim_overlap_fraction(claim, units) < threshold:
         return False
-    hard = _value_key_tokens(title)
+    hard = _title_key_tokens(title)
     verbs = _word_tokens(cluster.strip_diacritics(title)) & _HEADLINE_VERB_TOKENS
     if not hard and not verbs:
         return False
@@ -5329,23 +5417,15 @@ def _corroboration_words(claim: dict) -> set[str]:
 
 def _claim_hard_tokens(claim: dict) -> tuple[set[str], set[str]]:
     """The figures and month names a claim's value states."""
-    numbers: set[str] = set()
-    months: set[str] = set()
-    for token in re.findall(r"[a-z0-9]+", str(claim.get("value") or "").lower()):
-        if token in _MONTHS:
-            months.add(token)
-            continue
-        digits = re.match(r"^\d+", token)
-        if digits:
-            numbers.add(digits.group(0))
-    return numbers, months
+    tokens = _figure_and_month_tokens(claim.get("value"))
+    return tokens - _MONTHS, tokens & _MONTHS
 
 
 def _claims_conflict(a: dict, b: dict) -> bool:
     """True when two claims state figures or dates that contradict each other."""
     a_numbers, a_months = _claim_hard_tokens(a)
     b_numbers, b_months = _claim_hard_tokens(b)
-    if a_numbers and b_numbers and not (a_numbers & b_numbers):
+    if a_numbers and b_numbers and not _figures_agree(a_numbers, b_numbers):
         return True
     if a_months and b_months and not (a_months & b_months):
         return True
