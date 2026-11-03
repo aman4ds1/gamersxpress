@@ -931,7 +931,13 @@ def run(
         if not verify_report.passed:
             reason = verify_report.failure_reason or "unknown"
             _record_attempt(reason)
-            failures = list(verify_report.unsupported) + list(verify_report.unmatched_numbers)
+            failures = list(verify_report.unsupported)
+            if verify_report.unmatched_detail:
+                failures.extend(
+                    verify_stage.describe_unmatched(item) for item in verify_report.unmatched_detail
+                )
+            else:
+                failures.extend(verify_report.unmatched_numbers)
             failures.extend(f"repair rejected: {problem}" for problem in repair_problems)
             return _fail(
                 self_finish=finish, breaker=breaker, paths=paths, threshold=threshold, now=now,

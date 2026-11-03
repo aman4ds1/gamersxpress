@@ -1460,3 +1460,20 @@ def test_an_ordinary_story_run_in_auto_mode_stays_auto_with_no_label(tmp_path):
     assert report["verification"] is None
     assert "verification:" not in article
     assert not any("rests on one named source" in prompt for prompt in prompts)
+
+
+def test_verify_failure_names_the_sentence_of_an_unmatched_number(tmp_path):
+    real_verify = run_module.verify_stage.verify
+
+    def verify(*args, **kwargs):
+        report = real_verify(*args, **kwargs)
+        report.passed = False
+        report.failure_reason = "article_rejected"
+        report.unmatched_numbers = ["30"]
+        report.unmatched_detail = [{"raw": "30", "sentence": "It sold 30 copies."}]
+        return report
+
+    result = run_once(tmp_path, dry_run=True, scenario="pass", verify_fn=verify)
+    assert result.status == "failed"
+    assert 'number "30" not in the facts: "It sold 30 copies."' in result.report["failures"]
+    assert "30" not in result.report["failures"]

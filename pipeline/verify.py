@@ -289,6 +289,7 @@ class VerifyReport:
     unsupported: list[str] = field(default_factory=list)
     unsupported_detail: list[dict] = field(default_factory=list)
     unmatched_numbers: list[str] = field(default_factory=list)
+    unmatched_detail: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     model_sentences: list[dict] = field(default_factory=list)
     writer_families: list[str] = field(default_factory=list)
@@ -312,6 +313,7 @@ class VerifyReport:
             "unsupported": self.unsupported,
             "unsupported_detail": self.unsupported_detail,
             "unmatched_numbers": self.unmatched_numbers,
+            "unmatched_detail": self.unmatched_detail,
             "notes": self.notes,
             "model_sentences": self.model_sentences,
             "error": self.error,
@@ -903,7 +905,8 @@ _SPEC_RE = re.compile(
     re.I,
 )
 _PRICE_RE = re.compile(
-    r"(?<![\w])(?:US\$|USD|GBP|INR|Rs\.?|₹|£|\$)\s?(\d[\d,]*(?:\.\d+)?)\s?(k)?(?![\w])",
+    r"(?<![\w])(?:US\$|USD|GBP|INR|Rs\.?|₹|£|\$)\s?(\d[\d,]*(?:\.\d+)?)"
+    r"\s?(million|billion|mn|bn|k|m)?(?![\w])",
     re.I,
 )
 _PRICE_SUFFIX_RE = re.compile(
@@ -911,6 +914,20 @@ _PRICE_SUFFIX_RE = re.compile(
 )
 _PERCENT_RE = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s?%")
 _K_NUMBER_RE = re.compile(r"(?<![\w.])(\d[\d,]*\.\d+)\s?k(?![\w])", re.I)
+# "30m", "4.5bn", "30 million", "one million": the magnitude is part of the value,
+# so "30m" in a source and "30 million" in an article are the same token. Short
+# suffixes must touch the digits ("30 m" may be metres); spelled-out numbers
+# count only before "million"/"billion" ("one of the best" is not a value).
+_SCALE_WORDS = {
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+}
+_SCALE_NUMBER_RE = re.compile(
+    r"(?<![\w.])(?:(\d[\d,]*(?:\.\d+)?)(?:(mn|bn|m)|\s?(million|billion))"
+    r"|(" + "|".join(_SCALE_WORDS) + r")\s(million|billion))(?![\w])",
+    re.I,
+)
+_SCALE_FACTORS = {"m": 10**6, "mn": 10**6, "million": 10**6, "bn": 10**9, "billion": 10**9, "k": 10**3}
 _WEEKDAYS = (
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun"
@@ -955,13 +972,14 @@ _VERSION_RE = re.compile(r"(?<![\w.])v?(\d+\.\d+\.\d+(?:\.\d+)?)(?![\w.])")
 _NUMBER_RE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])")
 
 
-def _decimal_token(number: str, *, thousands: bool = False) -> str:
+def _decimal_token(number: str, *, thousands: bool = False, scale: int = 1) -> str:
     try:
         value = Decimal(number.replace(",", ""))
     except InvalidOperation:
         return number.lower()
     if thousands:
         value *= 1000
+    value *= scale
     return format(value.normalize(), "f")
 
 
@@ -989,11 +1007,20 @@ def _date_token(year: str | None, month: str, day: str) -> str:
 
 
 def _money(match: re.Match) -> str:
-    return _decimal_token(match.group(1), thousands=bool(match.group(2)))
+    suffix = (match.group(2) or "").lower()
+    return _decimal_token(match.group(1), scale=_SCALE_FACTORS.get(suffix, 1))
 
 
 def _money_suffix(match: re.Match) -> str:
     return _decimal_token(match.group(1), thousands=bool(match.group(2)))
+
+
+def _scale_number(match: re.Match) -> str:
+    if match.group(4):
+        number, suffix = _SCALE_WORDS[match.group(4).lower()], match.group(5)
+    else:
+        number, suffix = match.group(1), match.group(2) or match.group(3)
+    return _decimal_token(number, scale=_SCALE_FACTORS[suffix.lower()])
 
 
 def _k_number(match: re.Match) -> str:
@@ -1078,6 +1105,7 @@ def _month_number(name: str) -> str:
 _STEPS: list[tuple[re.Pattern, Callable[[re.Match], str | list[tuple[str, str]]]]] = [
     (_PRICE_RE, _money),
     (_PRICE_SUFFIX_RE, _money_suffix),
+    (_SCALE_NUMBER_RE, _scale_number),
     (_K_NUMBER_RE, _k_number),
     (_PERCENT_RE, _percent),
     (_MODEL_RE, _model),
@@ -1208,13 +1236,42 @@ def code_check(article: Any, facts: dict, config: dict) -> dict:
     facts_tokens = {value["token"] for value in extract_values(_facts_text(facts), config)}
 
     unmatched: list[str] = []
+    detail: list[dict] = []
     for value in article_values:
         if value["token"] in facts_tokens or _whitelisted(value, config):
             continue
         if value["token"].startswith(_DATE_PREFIX) and _date_in_facts(value["token"], facts_tokens):
             continue
+        if value["raw"] not in unmatched:
+            detail.append({"raw": value["raw"], "sentence": _sentence_with(value["line"], value["raw"])})
         unmatched.append(value["raw"])
-    return {"ok": not unmatched, "unmatched": _dedupe(unmatched), "checked": len(article_values)}
+    return {
+        "ok": not unmatched,
+        "unmatched": _dedupe(unmatched),
+        "unmatched_detail": detail,
+        "checked": len(article_values),
+    }
+
+
+def _sentence_with(line: str, raw: str) -> str:
+    """The sentence of ``line`` that contains ``raw`` (the whole line if none does)."""
+    for sentence in _SENTENCE_SPLIT_RE.split(line.strip()):
+        if raw in sentence:
+            return sentence.strip()
+    return line.strip()
+
+
+def describe_unmatched(detail: dict, width: int = 120) -> str:
+    """One alert line: the value and the article text around it."""
+    raw, sentence = str(detail.get("raw", "")), str(detail.get("sentence", ""))
+    if len(sentence) > width:
+        at = max(sentence.find(raw), 0)
+        start = max(0, min(at - width // 2, len(sentence) - width))
+        sentence = ("…" if start else "") + sentence[start : start + width].strip() + (
+            "…" if start + width < len(sentence) else ""
+        )
+    return f'number "{raw}" not in the facts: "{sentence}"' if sentence else f'number "{raw}" not in the facts'
+
 
 
 def _numeric_performance_claim(sentence: str, term_spans: list[tuple[str, ...]]) -> bool:
@@ -1368,6 +1425,7 @@ def verify(
         unsupported=unsupported,
         unsupported_detail=model_result["unsupported_detail"],
         unmatched_numbers=code_result["unmatched"],
+        unmatched_detail=code_result.get("unmatched_detail", []),
         notes=model_result["notes"],
         model_sentences=model_result["clauses"],
         error=model_result["error"],

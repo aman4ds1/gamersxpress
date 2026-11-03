@@ -1999,3 +1999,70 @@ def test_only_statement_facts_list_a_speaker_to_the_model():
 
 def test_the_prompt_tells_the_model_where_a_facts_speaker_is_listed():
     assert "listed speaker" in verify_module.SYSTEM_INSTRUCTION
+
+
+# --- scaled numbers ("30m" == "30 million") ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "article, source",
+    [
+        ("It has sold 30 million copies.", "It has sold 30m copies"),
+        ("It sold 1 million copies before launch.", "It sold one million copies pre-launch"),
+        ("It sold 1 million copies before launch.", "It sold over 1m copies before release"),
+        ("The deal is worth $2.5 billion.", "The deal is worth $2.5bn"),
+        ("The studio raised $30m.", "The studio raised $30 million"),
+        ("Revenue hit 4.5bn.", "Revenue hit 4.5 billion"),
+    ],
+)
+def test_scaled_numbers_match_across_forms(article, source):
+    result = verify_module.code_check(article, sheet(claim(value=source)), config())
+    assert result["ok"] is True, result["unmatched"]
+
+
+def test_scale_is_part_of_the_value():
+    result = verify_module.code_check(
+        "It has sold 30 million copies.", sheet(claim(value="It has sold 30 copies")), config()
+    )
+    assert result["ok"] is False
+    assert "30 million" in result["unmatched"]
+
+
+def test_scale_suffixes_do_not_swallow_units_or_words():
+    tokens = [
+        value["token"]
+        for value in verify_module.extract_values(
+            "A 30mb patch, 30 ms latency, 100mm fans, one of the best", config()
+        )
+    ]
+    assert tokens == ["30mb", "30ms", "100mm"]
+
+
+# --- unmatched detail (alert context) -------------------------------------------
+
+
+def test_code_check_reports_the_sentence_of_an_unmatched_number():
+    article = "The console launches soon. It sold 30 million copies. Fans cheered."
+    result = verify_module.code_check(article, sheet(claim(value="It sold 3m copies")), config())
+    assert result["unmatched_detail"] == [
+        {"raw": "30 million", "sentence": "It sold 30 million copies."}
+    ]
+
+
+def test_unmatched_detail_lists_each_value_once():
+    article = "It sold 30 million copies. Yes, 30 million copies."
+    result = verify_module.code_check(article, sheet(), config())
+    assert [item["raw"] for item in result["unmatched_detail"]] == ["30 million"]
+
+
+def test_describe_unmatched_shows_the_value_and_its_text():
+    line = verify_module.describe_unmatched({"raw": "30", "sentence": "It sold 30 copies."})
+    assert line == 'number "30" not in the facts: "It sold 30 copies."'
+
+
+def test_describe_unmatched_trims_long_sentences_around_the_value():
+    sentence = "a" * 200 + " sold 30 copies " + "b" * 200
+    line = verify_module.describe_unmatched({"raw": "30", "sentence": sentence}, width=60)
+    assert "sold 30 copies" in line
+    assert line.count("…") == 2
+    assert len(line) < 120
