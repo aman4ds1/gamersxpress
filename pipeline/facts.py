@@ -4469,10 +4469,39 @@ def apply_rumor_hedge(claim: dict) -> dict:
     # "The announcement is expected next month, and retailers have reportedly
     # begun listings" the hedge belongs to the retailers, not the announcement.
     clause = _clause_for_value(str(claim.get("quote") or ""), str(claim.get("value") or ""))
-    hedge = _find_hedge(clause, words)
+    hedge = _find_hedge(_hedge_scope(clause, str(claim.get("value") or "")), words)
     if not hedge:
         return claim
     return {**claim, "kind": "rumor", "hedge_lost": hedge}
+
+
+#: An appositive that names what an organization is ("MachineGames, developers
+#: of Wolfenstein", "id Software, the studio behind Doom") describes the
+#: organization, so a hedge on the clause's verb does not reach it.
+_APPOSITIVE_SPLIT_RE = re.compile(
+    r",\s+(?=(?:the\s+|a\s+|an\s+)?(?:[\w-]+\s+){0,2}?"
+    r"(?:developers?|makers?|creators?|publishers?|studios?|teams?|owners?)\s+(?:of|behind)\b)",
+    re.IGNORECASE,
+)
+
+
+def _hedge_scope(clause: str, value: str) -> str:
+    """The part of ``clause`` a hedge must sit in to govern ``value``.
+
+    "id Software has apparently deepened its ties with MachineGames, developers
+    of Wolfenstein" holds two facts: the hedged one (the ties) and an
+    appositive (who made Wolfenstein). A value drawn from the appositive is
+    judged on the appositive alone. Every segment that ties for the best word
+    overlap is kept, so a value that could come from the hedged part stays
+    hedged.
+    """
+    segments = [part.strip() for part in _APPOSITIVE_SPLIT_RE.split(clause) if part.strip()]
+    if len(segments) <= 1:
+        return clause
+    value_words = _clause_words(value)
+    scored = [(len(_clause_words(segment) & value_words), segment) for segment in segments]
+    best = max(score for score, _ in scored)
+    return " ".join(segment for score, segment in scored if score == best)
 
 
 #: Words that say a claim is a rumor. "Leak" is left out on purpose: "Valve

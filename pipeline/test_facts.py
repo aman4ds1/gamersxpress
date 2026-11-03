@@ -8042,3 +8042,54 @@ def test_coherence_keeps_every_claim_of_a_source_joined_by_headline_similarity()
     kept, dropped, _ = facts.coherence_check(claims, sources, title=SONY_TITLE, story_id="sony")
     assert [entry["claim"] for entry in kept] == ["Controller price", "Prism Collection names"]
     assert [entry["claim"] for entry in dropped] == ["Pocketpair wants a port"]
+
+
+# --- a hedge on the verb does not reach an appositive ------------------------------
+
+MACHINEGAMES_QUOTE = (
+    "As part of its response to those layoffs, id Software has apparently deepened its ties "
+    "with MachineGames, developers of Wolfenstein: The New Order and, more recently, the "
+    "excellent Indiana Jones and the Great Circle."
+)
+
+
+def test_a_value_from_an_appositive_is_not_demoted_by_the_clauses_hedge():
+    original = claim(
+        claim="MachineGames developed Wolfenstein and Indiana Jones", kind="reported",
+        value="MachineGames developed Wolfenstein: The New Order and Indiana Jones and the Great Circle",
+        quote=MACHINEGAMES_QUOTE,
+    )
+    assert facts.apply_rumor_hedge(original) == original
+
+
+def test_the_hedged_part_of_a_sentence_with_an_appositive_is_still_demoted():
+    result = facts.apply_rumor_hedge(claim(
+        claim="id Software ties with MachineGames", kind="reported",
+        value="id Software has deepened its ties with MachineGames", quote=MACHINEGAMES_QUOTE,
+    ))
+    assert result["kind"] == "rumor"
+    assert result["hedge_lost"] == "apparently"
+
+
+@pytest.mark.parametrize("quote", [
+    "Valve has reportedly hired Ricochet, the studio behind Rift Storm and Ember Fall.",
+    "Valve has reportedly hired Ricochet, the small Danish studio behind Rift Storm and Ember Fall.",
+    "Valve has reportedly hired Ricochet, makers of Rift Storm and Ember Fall.",
+])
+def test_appositive_forms_are_split_from_the_hedged_clause(quote):
+    original = claim(
+        claim="Ricochet made Rift Storm", kind="reported",
+        value="Ricochet made Rift Storm and Ember Fall", quote=quote,
+    )
+    assert facts.apply_rumor_hedge(original) == original
+
+
+def test_a_value_that_matches_both_parts_equally_stays_hedged():
+    # "Ricochet" is in the hedged clause, "Rift" in the appositive: when the
+    # value could come from either, the hedge wins.
+    result = facts.apply_rumor_hedge(claim(
+        claim="Ricochet and Rift", kind="reported", value="Ricochet Rift",
+        quote="Valve has reportedly hired Ricochet, makers of Rift.",
+    ))
+    assert result["kind"] == "rumor"
+
