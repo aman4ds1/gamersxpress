@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from gates import find_leaks
+import verify as verify_module
 from providers import (
     Generation,
     RunState,
@@ -97,6 +98,41 @@ def _source_url_names(sources: Any) -> dict[str, str]:
     return mapping
 
 
+_VERIFY_CONFIG: dict | None = None
+
+
+def _verify_config() -> dict:
+    global _VERIFY_CONFIG
+    if _VERIFY_CONFIG is None:
+        _VERIFY_CONFIG = verify_module.load_verify_config()
+    return _VERIFY_CONFIG
+
+
+def _figure_sources(claim: dict, urls: list, url_names: dict[str, str]) -> list[str]:
+    """The outlets whose own report holds every figure in the claim's value.
+
+    A merged claim lists every outlet that covered the fact, but outlets often
+    give different figures ("431,000 players" in one, "833,000" in another).
+    The writer credits whoever ``sources`` names, so for a value with figures
+    the list keeps only the outlets the verifier will accept as reporting them
+    (``verify.outlet_number_check``). Returns [] when that leaves nothing to
+    narrow -- no figures, one outlet, or no outlet carries them all -- and the
+    full list is used.
+    """
+    named = [url for url in urls if url in url_names]
+    if len({url_names[url] for url in named}) < 2:
+        return []
+    config = _verify_config()
+    tokens = verify_module.figure_tokens(str(claim.get("value") or ""), config)
+    if not tokens:
+        return []
+    return sorted({
+        url_names[url]
+        for url in named
+        if verify_module.carries_figures(tokens, verify_module.claim_outlet_text(claim, url), config)
+    })
+
+
 def _writer_claim(claim: Any, url_names: dict[str, str]) -> Any:
     """Reduce one claim to the fields the writer uses."""
     if not isinstance(claim, dict):
@@ -107,6 +143,7 @@ def _writer_claim(claim: Any, url_names: dict[str, str]) -> Any:
         single = claim.get("source_url")
         urls = [single] if single else []
     names = sorted({url_names[url] for url in urls if url in url_names})
+    names = _figure_sources(claim, urls, url_names) or names
     if names:
         reduced["sources"] = names
     # The central flag is what the writer leads with, so it is always present.

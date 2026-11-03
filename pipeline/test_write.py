@@ -934,3 +934,83 @@ def test_the_static_template_stays_free_of_the_single_origin_text():
 
 def test_a_non_dict_sheet_is_passed_through_without_a_note():
     assert write_module.single_origin_note("a pre-rendered sheet") == ""
+
+
+# --- credit a figure only to the outlets that report it ---------------------------
+
+PBZ_SOURCES = [
+    {"source_name": "Polygon", "link": "https://polygon.example/pbz"},
+    {"source_name": "Eurogamer", "link": "https://eurogamer.example/pbz"},
+]
+
+
+def pbz_claim(**overrides):
+    claim = {
+        "claim": "Concurrent players at launch",
+        "value": "attracted over 431,000 concurrent players at launch",
+        "kind": "reported",
+        "source_urls": ["https://eurogamer.example/pbz", "https://polygon.example/pbz"],
+        "versions": [
+            {"source_url": "https://polygon.example/pbz",
+             "value": "833,000 concurrent players within hours of launch"},
+            {"source_url": "https://eurogamer.example/pbz",
+             "value": "attracted over 431,000 concurrent players at launch"},
+        ],
+    }
+    claim.update(overrides)
+    return claim
+
+
+def view_sources(claim):
+    view = write_module.writer_view({"sources": PBZ_SOURCES, "claims": [claim]})
+    return view["claims"][0].get("sources")
+
+
+def test_a_figure_is_credited_only_to_the_outlets_that_report_it():
+    assert view_sources(pbz_claim()) == ["Eurogamer"]
+
+
+def test_every_outlet_with_the_figure_keeps_its_credit():
+    claim = pbz_claim()
+    claim["versions"][0]["value"] = "over 431,000 people played at launch"
+    assert view_sources(claim) == ["Eurogamer", "Polygon"]
+
+
+def test_an_outlets_evidence_counts_as_its_report():
+    claim = pbz_claim(evidence=[{
+        "source_url": "https://polygon.example/pbz", "quote": "It drew 431,000 players at launch.",
+    }])
+    assert view_sources(claim) == ["Eurogamer", "Polygon"]
+
+
+@pytest.mark.parametrize("overrides", [
+    # No figures: nothing to narrow.
+    {"value": "attracted a large crowd at launch"},
+    # No outlet holds the figure: the full list stays and the verifier decides.
+    {"value": "attracted 999 players at launch"},
+    # No per-outlet versions: the merged value is every outlet's.
+    {"versions": []},
+])
+def test_the_full_source_list_stays_when_there_is_nothing_to_narrow(overrides):
+    assert view_sources(pbz_claim(**overrides)) == ["Eurogamer", "Polygon"]
+
+
+def test_a_single_source_claim_is_unchanged():
+    claim = pbz_claim(source_urls=["https://polygon.example/pbz"])
+    assert view_sources(claim) == ["Polygon"]
+
+
+def test_a_merged_value_does_not_count_for_an_outlet_without_its_own_version():
+    # Eurogamer and Polygon both covered it, but only Eurogamer has a version.
+    claim = pbz_claim()
+    claim["versions"] = claim["versions"][1:]
+    assert view_sources(claim) == ["Eurogamer"]
+
+
+def test_an_outlet_giving_the_date_without_the_year_keeps_its_credit():
+    claim = pbz_claim(value="launches on October 29, 2026")
+    claim["versions"] = [
+        {"source_url": "https://polygon.example/pbz", "value": "out October 29"},
+        {"source_url": "https://eurogamer.example/pbz", "value": "launches on October 29, 2026"},
+    ]
+    assert view_sources(claim) == ["Eurogamer", "Polygon"]

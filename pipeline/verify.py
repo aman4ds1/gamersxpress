@@ -62,7 +62,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import yaml
 
@@ -1427,31 +1427,50 @@ def coverage_only_check(article: Any, facts: dict) -> list[dict]:
     ]
 
 
-def _outlet_text(facts: dict, link: str) -> str:
-    """Everything the sheet holds from one outlet: its versions, evidence and own claims."""
+def claim_outlet_text(claim: dict, link: str) -> str:
+    """What one claim holds from one outlet: its version, evidence, or own text.
+
+    A claim that records per-outlet ``versions`` lends its merged value only to
+    an outlet whose version it is; a claim from this outlet alone, or one with
+    no versions, is this outlet's text as a whole.
+    """
+    if not isinstance(claim, dict):
+        return ""
     key = _link_key(link)
-    parts: list[str] = []
-    for claim in facts.get("claims") or []:
-        if not isinstance(claim, dict):
-            continue
-        urls = [str(url) for url in claim.get("source_urls") or [] if url]
-        if claim.get("source_url"):
-            urls.append(str(claim["source_url"]))
-        url_keys = {_link_key(url) for url in urls}
-        versions = [v for v in claim.get("versions") or [] if isinstance(v, dict)]
-        own_versions = [v for v in versions if _link_key(v.get("source_url")) == key]
-        parts.extend(str(v.get("value") or "") for v in own_versions)
-        parts.extend(
-            str(e.get("quote") or "")
-            for e in claim.get("evidence") or []
-            if isinstance(e, dict) and _link_key(e.get("source_url")) == key
-        )
-        # A claim from this outlet alone, or one that records no per-outlet
-        # versions, is this outlet's text as a whole.
-        if key in url_keys and (url_keys == {key} or not versions):
-            parts.append(str(claim.get("claim") or ""))
-            parts.append(str(claim.get("value") or ""))
-    return "\n".join(parts)
+    urls = [str(url) for url in claim.get("source_urls") or [] if url]
+    if claim.get("source_url"):
+        urls.append(str(claim["source_url"]))
+    url_keys = {_link_key(url) for url in urls}
+    versions = [v for v in claim.get("versions") or [] if isinstance(v, dict)]
+    parts = [str(v.get("value") or "") for v in versions if _link_key(v.get("source_url")) == key]
+    parts.extend(
+        str(e.get("quote") or "")
+        for e in claim.get("evidence") or []
+        if isinstance(e, dict) and _link_key(e.get("source_url")) == key
+    )
+    if key in url_keys and (url_keys == {key} or not versions):
+        parts.append(str(claim.get("claim") or ""))
+        parts.append(str(claim.get("value") or ""))
+    return "\n".join(part for part in parts if part)
+
+
+def _outlet_text(facts: dict, link: str) -> str:
+    """Everything the sheet holds from one outlet."""
+    return "\n".join(claim_outlet_text(claim, link) for claim in facts.get("claims") or [])
+
+
+def figure_tokens(text: str, config: dict) -> list[str]:
+    """The figure tokens (numbers, prices, dates) of ``text`` the checks compare."""
+    return [value["token"] for value in extract_values(text, config) if not _whitelisted(value, config)]
+
+
+def carries_figures(tokens: Iterable[str], text: str, config: dict) -> bool:
+    """True when every token in ``tokens`` is in ``text`` (dates may be partial there)."""
+    have = {value["token"] for value in extract_values(text, config)}
+    return all(
+        token in have or (token.startswith(_DATE_PREFIX) and _date_in_facts(token, have))
+        for token in tokens
+    )
 
 
 def _clause_key(text: object) -> str:
