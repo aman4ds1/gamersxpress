@@ -9,7 +9,7 @@ Validation is code-only and independent of the model:
 
 * Title and description lengths come from ``content_limits`` in config.yaml, the
   single source of truth shared with ``pipeline/gates.py`` and
-  ``checks/check-articles.mjs``; ``slug`` <= 60 chars and a lowercase ASCII
+  ``checks/check-articles.mjs``; ``slug`` <= 65 chars and a lowercase ASCII
   hyphenated token, ``category`` one of the site's categories.
 * **No invented values.** The verifier's independent number/price/date/spec
   check (:func:`verify.extract_values`) is run over the title, description and
@@ -76,7 +76,11 @@ _DEFAULT_CONTENT_LIMITS = load_content_limits()
 MAX_TITLE = _DEFAULT_CONTENT_LIMITS["max_title"]
 MIN_DESC = _DEFAULT_CONTENT_LIMITS["min_description"]
 MAX_DESC = _DEFAULT_CONTENT_LIMITS["max_description"]
-MAX_SLUG = 60
+#: A slug is the final title with spaces turned into hyphens, so a title within
+#: the 65-character limit (``content_limits.max_title``) always fits whole. At 60
+#: a 64-character title lost its last word ("...about-last-minute" became
+#: "...about-last"), and a URL is permanent once the draft is merged.
+MAX_SLUG = 65
 MAX_ALT = 200
 MIN_TAGS = 3
 MAX_TAGS = 6

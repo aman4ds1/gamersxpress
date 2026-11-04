@@ -332,6 +332,15 @@ def default_paths(dry_run: bool = False, dry_run_dir: str | Path | None = None) 
     )
 
 
+def _member_urls(chosen: dict | None) -> list[str]:
+    """The links of the articles in the chosen cluster."""
+    return [
+        str(item.get("link"))
+        for item in (chosen or {}).get("items") or []
+        if isinstance(item, dict) and item.get("link")
+    ]
+
+
 # --- breaker -----------------------------------------------------------------
 
 
@@ -863,6 +872,7 @@ def run(
                 primary_entities=chosen.get("entities"),
                 story_type=chosen.get("story_type"),
                 reason=reason, now=now,
+                member_urls=_member_urls(chosen),
             )
             cluster.save_failed(failed, paths.failed)
 
@@ -1004,7 +1014,8 @@ def run(
             shutil.rmtree(cover_staging, ignore_errors=True)
 
         cluster.clear_attempt(
-            failed, primary_entities=chosen.get("entities"), story_type=chosen.get("story_type")
+            failed, primary_entities=chosen.get("entities"), story_type=chosen.get("story_type"),
+            member_urls=_member_urls(chosen),
         )
         cluster.clear_unconfirmed(failed, cluster_id)
         cluster.save_failed(failed, paths.failed)

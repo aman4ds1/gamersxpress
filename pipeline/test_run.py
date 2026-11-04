@@ -1498,3 +1498,35 @@ def test_repair_prompt_gets_the_code_checks_reason(tmp_path):
 
     run_once(tmp_path, dry_run=True, scenario="pass", verify_fn=verify, repair_fn=repair)
     assert calls == [[{"clause": clause, "reason": "only says which outlets covered it"}]]
+
+
+def test_a_failed_story_is_recorded_with_the_urls_of_its_cluster(tmp_path):
+    result = run_once(tmp_path, dry_run=True, scenario="fail-verify")
+    assert result.status == "failed"
+    failed = json.loads(make_paths(tmp_path).failed.read_text(encoding="utf-8"))
+    entry = next(iter(failed["stories"].values()))
+    assert entry["attempt_count"] == 1
+    assert entry["member_urls"]
+    assert all(url.startswith("https://") for url in entry["member_urls"])
+    assert entry["member_urls"] == sorted(entry["member_urls"])
+
+
+def test_member_urls_lists_the_links_of_the_chosen_cluster():
+    chosen = {"items": [{"link": "https://a.example/1"}, {"link": ""}, {"title": "no link"},
+                        {"link": "https://b.example/2"}]}
+    assert run_module._member_urls(chosen) == ["https://a.example/1", "https://b.example/2"]
+    assert run_module._member_urls(None) == []
+
+
+def test_a_story_that_passes_clears_its_earlier_failures_by_url(tmp_path):
+    paths = make_paths(tmp_path)
+    paths.failed.parent.mkdir(parents=True, exist_ok=True)
+    # An earlier failure of this story, recorded under entities that no longer match.
+    paths.failed.write_text(json.dumps({"stories": {"old key": {
+        "attempt_count": 1, "last_attempt": NOW.isoformat(), "story_type": "review",
+        "primary_entities": ["unrelated one", "unrelated two"],
+        "member_urls": ["https://a.example/1"],
+    }}}), encoding="utf-8")
+    result = run_once(tmp_path, dry_run=True, scenario="pass")
+    assert result.status == "completed"
+    assert json.loads(paths.failed.read_text(encoding="utf-8"))["stories"] == {}

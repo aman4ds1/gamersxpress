@@ -405,12 +405,44 @@ LONG_SLUG_64 = "estimated-gears-of-war-e-day-sales-raise-query-about-last-minute
 LONG_SLUG_CUT = "estimated-gears-of-war-e-day-sales-raise-query-about-last"
 
 
-def test_truncate_slug_cuts_64_char_slug_at_word_boundary():
-    assert len(LONG_SLUG_64) == 64
-    cut = seo.truncate_slug(LONG_SLUG_64)
+def test_truncate_slug_cuts_an_over_long_slug_at_word_boundary():
+    # Was a 64-character slug when MAX_SLUG was 60; that one now fits whole (next test).
+    too_long = LONG_SLUG_64 + "-and-a-few-more-words"
+    assert len(too_long) > seo.MAX_SLUG
+    cut = seo.truncate_slug(too_long)
     assert len(cut) <= seo.MAX_SLUG
     assert seo.SLUG_RE.fullmatch(cut)
-    assert LONG_SLUG_64.startswith(cut + "-")
+    assert too_long.startswith(cut + "-")
+
+
+def test_a_64_character_slug_is_kept_whole():
+    assert len(LONG_SLUG_64) == 64
+    assert seo.truncate_slug(LONG_SLUG_64) == LONG_SLUG_64
+    assert seo.unique_slug(LONG_SLUG_TITLE, set()) == LONG_SLUG_64
+
+
+def test_a_title_at_the_title_limit_never_loses_a_word_from_its_slug():
+    limit = seo.content_limits()["max_title"]
+    title = ("Phantom Blade Zero Sells Over Four Million Copies In Three Days " * 2)[:limit].strip()
+    assert len(title) >= limit - 1
+    slug = seo.unique_slug(title, set())
+    assert slug == seo.slugify(title)
+    assert len(slug) <= seo.MAX_SLUG
+
+
+def test_the_slug_limit_covers_the_title_limit():
+    # A slug is the title with hyphens, so a title that fits must give a slug that fits.
+    assert seo.MAX_SLUG >= seo.content_limits()["max_title"]
+
+
+def test_validate_accepts_a_slug_at_the_limit_and_rejects_one_over():
+    def slug_errors(length):
+        slug = ("word-" * 30)[:length].strip("-")
+        errors = seo.validate(seo_data(slug=slug), article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+        return [e for e in errors if "slug" in e]
+
+    assert slug_errors(seo.MAX_SLUG) == []
+    assert any("characters" in e for e in slug_errors(seo.MAX_SLUG + 3))
 
 
 def test_slugify_transliterates_accents():
@@ -554,7 +586,7 @@ def test_generate_seo_fixes_formatting_without_a_retry(tmp_path):
     articles.mkdir()
     drafts.mkdir()
     data = seo_data(
-        slug="estimated-gears-of-war-e-day-sales-raise-query-about-last-minute",
+        slug="estimated-gears-of-war-e-day-sales-raise-query-about-last-minute-with-extra-words-added",
         title=LONG_SLUG_TITLE,
         tags=["game pass", "Game Pass", "", "xbox", "pc gaming", "pc-gaming"],
     )
@@ -567,7 +599,7 @@ def test_generate_seo_fixes_formatting_without_a_retry(tmp_path):
         articles_dir=articles,
         drafts_dir=drafts,
     )
-    assert result["slug"] == LONG_SLUG_CUT
+    assert result["slug"] == LONG_SLUG_64  # the whole title; it was ...-about-last at MAX_SLUG 60
     assert len(result["slug"]) <= seo.MAX_SLUG
     assert result["slug"] != data["slug"]
     assert result["tags"] == ["game-pass", "xbox", "pc-gaming"]
@@ -579,7 +611,7 @@ def test_generate_seo_avoids_slug_collision(tmp_path):
     drafts = tmp_path / "drafts"
     articles.mkdir()
     drafts.mkdir()
-    (articles / f"{LONG_SLUG_CUT}.md").write_text("---\n---\n", encoding="utf-8")
+    (articles / f"{LONG_SLUG_64}.md").write_text("---\n---\n", encoding="utf-8")
     data = seo_data(title=LONG_SLUG_TITLE)
     generate = make_generate(data)
     result = seo.generate_seo(
@@ -590,7 +622,9 @@ def test_generate_seo_avoids_slug_collision(tmp_path):
         articles_dir=articles,
         drafts_dir=drafts,
     )
+    # No room for "-2" after 64 characters, so the stem is cut at a word boundary.
     assert result["slug"] == f"{LONG_SLUG_CUT}-2"
+    assert result["slug"] != LONG_SLUG_64
     assert len(result["slug"]) <= seo.MAX_SLUG
     assert len(generate.calls) == 1
 

@@ -1106,6 +1106,57 @@ def _story_key(primary_entities: Iterable[object], story_type: str | None = None
     return f"{ents}|{stype}" if stype else ents
 
 
+#: Two clusters of one story rarely carry the exact same entity set: a source that
+#: joins adds a headline phrase ("phantom blade zero put up some massive") or
+#: drops one. They are still one story when the sets nearly coincide: at least
+#: this many entities in common ...
+FUZZY_MIN_SHARED = 3
+#: ... and the smaller set almost wholly inside the larger one.
+FUZZY_MIN_OVERLAP = 0.8
+
+
+def _entity_sets_match(a: set[str], b: set[str]) -> bool:
+    """True when two primary-entity sets are the same story's, give or take a few names."""
+    shared = len(a & b)
+    return shared >= FUZZY_MIN_SHARED and shared / min(len(a), len(b)) >= FUZZY_MIN_OVERLAP
+
+
+def _failed_matches(
+    failed: dict,
+    *,
+    story_key: str,
+    primary_entities: Iterable[object],
+    story_type: str | None,
+    member_urls: Iterable[str] | None = None,
+) -> list[tuple[str, dict]]:
+    """The failed-story entries that belong to this story.
+
+    An entry matches on the exact story key, on a shared member URL (the same
+    article is the same story, however the cluster around it changed), or, for
+    entries written before URLs were stored, on the same story type with nearly
+    the same primary entities. Without this a story that failed once under one
+    entity set and again under a slightly different one was counted as two
+    stories with one failure each, and never reached the two-attempt limit.
+    """
+    entities = set(_normalized_entities(primary_entities))
+    urls = set(_normalized_urls(member_urls or []))
+    kind = str(story_type or "")
+    matches: list[tuple[str, dict]] = []
+    for key, entry in (failed.get("stories") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        if (
+            key == story_key
+            or (urls and urls & _entry_member_urls(entry))
+            or (
+                str(entry.get("story_type") or "") == kind
+                and _entity_sets_match(entities, _entry_primary_entities(entry))
+            )
+        ):
+            matches.append((key, entry))
+    return matches
+
+
 def cluster_id_for_urls(urls: Iterable[str]) -> str:
     """Cluster id: a digest of the members' normalized, sorted, deduped URLs.
 
@@ -1278,24 +1329,38 @@ def record_attempt(
     story_type: str | None,
     reason: str,
     now: dt.datetime | None = None,
+    member_urls: Iterable[str] | None = None,
 ) -> dict:
     """Record a writer-produced-article failure for a story.
 
     Keyed by the story key (primary entities plus story type), which survives the
     membership-hash cluster id changing when the story gains or loses a source.
-    Increments ``attempt_count``, stamps ``last_attempt`` and stores the failure
-    ``reason`` (``article_rejected``, ``verifier_output_invalid`` or
-    ``gate failure``).
+    A failure of a story that already has an entry (see :func:`_failed_matches`)
+    is added to that entry instead of starting a second one, so the attempts of
+    one story always add up. Increments ``attempt_count``, stamps
+    ``last_attempt`` and stores the failure ``reason`` (``article_rejected``,
+    ``verifier_output_invalid`` or ``gate failure``), the latest entity set and
+    every member URL seen.
     """
     now = now or dt.datetime.now(dt.timezone.utc)
     key = _story_key(primary_entities, story_type)
-    entry = failed.setdefault("stories", {}).setdefault(key, {})
+    stories = failed.setdefault("stories", {})
+    if key not in stories:
+        matches = _failed_matches(
+            failed, story_key=key, primary_entities=primary_entities,
+            story_type=story_type, member_urls=member_urls,
+        )
+        if matches:
+            key = max(matches, key=lambda match: str(match[1].get("last_attempt") or ""))[0]
+    entry = stories.setdefault(key, {})
     entry["attempt_count"] = int(entry.get("attempt_count") or 0) + 1
     entry["last_attempt"] = now.isoformat()
     entry["failure_reason"] = str(reason)
     entry["cluster_id"] = str(cluster_id)
     entry["primary_entities"] = _normalized_entities(primary_entities)
     entry["story_type"] = story_type
+    if member_urls is not None:
+        entry["member_urls"] = sorted(_entry_member_urls(entry) | set(_normalized_urls(member_urls)))
     return failed
 
 
@@ -1304,10 +1369,19 @@ def clear_attempt(
     *,
     primary_entities: Iterable[object],
     story_type: str | None,
+    member_urls: Iterable[str] | None = None,
 ) -> dict:
-    """Remove a story from the failed list once it later passes."""
-    key = _story_key(primary_entities, story_type)
-    (failed.get("stories") or {}).pop(key, None)
+    """Remove a story from the failed list once it later passes.
+
+    Removes every entry that belongs to the story, not only the one under its
+    exact key, or an older entry would keep counting against it.
+    """
+    stories = failed.get("stories") or {}
+    for key, _entry in _failed_matches(
+        failed, story_key=_story_key(primary_entities, story_type),
+        primary_entities=primary_entities, story_type=story_type, member_urls=member_urls,
+    ):
+        stories.pop(key, None)
     return failed
 
 
@@ -1509,10 +1583,16 @@ def cluster_items(
         primary = _normalized_entities(_entities(members))
         cluster_type = story_type(str(bucket["seed"].get("title") or ""))
         story_key = _story_key(primary, cluster_type)
-        failed_entry = (failed.get("stories") or {}).get(story_key)
-        if failed_entry is not None:
-            attempt_count = int(failed_entry.get("attempt_count") or 0)
-            last_attempt = _parse_time(failed_entry.get("last_attempt"))
+        failed_entries = [
+            entry for _key, entry in _failed_matches(
+                failed, story_key=story_key, primary_entities=primary,
+                story_type=cluster_type, member_urls=member_urls,
+            )
+        ]
+        if failed_entries:
+            attempt_count = sum(int(entry.get("attempt_count") or 0) for entry in failed_entries)
+            attempt_times = [_parse_time(entry.get("last_attempt")) for entry in failed_entries]
+            last_attempt = max((time for time in attempt_times if time is not None), default=None)
             if attempt_count >= 2 and last_attempt is not None:
                 if (now - last_attempt) < failed_cooldown:
                     logger.info("skipping cluster %s: failed attempts within cooldown", cluster_id)

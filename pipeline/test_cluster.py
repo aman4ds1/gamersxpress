@@ -1,6 +1,8 @@
 import datetime as dt
 import json
 
+import pytest
+
 import cluster
 
 
@@ -701,3 +703,198 @@ def test_contains_entity_handles_apostrophes():
     assert cluster.contains_entity("Marvel's Spider-Man 2 update", "marvel's spider-man 2")
     assert cluster.contains_entity("Garry's Mod update", "garry's mod")
     assert not cluster.contains_entity("Horizon Forbidden West update", "assassin creed")
+
+
+# --- one story under slightly different entity sets ----------------------------------
+
+PBZ = [
+    "phantom blade zero", "steam", "ps5 pc", "best-selling games", "instant hit",
+    "just 72", "phantom blade zero became",
+]
+# The next run's cluster of the same story: a source joined and added two headline phrases.
+PBZ_LATER = [*PBZ, "numbers", "phantom blade zero put up some massive"]
+
+
+def _fail(failed, entities, *, urls=None, story_type="sales", cluster_id="c1", now=NOW):
+    return cluster.record_attempt(
+        failed, cluster_id, primary_entities=entities, story_type=story_type,
+        reason="gate failure", now=now, member_urls=urls,
+    )
+
+
+def test_two_failures_of_one_story_with_different_entity_sets_add_up():
+    failed = {"stories": {}}
+    _fail(failed, PBZ, cluster_id="c1")
+    _fail(failed, PBZ_LATER, cluster_id="c2")
+    assert len(failed["stories"]) == 1
+    entry = next(iter(failed["stories"].values()))
+    assert entry["attempt_count"] == 2
+    assert entry["cluster_id"] == "c2"
+    assert entry["primary_entities"] == sorted(PBZ_LATER)
+
+
+def test_a_failure_with_a_shared_url_joins_the_entry_whatever_the_entities():
+    failed = {"stories": {}}
+    _fail(failed, ["alpha one", "alpha two"], urls=["https://a.example/1", "https://c.example/3"])
+    _fail(failed, ["beta one", "beta two"], urls=["https://a.example/1", "https://b.example/2"])
+    assert len(failed["stories"]) == 1
+    entry = next(iter(failed["stories"].values()))
+    assert entry["attempt_count"] == 2
+    # Every URL of every attempt is kept, so a later cluster that grew from any of them matches.
+    assert entry["member_urls"] == [
+        "https://a.example/1", "https://b.example/2", "https://c.example/3",
+    ]
+
+
+def test_the_exact_story_key_still_wins_over_other_matches():
+    key_exact, key_other = cluster._story_key(PBZ, "sales"), cluster._story_key(PBZ_LATER, "sales")
+    failed = {"stories": {
+        key_exact: _failed_story(
+            1, now=NOW - dt.timedelta(hours=5), primary_entities=PBZ, story_type="sales"),
+        key_other: _failed_story(
+            1, now=NOW - dt.timedelta(hours=1), primary_entities=PBZ_LATER, story_type="sales"),
+    }}
+    # Both entries match this story and the other is the newer; the exact key is still the one updated.
+    _fail(failed, PBZ, cluster_id="c3")
+    assert failed["stories"][key_exact]["attempt_count"] == 2
+    assert failed["stories"][key_other]["attempt_count"] == 1
+    assert list(failed["stories"]) == [key_exact, key_other]
+
+
+@pytest.mark.parametrize("a, b, same", [
+    (set(PBZ), set(PBZ_LATER), True),
+    (set(PBZ), set(PBZ), True),
+    # Two shared entities are not enough: "steam" and "valve" are in many stories.
+    ({"steam", "valve"}, {"steam", "valve", "half-life 3"}, False),
+    # A small set inside a large noisy one is not the same story.
+    ({"a1", "a2", "a3"}, {"a1", "a2", "a3", "b1", "b2", "b3", "b4"}, True),
+    ({"a1", "a2", "a3", "a4", "a5"}, {"a1", "a2", "a3", "b1", "b2", "b3", "b4", "b5"}, False),
+    (set(), set(PBZ), False),
+])
+def test_entity_sets_match_when_they_nearly_coincide(a, b, same):
+    assert cluster._entity_sets_match(a, b) is same
+
+
+def test_a_different_story_type_or_entity_set_is_not_the_same_story():
+    failed = {"stories": {}}
+    _fail(failed, PBZ, story_type="sales")
+    assert cluster._failed_matches(
+        failed, story_key="k", primary_entities=PBZ_LATER, story_type="review"
+    ) == []
+    assert cluster._failed_matches(
+        failed, story_key="k", primary_entities=["doom", "id software", "machinegames"], story_type="sales"
+    ) == []
+
+
+def _failed_story(attempts, *, now=NOW, **fields):
+    return {"attempt_count": attempts, "last_attempt": now.isoformat(), "story_type": "x", **fields}
+
+
+def test_a_story_that_failed_twice_under_another_entity_set_is_skipped_by_url():
+    items = _failed_story_items()
+    story = cluster.cluster_items(items, now=NOW)[0]
+    failed = {"stories": {"unrelated": _failed_story(
+        2, primary_entities=["unrelated one"], member_urls=[items[0]["link"]],
+    )}}
+    assert cluster.cluster_items(items, now=NOW, failed=failed) == []
+    # Control: the same entry without a shared URL says nothing about this story.
+    failed["stories"]["unrelated"]["member_urls"] = ["https://elsewhere.example/9"]
+    assert [c["id"] for c in cluster.cluster_items(items, now=NOW, failed=failed)] == [story["id"]]
+
+
+STORY_ENTITIES = ["nvidia", "rtx 5090", "rtx 5080", "blackwell", "geforce"]
+
+
+@pytest.fixture
+def five_entity_story(monkeypatch):
+    """The sample items cluster into one story with enough entities to match fuzzily."""
+    monkeypatch.setattr(cluster, "_entities", lambda members: list(STORY_ENTITIES))
+    items = _failed_story_items()
+    story = cluster.cluster_items(items, now=NOW)[0]
+    assert story["entities"] == STORY_ENTITIES
+    return items, story
+
+
+def test_an_old_entry_without_urls_is_matched_by_nearly_the_same_entities(five_entity_story):
+    items, story = five_entity_story
+    failed = {"stories": {"legacy": _failed_story(
+        2, primary_entities=[*STORY_ENTITIES, "headline phrase one", "headline phrase two"],
+        story_type=story["story_type"],
+    )}}
+    assert cluster.cluster_items(items, now=NOW, failed=failed) == []
+    # Control: a different story type is a different story.
+    failed["stories"]["legacy"]["story_type"] = "review"
+    assert len(cluster.cluster_items(items, now=NOW, failed=failed)) == 1
+
+
+def test_failures_in_separate_legacy_entries_are_counted_together(five_entity_story):
+    items, story = five_entity_story
+    failed = {"stories": {
+        "one": _failed_story(1, primary_entities=STORY_ENTITIES, story_type=story["story_type"]),
+        "two": _failed_story(
+            1, primary_entities=[*STORY_ENTITIES, "one more phrase"], story_type=story["story_type"],
+        ),
+    }}
+    assert cluster.cluster_items(items, now=NOW, failed=failed) == []
+    del failed["stories"]["two"]
+    assert len(cluster.cluster_items(items, now=NOW, failed=failed)) == 1
+
+
+def test_the_cooldown_runs_from_the_latest_attempt_across_matching_entries(five_entity_story):
+    items, story = five_entity_story
+    failed = {"stories": {
+        "old": _failed_story(
+            1, now=NOW - dt.timedelta(hours=30), primary_entities=STORY_ENTITIES,
+            story_type=story["story_type"],
+        ),
+        "recent": _failed_story(
+            1, now=NOW - dt.timedelta(hours=1), primary_entities=[*STORY_ENTITIES, "phrase"],
+            story_type=story["story_type"],
+        ),
+    }}
+    # The older attempt alone is past the 24 h cooldown; the recent one keeps the story out.
+    assert cluster.cluster_items(items, now=NOW, failed=failed) == []
+    failed["stories"]["recent"]["last_attempt"] = (NOW - dt.timedelta(hours=30)).isoformat()
+    assert len(cluster.cluster_items(items, now=NOW, failed=failed)) == 1
+
+
+def test_clearing_a_passed_story_removes_all_its_entries_and_no_others():
+    failed = {"stories": {}}
+    _fail(failed, PBZ, urls=["https://a.example/1"])
+    failed["stories"]["legacy"] = _failed_story(
+        1, primary_entities=PBZ_LATER, story_type="sales",
+    )
+    _fail(failed, ["doom", "id software", "machinegames"], story_type="announcement")
+    cluster.clear_attempt(
+        failed, primary_entities=PBZ_LATER, story_type="sales", member_urls=["https://a.example/1"]
+    )
+    assert list(failed["stories"]) == [cluster._story_key(["doom", "id software", "machinegames"], "announcement")]
+
+
+def test_the_real_failed_state_blocks_a_third_try_at_the_same_story():
+    # failed.json as the pipeline saved it after the 2 and 3 Nov Phantom Blade attempts.
+    first = ["best-selling games", "instant hit", "just 72", "phantom blade zero",
+             "phantom blade zero became", "ps5 pc", "steam's"]
+    second = [*first, "numbers", "phantom blade zero put up some massive"]
+    failed = {"stories": {
+        cluster._story_key(first, "sales"): _failed_story(
+            1, now=NOW - dt.timedelta(hours=30), primary_entities=first, story_type="sales"),
+        cluster._story_key(second, "sales"): _failed_story(
+            1, now=NOW - dt.timedelta(hours=1), primary_entities=second, story_type="sales"),
+    }}
+    matches = cluster._failed_matches(
+        failed, story_key="new", primary_entities=[*first, "another phrase"], story_type="sales"
+    )
+    assert sum(entry["attempt_count"] for _key, entry in matches) == 2
+
+
+def test_clearing_by_url_removes_an_entry_whatever_its_entities():
+    failed = {"stories": {}}
+    _fail(failed, ["alpha one", "alpha two", "alpha three"], urls=["https://a.example/1"])
+    unrelated = ["something", "entirely", "different"]
+    cluster.clear_attempt(failed, primary_entities=unrelated, story_type="sales", member_urls=None)
+    assert len(failed["stories"]) == 1
+    cluster.clear_attempt(
+        failed, primary_entities=unrelated, story_type="sales", member_urls=["https://a.example/1"]
+    )
+    assert failed["stories"] == {}
