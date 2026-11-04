@@ -347,6 +347,20 @@ def add_required_entities(
     return merged, new_entities
 
 
+def drop_unmentioned_entities(names: list[str], *, title: str, article: Any) -> list[str]:
+    """Keep only the entities the title or body actually names.
+
+    A name the model adds from its own knowledge ("Valve" for a Steam story,
+    "Activision" for a Call of Duty comparison) is a known entity, so
+    ``canonicalize_entities`` keeps it without looking at the article. The
+    publish gate then fails the draft ("entity not mentioned in the body or
+    title"), so code drops such a name here instead: the gate's own mention
+    check decides, so the two always agree.
+    """
+    text = article if isinstance(article, str) else str(article)
+    return [name for name in names if not entity_mention_failures(title, [name], text)]
+
+
 # --- slugs -------------------------------------------------------------------
 
 
@@ -771,6 +785,16 @@ def generate_seo(
         if with_required != data["entities"]:
             logger.info("seo added required entities: %r -> %r", data["entities"], with_required)
             data["entities"], new_entities = with_required, required_new
+        mentioned = drop_unmentioned_entities(
+            data["entities"], title=str(data.get("title") or ""), article=article,
+        )
+        if mentioned != data["entities"]:
+            logger.info(
+                "seo dropped entities the article never names: %r",
+                [name for name in data["entities"] if name not in mentioned],
+            )
+            data["entities"] = mentioned
+            new_entities = [entity for entity in new_entities if entity["canonical"] in mentioned]
         if data["entities"] != raw_entities:
             logger.info("seo normalized entities: %r -> %r", raw_entities, data["entities"])
 
@@ -813,6 +837,7 @@ __all__ = [
     "SeoError",
     "build_prompt",
     "canonicalize_entities",
+    "drop_unmentioned_entities",
     "canonicalize_text",
     "content_limits",
     "existing_slugs",

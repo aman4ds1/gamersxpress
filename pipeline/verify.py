@@ -886,11 +886,19 @@ def load_verify_config(path: str | Path | None = None) -> dict:
         company_claim_terms = tuple(str(term) for term in terms if str(term).strip())
     else:
         company_claim_terms = DEFAULT_COMPANY_CLAIM_TERMS
+    # The opener limit is the publish gate's own setting, so the verifier flags
+    # exactly the sentences the gate would fail (0 turns the check off).
+    gate_section = raw.get("gates") or {}
+    if gate_section.get("check_opener_variety", gates.DEFAULT_GATES["check_opener_variety"]):
+        max_same_opener = int(gate_section.get("max_same_opener", gates.DEFAULT_GATES["max_same_opener"]))
+    else:
+        max_same_opener = 0
     return {
         "list_markers": section.get("list_markers") or DEFAULT_LIST_MARKERS,
         "whitelist": whitelist,
         "relative_time_words": relative_time_words,
         "company_claim_terms": company_claim_terms,
+        "max_same_opener": max_same_opener,
     }
 
 
@@ -1473,6 +1481,29 @@ def carries_figures(tokens: Iterable[str], text: str, config: dict) -> bool:
     )
 
 
+def opener_check(article: Any, config: dict) -> list[dict]:
+    """Sentences that give one outlet more openers than the publish gate allows.
+
+    The gate (``gates.repetitive_opener_failures``) rejects the finished article
+    with no way back, so the verifier flags the excess sentences while the one
+    repair is still available: it rewrites each to open with its fact.
+    """
+    limit = int(config.get("max_same_opener", gates.DEFAULT_GATES["max_same_opener"]))
+    if limit <= 0:
+        return []
+    _front, body = _split_front_matter(_as_text(article))
+    return [
+        {
+            "clause": item["sentence"],
+            "reason": (
+                f'{item["outlet"]} already opens {limit} sentences; start this one with '
+                f'its fact and put the outlet at the end ("..., {item["outlet"]} reports")'
+            ),
+        }
+        for item in gates.repetitive_opener_sentences(body, limit)
+    ]
+
+
 def _clause_key(text: object) -> str:
     return _fold(text).rstrip(" .!?")
 
@@ -1579,7 +1610,11 @@ def verify(
 
     code_result = code_check(article, sheet, config)
     company_claim_issues = _company_claim_check(article, config)
-    outlet_issues = coverage_only_check(article, sheet) + outlet_number_check(article, sheet, config)
+    outlet_issues = (
+        coverage_only_check(article, sheet)
+        + outlet_number_check(article, sheet, config)
+        + opener_check(article, config)
+    )
     duplicate_sources = find_sources_heading(article)
 
     # A sentence a code check flagged keeps the code check's wording, which

@@ -1140,3 +1140,46 @@ def test_dry_run_sample_body_passes_the_new_quality_gates():
     facts["coherence"] = {"canonical_entities": ["Nvidia"]}
     result = run(article, facts=facts)
     assert result.passed, result.failures
+
+
+# --- the sentences that push one outlet past the opener limit ------------------------
+
+
+def opener_body(outlet, count, other=None):
+    lines = [f"{outlet} reports that fact number {i} changed." for i in range(1, count + 1)]
+    if other:
+        lines.append(f"{other} says that its own fact changed.")
+    return "\n".join(lines)
+
+
+def test_opener_sentences_are_the_ones_past_the_limit():
+    flagged = gates.repetitive_opener_sentences(opener_body("Eurogamer", 5), 3)
+    assert [item["sentence"] for item in flagged] == [
+        "Eurogamer reports that fact number 4 changed.",
+        "Eurogamer reports that fact number 5 changed.",
+    ]
+    assert [item["count"] for item in flagged] == [4, 5]
+    assert {item["outlet"] for item in flagged} == {"Eurogamer"}
+
+
+def test_openers_up_to_the_limit_flag_nothing():
+    assert gates.repetitive_opener_sentences(opener_body("Eurogamer", 3), 3) == []
+
+
+def test_each_outlet_is_counted_on_its_own():
+    body = opener_body("Eurogamer", 3, other="Polygon") + "\n" + opener_body("Polygon", 2)
+    assert gates.repetitive_opener_sentences(body, 3) == []
+
+
+def test_openers_that_are_not_reporting_verbs_are_not_counted():
+    # The gate only counts "<outlet> reports/reported/says/said"; so does this.
+    body = "\n".join(f"Eurogamer also reports that fact {i} changed." for i in range(6))
+    assert gates.repetitive_opener_sentences(body, 3) == []
+
+
+@pytest.mark.parametrize("count", [3, 4, 7])
+def test_the_flagged_sentences_agree_with_the_gate_failure(count):
+    body = opener_body("Eurogamer", count)
+    assert bool(gates.repetitive_opener_sentences(body, 3)) == bool(
+        gates.repetitive_opener_failures(body, 3)
+    )

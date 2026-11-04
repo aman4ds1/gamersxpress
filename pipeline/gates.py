@@ -982,6 +982,27 @@ def repetitive_opener_failures(body: str, max_same: int = 3) -> list[str]:
     ]
 
 
+def repetitive_opener_sentences(body: str, max_same: int = 3) -> list[dict]:
+    """The sentences that push one outlet past ``max_same`` openers.
+
+    Same count as :func:`repetitive_opener_failures`, but names the offending
+    sentences (the 4th, 5th... that one outlet opens) so a repair can rewrite
+    them: ``{"sentence", "outlet", "count"}`` with ``count`` the running total.
+    """
+    counts: dict[str, int] = {}
+    excess: list[dict] = []
+    for sentence in _sentences(body):
+        match = _OUTLET_OPENER_RE.match(sentence)
+        if not match:
+            continue
+        name = " ".join(match.group(1).split())
+        key = name.lower()
+        counts[key] = counts.get(key, 0) + 1
+        if counts[key] > max_same:
+            excess.append({"sentence": sentence, "outlet": name, "count": counts[key]})
+    return excess
+
+
 def _mention_tokens(name: str) -> tuple[str, ...]:
     """Entity tokens for mention matching, with possessive "'s" parts dropped."""
     return tuple(token for token in _entity_tokens(name) if token != "s")

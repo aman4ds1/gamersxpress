@@ -684,3 +684,63 @@ def test_generate_seo_does_not_add_a_top_entity_the_article_never_names(tmp_path
     )
     result, _ = run_dusk_seo(tmp_path, facts)
     assert "Elden Ring" not in result["entities"]
+
+
+# --- entities the article never names ------------------------------------------------
+
+
+@pytest.mark.parametrize("names, kept", [
+    (["FromSoftware", "Valve", "Activision"], ["FromSoftware"]),
+    (["Nintendo Switch 2", "Sony"], ["Nintendo Switch 2"]),
+    (["Valve"], []),
+    ([], []),
+])
+def test_drop_unmentioned_entities_keeps_only_named_ones(names, kept):
+    body = "FromSoftware delayed its Nintendo Switch 2 exclusive into 2027."
+    assert seo.drop_unmentioned_entities(names, title="Delay news", article=body) == kept
+
+
+def test_drop_unmentioned_entities_counts_the_title():
+    assert seo.drop_unmentioned_entities(
+        ["Valve"], title="Valve ships an update", article="The patch is out."
+    ) == ["Valve"]
+
+
+def run_dusk_seo_with(tmp_path, facts, entities):
+    entities_path = tmp_path / "entities.json"
+    seo.save_entities(
+        [{"canonical": "FromSoftware", "aliases": []},
+         {"canonical": "Nintendo Switch 2", "aliases": ["Switch 2"]},
+         {"canonical": "Valve", "aliases": []}],
+        entities_path,
+    )
+    (tmp_path / "articles").mkdir()
+    (tmp_path / "drafts").mkdir()
+    data = dusk_seo()
+    data["entities"] = entities
+    result = seo.generate_seo(
+        DUSK_ARTICLE, facts, generate=make_generate(data),
+        entities_path=entities_path, articles_dir=tmp_path / "articles",
+        drafts_dir=tmp_path / "drafts",
+    )
+    return result, entities_path
+
+
+def test_generate_seo_drops_a_known_entity_the_article_never_names(tmp_path):
+    # "Valve" is a known entity, so canonicalizing keeps it without looking at the
+    # article; the publish gate would then fail the draft for naming it.
+    result, _ = run_dusk_seo_with(tmp_path, dusk_facts(), ["FromSoftware", "Valve"])
+    assert "Valve" not in result["entities"]
+    assert "FromSoftware" in result["entities"]
+
+
+def test_generate_seo_does_not_save_a_dropped_new_entity(tmp_path):
+    # "Elden Ring" is in the facts (so it is a valid new entity) but not in the article.
+    facts = dusk_facts()
+    facts["claims"].append(
+        {"claim": "The Elden Ring developer announced the delay", "value": "Elden Ring",
+         "source_url": "https://nvidia.example/5090", "confidence": 0.95, "kind": "reported"}
+    )
+    result, entities_path = run_dusk_seo_with(tmp_path, facts, ["FromSoftware", "Elden Ring"])
+    assert "Elden Ring" not in result["entities"]
+    assert "Elden Ring" not in [e["canonical"] for e in seo.load_entities(entities_path)]

@@ -2270,3 +2270,76 @@ def test_a_misattributed_figure_alone_rejects_an_article_the_model_passed(tmp_pa
     )
     assert report.passed is False
     assert report.unsupported == [credited]
+
+
+# --- one outlet opening too many sentences (the publish gate's limit) -------------------
+
+
+PLAN_NAMES = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"]
+
+
+def opener_article(count):
+    # No digits: a figure credited to Polygon would trip the per-outlet number check.
+    return "\n".join(
+        f"Polygon reports that the studio changed plan {PLAN_NAMES[i]}." for i in range(count)
+    ) + "\n"
+
+
+def opener_config(limit=3):
+    return {**config(), "max_same_opener": limit}
+
+
+def test_opener_check_flags_the_sentences_past_the_limit():
+    flagged = verify_module.opener_check(opener_article(5), opener_config())
+    assert [item["clause"] for item in flagged] == [
+        "Polygon reports that the studio changed plan delta.",
+        "Polygon reports that the studio changed plan echo.",
+    ]
+    assert all("Polygon already opens 3 sentences" in item["reason"] for item in flagged)
+    assert all('"..., Polygon reports"' in item["reason"] for item in flagged)
+
+
+def test_opener_check_passes_up_to_the_limit_and_when_switched_off():
+    assert verify_module.opener_check(opener_article(3), opener_config()) == []
+    assert verify_module.opener_check(opener_article(6), opener_config(limit=0)) == []
+
+
+def test_opener_check_ignores_front_matter():
+    # YAML list items that read like openers sit outside the article body.
+    tags = "\n".join(f"  - Polygon reports {word}" for word in ("a", "b", "c", "d", "e"))
+    article = f"---\ntitle: News\ntags:\n{tags}\n---\n" + opener_article(3)
+    assert verify_module.opener_check(article, opener_config()) == []
+
+
+def test_opener_check_defaults_to_the_gate_limit():
+    assert len(verify_module.opener_check(opener_article(5), config())) == 2
+
+
+def test_verify_rejects_excess_outlet_openers_the_model_passed(tmp_path):
+    clauses = [
+        {"clause": f"the studio changed plan {PLAN_NAMES[i]}", "fact_ids": ["F1"], "match": "paraphrase",
+         "exceeds_facts": False, "difference": ""}
+        for i in range(5)
+    ]
+    report = verify_module.verify(
+        opener_article(5), outlets_sheet(), run_state=providers.RunState(),
+        generate=make_generate(model(clauses=clauses)), report_dir=tmp_path,
+        verify_config=opener_config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert report.unsupported == [
+        "Polygon reports that the studio changed plan delta.",
+        "Polygon reports that the studio changed plan echo.",
+    ]
+    reasons = [item.get("reason") for item in report.unsupported_detail]
+    assert all("already opens 3 sentences" in reason for reason in reasons)
+
+
+def test_verify_config_reads_the_opener_limit_from_the_gates_section(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("gates:\n  max_same_opener: 2\n", encoding="utf-8")
+    assert verify_module.load_verify_config(path)["max_same_opener"] == 2
+    path.write_text("gates:\n  check_opener_variety: false\n  max_same_opener: 2\n", encoding="utf-8")
+    assert verify_module.load_verify_config(path)["max_same_opener"] == 0
+    assert verify_module.load_verify_config(tmp_path / "missing.yaml")["max_same_opener"] == 3
