@@ -1017,14 +1017,6 @@ score:
       - '\brestocks?\b'
       - '\bunboxing\b'
       - '\bbest (?:\w+[- ]){0,4}(?:of|for|in) 20\d\d\b'
-    # A review is a verdict, not a fact the pipeline can check. Only the review itself is matched ("... review", "Review:", "| Review", hands-on, preview); news about reviews ("reviews make it 2026's highest rated game", "Steam's review process") stays eligible.
-    reviews_and_impressions:
-      - '\breview\s*(?:[:|,\-–—(]|$)'
-      - '[|:–—-]\s*review\b'
-      - '\breview in progress\b'
-      - '\bhands-on\b'
-      - '\bfirst impressions\b'
-      - '\bpreview\b'
     # Weekly roundups and newsletters.
     roundups_and_newsletters:
       - '\bweekly (?:roundup|recap|digest|news)\b'
@@ -1032,8 +1024,9 @@ score:
       - '\bweek in review\b'
       - '\bround-?ups?\b'
       - '\bnewsletter\b'
-    # Enterprise and AI-infrastructure products. "data center" alone stays eligible: AI demand for memory and GPUs is gaming-hardware news (the relevance gate drops the rest).
+    # Enterprise and AI-infrastructure products. "data center" alone stays eligible: AI demand for memory and GPUs is gaming-hardware news (the relevance gate drops the rest). "enterprise" is matched because the relevance keywords below admit SSD, DRAM and monitor stories, which includes their enterprise versions.
     non_gaming_enterprise:
+      - '\benterprise\b'
       - '\bepyc\b'
       - '\bxeon\b'
       - '\bgaudi\b'
@@ -1128,6 +1121,23 @@ relevance:
     - processor
     - vram
     - gddr6
+    # PC and console hardware product categories (hardware news and reviews).
+    # Specific on purpose: bare "mouse", "ram" or "case" also name animals, verbs
+    # and court cases, so only unambiguous words and phrases are listed.
+    - ssd
+    - nvme
+    - motherboard
+    - keyboard
+    - headset
+    - controller
+    - monitor
+    - psu
+    - power supply
+    - ddr5
+    - ddr4
+    - dram
+    - ram prices
+    - memory prices
 
 # Safety layer (PLAN.md section 11). The kill switch reads PAUSED from the
 # environment; the daily cap reads DAILY_CAP (falling back to this default).

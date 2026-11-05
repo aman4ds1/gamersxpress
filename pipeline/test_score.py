@@ -768,7 +768,7 @@ def test_load_min_distinct_owners_reads_config_and_defaults():
 
 EXPECTED_TOPIC_GROUPS = {
     "lawsuits_and_regulation", "backlash_and_controversy", "labor_and_layoffs", "politics",
-    "misconduct_allegations", "guides_and_service_posts", "reviews_and_impressions",
+    "misconduct_allegations", "guides_and_service_posts",
     "roundups_and_newsletters", "non_gaming_enterprise",
 }
 #: Politics and layoffs are covered when the story is about the gaming scene or gaming hardware.
@@ -808,12 +808,6 @@ BLOCKED_HEADLINES = [
     ("guides_and_service_posts", "Fortnite redeem codes for November 2026"),
     ("guides_and_service_posts", "Where to buy the Switch 2 OLED right now"),
     ("guides_and_service_posts", "Best gaming laptops of 2026"),
-    ("reviews_and_impressions", "Enshrouded 1.0 review"),
-    ("reviews_and_impressions", "Cougar DuoAir Review \u2013 Glass or Mesh?"),
-    ("reviews_and_impressions", "The Legend of Zelda: Ocarina of Time Is Still Perfect on Switch 2 | Review"),
-    ("reviews_and_impressions", "Creality K3 Review: It's a Tool Changer, not a game changer"),
-    ("reviews_and_impressions", "Hollow Knight: Silksong review in progress"),
-    ("reviews_and_impressions", "Hands-on with the DockCase Mount Ling 2 Pro"),
     ("roundups_and_newsletters", "This week in PC games: go helldiving in Gravhounds"),
     ("roundups_and_newsletters", "Weekly roundup: Xbox, PlayStation and Nintendo news"),
     ("roundups_and_newsletters", "The GamesRadar newsletter returns"),
@@ -821,6 +815,7 @@ BLOCKED_HEADLINES = [
     ("non_gaming_enterprise", "AMD EPYC Venice CPUs reach tape-out"),
     ("non_gaming_enterprise", "Creator says Amazon closed his account after he bought seven Nvidia DGX Sparks"),
     ("non_gaming_enterprise", "Quantum computing startup partners with Nvidia"),
+    ("non_gaming_enterprise", "Samsung unveils an enterprise SSD for AI servers"),
 ]
 
 #: Gaming news that shares words with a blocked topic and must stay eligible.
@@ -834,6 +829,15 @@ ALLOWED_HEADLINES = [
     "Zelda: Ocarina of Time Remake Reviews Make It 2026's Highest Rated Game",  # news about reviews
     "The Ocarina of Time remake has claimed 2026's review crown",
     "Steam Making Big Changes to Its Game Review Process",
+    # Game and gaming hardware reviews are covered.
+    "Enshrouded 1.0 review",
+    "Castlevania: Belmont's Curse: The Kotaku Review",
+    "The Legend of Zelda: Ocarina of Time Is Still Perfect on Switch 2 | Review",
+    "Hollow Knight: Silksong review in progress",
+    "Biwin M560 2TB SSD Review: The DRAM-less drive to beat",
+    "Hardware Review: SCUF Omega PS5 Controller",
+    "Hands-on with the DockCase Mount Ling 2 Pro",
+    "Windows 11 Preview adds Cloud Rebuild to reinstall OS and drivers",
     "AI data center demand pushes GPU and RAM prices up for PC gamers",
     "Microsoft appoints a new CEO of Microsoft Gaming",
     "Phantom Blade Zero sells 4 million copies in 72 hours",
@@ -1067,3 +1071,64 @@ def test_off_topic_is_reported_before_a_blocked_topic():
 def test_a_format_exclusion_is_reported_before_a_blocked_topic():
     c = gaming_cluster("The podcast on why the studio faces a lawsuit")
     assert score.ineligible_reason(c, ["podcast"]) == "excluded pattern: 'podcast'"
+
+
+
+# --- reviews and gaming hardware are covered --------------------------------------------
+
+
+def test_there_is_no_reviews_group_any_more():
+    groups = {group for group, *_rest in score.load_blocked_topics()}
+    assert "reviews_and_impressions" not in groups
+    assert groups == EXPECTED_TOPIC_GROUPS
+
+
+@pytest.mark.parametrize("title", [
+    "Biwin M560 2TB SSD Review: The DRAM-less drive to beat",
+    "ASRock B860 Challenger Wifi Motherboard Review: Entry-level ATX at a great price",
+    "Mchose launches updated Ace68 V2 HE keyboard as a $69 Wooting alternative",
+    "FSP announces new flagship 1200W Gold non-modular power supply",
+    "DDR5 prices climb again as DRAM supply tightens",
+    "Corsair slashes $180 off its MP700 SE Gen 5 NVMe drive",
+    "Razer unveils a $350 PS5 controller",
+    "Budget 27-inch 240Hz monitor lands with a 1ms response time",
+    "Lightweight wireless headset adds a 60-hour battery",
+    "Corsair launches a 1000W PSU with a 12V-2x6 connector",
+    "Seagate unveils a PCIe 5.0 NVMe drive with 14 GB/s reads",
+    "DDR4 stock dwindles as makers shift to newer memory",
+    "DRAM contract prices rise again this quarter",
+    "RAM prices double in a month for retail kits",
+    "Memory prices keep climbing for retail shoppers",
+])
+def test_gaming_hardware_stories_from_a_mixed_outlet_are_on_topic_and_covered(title):
+    c = hardware_cluster(title)
+    assert score.relevant_cluster(c) is True
+    assert score.ineligible_reason(c) is None
+    assert score.rank([c])[0]["eligible"] is True
+
+
+@pytest.mark.parametrize("title", [
+    "Bambu Lab H3C 3D printer review: A nine-tool monster",
+    "Windows 11 Preview adds Cloud Rebuild to reinstall OS and drivers",
+    "Cloudflare engineers optimize DNS build services for twice the speed",
+    "AI agent used to perform brain surgery on a mouse",
+])
+def test_non_gaming_stories_from_a_mixed_outlet_stay_off_topic(title):
+    c = hardware_cluster(title)
+    assert score.relevant_cluster(c) is False
+    assert score.ineligible_reason(c) == "off-topic"
+
+
+def test_an_enterprise_version_of_a_hardware_story_is_still_skipped():
+    # "ssd" makes the story relevant; "enterprise" is what keeps it out.
+    c = hardware_cluster("Samsung unveils an enterprise SSD for AI servers")
+    assert score.relevant_cluster(c) is True
+    assert score.ineligible_reason(c).startswith("blocked topic: non_gaming_enterprise (")
+
+
+def test_the_hardware_keywords_are_unambiguous_words():
+    keywords = set(score.load_relevance_keywords())
+    assert {"ssd", "nvme", "motherboard", "keyboard", "headset", "controller", "monitor", "psu",
+            "power supply", "ddr5", "ddr4", "dram", "ram prices", "memory prices"} <= keywords
+    # Bare "mouse", "ram" and "case" also name animals, verbs and court cases.
+    assert not {"mouse", "ram", "case", "cooler"} & keywords

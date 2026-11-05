@@ -12,8 +12,8 @@ least two distinct owners, else ``score.min_score`` (default 65), both from
 model call): they need a tier-1 source or at least two distinct owners
 (:func:`cluster.confirmable`), their headline must not match a configured
 format-exclusion pattern (``score.exclude_title_patterns``) or a blocked topic
-(``score.blocked_topics``: lawsuits, backlash, misconduct, reviews, guides,
-roundups and non-gaming enterprise news, each a named group; politics and layoffs
+(``score.blocked_topics``: lawsuits, backlash, misconduct, guides, roundups and
+non-gaming enterprise news, each a named group; politics and layoffs
 only when the story is not about the gaming scene or gaming hardware), and they must be
 topically relevant. A cluster is relevant when any member comes from a source
 whose ``topic`` is "gaming"; otherwise the seed title or the cluster's named
