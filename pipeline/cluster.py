@@ -1711,6 +1711,50 @@ def excluded_title_pattern(title: str, patterns: Iterable[str] | None = None) ->
     return None
 
 
+def blocked_topic(
+    title: str, topics: Iterable[tuple] | None = None, gaming_scene: bool = False
+) -> tuple[str, str] | None:
+    """The first ``(group, pattern)`` blocked topic a headline matches, else None.
+
+    ``topics`` is the flattened ``score.blocked_topics`` list of
+    ``(group, pattern)`` or ``(group, pattern, unless_gaming)`` entries; patterns
+    match like :func:`excluded_title_pattern`'s, so a group name travels with the
+    pattern and a skip can say which topic blocked the story. An ``unless_gaming``
+    entry (politics, layoffs) is ignored when ``gaming_scene`` is true: the story
+    is about the gaming scene or gaming hardware, which the site does cover.
+    """
+    for group, pattern, *rest in topics or ():
+        if gaming_scene and rest and rest[0]:
+            continue
+        if excluded_title_pattern(title, [pattern]) is not None:
+            return str(group), str(pattern)
+    return None
+
+
+def cluster_blocked_topic(
+    cluster_dict: dict, topics: Iterable[tuple] | None = None, gaming_scene: bool = False
+) -> tuple[str, str] | None:
+    """The blocked topic of a whole cluster: its seed headline or any member's.
+
+    A topic describes the story, not one outlet's wording: when Kotaku writes
+    "sued" and PC Gamer writes "faces a legal fight", the story is still about a
+    lawsuit. So the topics are not applied item by item at ingest (the cluster
+    would then form from the neutral headlines and be covered), but to the
+    finished cluster. ``gaming_scene`` is passed on to :func:`blocked_topic`.
+    """
+    members = [m for m in cluster_dict.get("items") or [] if isinstance(m, dict)]
+    seen: set[str] = set()
+    for title in [cluster_dict.get("title"), *(m.get("title") for m in members)]:
+        title = str(title or "")
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        hit = blocked_topic(title, topics, gaming_scene)
+        if hit is not None:
+            return hit
+    return None
+
+
 #: Ordered: the first category whose keyword matches wins. More specific before
 #: the generic "gaming-news" fallback.
 _CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
@@ -1756,6 +1800,8 @@ __all__ = [
     "contains_entity",
     "event_overlap",
     "event_words",
+    "blocked_topic",
+    "cluster_blocked_topic",
     "excluded_title_pattern",
     "DEFAULT_ENTITIES_PATH",
     "load_known_names",

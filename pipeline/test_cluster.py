@@ -898,3 +898,82 @@ def test_clearing_by_url_removes_an_entry_whatever_its_entities():
         failed, primary_entities=unrelated, story_type="sales", member_urls=["https://a.example/1"]
     )
     assert failed["stories"] == {}
+
+
+# --- blocked topics ---------------------------------------------------------------------
+
+TOPICS = [("labor", r"\blaid off\b"), ("labor", r"\blayoffs?\b"), ("legal", r"\blawsuit\b")]
+
+
+def test_blocked_topic_returns_the_first_matching_group_and_pattern():
+    assert cluster.blocked_topic("Half of the studio was laid off", TOPICS) == ("labor", r"\blaid off\b")
+    assert cluster.blocked_topic("Studio faces a lawsuit after layoffs", TOPICS) == ("labor", r"\blayoffs?\b")
+    assert cluster.blocked_topic("Studio faces a lawsuit", TOPICS) == ("legal", r"\blawsuit\b")
+
+
+@pytest.mark.parametrize("title, topics", [
+    ("Valve announces Steam Deck 2", TOPICS),
+    ("", TOPICS),
+    (None, TOPICS),
+    ("Half of the studio was laid off", []),
+    ("Half of the studio was laid off", None),
+])
+def test_blocked_topic_is_none_without_a_match(title, topics):
+    assert cluster.blocked_topic(title, topics) is None
+
+
+def test_blocked_topic_treats_an_invalid_regex_as_a_plain_substring():
+    assert cluster.blocked_topic("a (b) c", [("g", "(b")]) == ("g", "(b")
+
+
+def test_the_first_listed_topic_wins_even_when_it_sorts_later():
+    assert cluster.blocked_topic("x", [("b_group", "x"), ("a_group", "x")]) == ("b_group", "x")
+
+
+UNLESS = [("labor", r"\blaid off\b", True), ("legal", r"\blawsuit\b", False), ("backlash", r"\blaid off\b", False)]
+
+
+def test_an_unless_gaming_topic_is_lifted_only_for_a_gaming_story():
+    assert cluster.blocked_topic("Half of the studio was laid off", UNLESS[:1]) == ("labor", r"\blaid off\b")
+    assert cluster.blocked_topic("Half of the studio was laid off", UNLESS[:1], gaming_scene=False) is not None
+    assert cluster.blocked_topic("Half of the studio was laid off", UNLESS[:1], gaming_scene=True) is None
+
+
+def test_lifting_a_topic_does_not_lift_the_others():
+    assert cluster.blocked_topic("Studio faces a lawsuit", UNLESS, gaming_scene=True) == ("legal", r"\blawsuit\b")
+    # The lifted group is skipped, and a later group that also matches still blocks.
+    assert cluster.blocked_topic("Half of the studio was laid off", UNLESS, gaming_scene=True) == (
+        "backlash", r"\blaid off\b",
+    )
+
+
+def _topic_cluster(seed, *member_titles):
+    return {"title": seed, "items": [{"title": title, "link": f"https://x.example/{i}"}
+                                     for i, title in enumerate(member_titles)]}
+
+
+def test_a_cluster_is_blocked_by_its_seed_headline():
+    c = _topic_cluster("Half of the studio was laid off", "A neutral headline")
+    assert cluster.cluster_blocked_topic(c, TOPICS) == ("labor", r"\blaid off\b")
+
+
+def test_a_cluster_is_blocked_by_any_members_headline():
+    c = _topic_cluster("A neutral headline", "Another neutral one", "Studio faces a lawsuit")
+    assert cluster.cluster_blocked_topic(c, TOPICS) == ("legal", r"\blawsuit\b")
+
+
+def test_a_cluster_with_neutral_headlines_is_not_blocked():
+    c = _topic_cluster("Valve announces Steam Deck 2", "Steam Deck 2 gets a release date")
+    assert cluster.cluster_blocked_topic(c, TOPICS) is None
+    assert cluster.cluster_blocked_topic({"title": "Valve announces Steam Deck 2"}, TOPICS) is None
+
+
+def test_a_cluster_ignores_members_that_are_not_items():
+    c = {"title": "A neutral headline", "items": [None, "text", {"title": None}, {"title": "A lawsuit"}]}
+    assert cluster.cluster_blocked_topic(c, TOPICS) == ("legal", r"\blawsuit\b")
+
+
+def test_a_cluster_passes_the_gaming_flag_to_every_headline():
+    c = _topic_cluster("A neutral headline", "Half of the studio was laid off")
+    assert cluster.cluster_blocked_topic(c, UNLESS, gaming_scene=False) == ("labor", r"\blaid off\b")
+    assert cluster.cluster_blocked_topic(c, UNLESS, gaming_scene=True) == ("backlash", r"\blaid off\b")

@@ -912,6 +912,167 @@ score:
     - '\bgift guide\b'
     - '\bbuying guide\b'
     - '\bbest .{0,40}(?:upgrades|accessories|deals)\b'
+  # Topics the site does not cover, grouped so a skipped story's reason names the
+  # topic that blocked it ("blocked topic: lawsuits_and_regulation"). Each entry is a
+  # case-insensitive regex matched against the headline of any story in the
+  # cluster, like exclude_title_patterns above; delete an entry or a whole group to
+  # cover that topic again. A group is a plain list (always blocked) or a mapping
+  # with `unless_gaming: true` and `patterns:` (blocked only when the story is not
+  # about the gaming scene or gaming hardware: a gaming-topic source covers it, or a
+  # headline/entity carries a gaming_scene_keywords word).
+  blocked_topics:
+    # Lawsuits, court cases and regulators.
+    lawsuits_and_regulation:
+      - '\blawsuits?\b'
+      - '\bsues\b'
+      - '\bsued\b'
+      - '\bsuing\b'
+      - '\bclass[- ]action\b'
+      - '\bantitrust\b'
+      - '\blegal battle\b'
+      - '\binjunction\b'
+      - '\bcourt (?:ruling|case|rules|order|battle|filing)\b'
+      - '\b(?:supreme|federal|appeals|district) court\b'
+      - '\bpatent (?:infringement|suit|dispute|troll)\b'
+      - '\bcopyright (?:infringement|claim|suit)\b'
+      - '\bftc\b'
+      - '\bregulators?\b'
+      - '\bcma\b'
+      - '\bsettles? (?:with|a|the|over)\b'
+    # Boycotts, backlash, review bombing and damage control.
+    backlash_and_controversy:
+      - '\bboycott(?:s|ed|ing)?\b'
+      - '\bbacklash\b'
+      - '\breview[- ]?bomb(?:s|ed|ing)?\b'
+      - '\boutrage\b'
+      - '\boutraged\b'
+      - '\bcontrovers(?:y|ies)\b'
+      - '\bscandal\b'
+      - '\bpetition(?:s|ed)?\b'
+      - '\bfans? (?:slam|furious|angry|revolt|demand|are not happy|call out)\b'
+      - '\bcancel(?:l?ed)? culture\b'
+      - '\bprotest(?:s|ed|ing)?\b'
+      - '\bdamage control\b'
+      - '\bdoubles? down\b'
+    # Layoffs, unions and strikes. Covered when the story is about the gaming scene or gaming hardware (unless_gaming, see gaming_scene_keywords below); skipped otherwise. "strike" is only matched as a labor phrase ("on strike"), never on its own, so Counter-Strike stays eligible.
+    labor_and_layoffs:
+      unless_gaming: true
+      patterns:
+        - '\blay-?offs?\b'
+        - '\blaid off\b'
+        - '\blays off\b'
+        - '\bjob cuts?\b'
+        - '\bredundanc(?:y|ies)\b'
+        - '\bunioni[sz](?:e|es|ed|ing|ation)\b'
+        - '\b(?:labou?r|trade|workers''?) union\b'
+        - '\bunion[- ]busting\b'
+        - '\bcollective bargaining\b'
+        - '\bon strike\b'
+        - '\bgo(?:es|ing)? on strike\b'
+        - '\bwalk-?outs?\b'
+        - '\bsag-?aftra\b'
+        - '\bcrunch (?:culture|time)\b'
+    # Politics, elections, war and trade policy. Covered when the story is about the gaming scene or gaming hardware (unless_gaming); skipped otherwise. "president" is not matched (Nintendo of America president, studio presidents) and neither are tariffs (console price rises are hardware news).
+    politics:
+      unless_gaming: true
+      patterns:
+        - '\belections?\b'
+        - '\bpresidential\b'
+        - '\bsenators?\b'
+        - '\bsenate\b'
+        - '\bcongressional\b'
+        - '\bu\.?s\.? congress\b'
+        - '\bparliament\b'
+        - '\bwhite house\b'
+        - '\btrump\b'
+        - '\bbiden\b'
+        - '\bpolitic(?:s|al|ian|ians)\b'
+        - '\bputin\b'
+        - '\bukraine\b'
+        - '\bgaza\b'
+        - '\bisrael\b'
+        - '\bexport (?:controls?|bans?|restrictions?)\b'
+        - '\bsmuggl\w+\b'
+        - '\btrade (?:war|controls?|restrictions?|loophole)\b'
+    # Harassment, misconduct and allegations; "assault" alone is not matched (game titles).
+    misconduct_allegations:
+      - '\bharass(?:ment|ed)\b'
+      - '\bmisconduct\b'
+      - '\bsexual (?:assault|abuse)\b'
+      - '\ballegations?\b'
+      - '\baccused of\b'
+      - '\bfired for\b'
+      - '\bpolicy violations?\b'
+    # Guides, how-tos, puzzle answers (Wordle, NYT), codes and shopping service posts.
+    guides_and_service_posts:
+      - '\bguide\b'
+      - '\bhow to\b'
+      - '\btier list\b'
+      - '\bwordle\b'
+      - '\bquordle\b'
+      - '\bnyt (?:connections|strands)\b'
+      - '\b(?:working|active|new|redeem|gift|promo|free) codes?\b'
+      - '\bwhere to (?:buy|watch|find|preorder|pre-order)\b'
+      - '\bin stock\b'
+      - '\brestocks?\b'
+      - '\bunboxing\b'
+      - '\bbest (?:\w+[- ]){0,4}(?:of|for|in) 20\d\d\b'
+    # A review is a verdict, not a fact the pipeline can check. Only the review itself is matched ("... review", "Review:", "| Review", hands-on, preview); news about reviews ("reviews make it 2026's highest rated game", "Steam's review process") stays eligible.
+    reviews_and_impressions:
+      - '\breview\s*(?:[:|,\-–—(]|$)'
+      - '[|:–—-]\s*review\b'
+      - '\breview in progress\b'
+      - '\bhands-on\b'
+      - '\bfirst impressions\b'
+      - '\bpreview\b'
+    # Weekly roundups and newsletters.
+    roundups_and_newsletters:
+      - '\bweekly (?:roundup|recap|digest|news)\b'
+      - '\bthis week in\b'
+      - '\bweek in review\b'
+      - '\bround-?ups?\b'
+      - '\bnewsletter\b'
+    # Enterprise and AI-infrastructure products. "data center" alone stays eligible: AI demand for memory and GPUs is gaming-hardware news (the relevance gate drops the rest).
+    non_gaming_enterprise:
+      - '\bepyc\b'
+      - '\bxeon\b'
+      - '\bgaudi\b'
+      - '\bdgx\b'
+      - '\bhgx\b'
+      - '\bsupercomputers?\b'
+      - '\bai factor(?:y|ies)\b'
+      - '\bhyperscal\w*\b'
+      - '\bquantum\b'
+      - '\bautonomous (?:vehicles?|driving)\b'
+      - '\brobotaxis?\b'
+      - '\bhealthcare\b'
+      - '\btelecoms?\b'
+  # Gaming-scene signal for the unless_gaming groups. Deliberately narrower than
+  # relevance.keywords: generic hardware words (gpu, cpu, processor, vram) are left
+  # out, so AI-chip and server-CPU news is not mistaken for gaming hardware, while
+  # consumer gaming brands (GeForce, RTX, Radeon) and consoles count. A story from a
+  # source whose topic is "gaming" always counts.
+  gaming_scene_keywords:
+    - game
+    - games
+    - gaming
+    - gamer
+    - gamers
+    - console
+    - consoles
+    - playstation
+    - ps5
+    - xbox
+    - nintendo
+    - switch
+    - steam
+    - esports
+    - handheld
+    - geforce
+    - rtx
+    - radeon
+    - dlss
+    - fsr
   weights:
     tier1: 40
     tier2: 15

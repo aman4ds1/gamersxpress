@@ -11,7 +11,10 @@ least two distinct owners, else ``score.min_score`` (default 65), both from
 ``config.yaml``. Before scoring, clusters must pass an eligibility gate (no
 model call): they need a tier-1 source or at least two distinct owners
 (:func:`cluster.confirmable`), their headline must not match a configured
-format-exclusion pattern (``score.exclude_title_patterns``), and they must be
+format-exclusion pattern (``score.exclude_title_patterns``) or a blocked topic
+(``score.blocked_topics``: lawsuits, backlash, misconduct, reviews, guides,
+roundups and non-gaming enterprise news, each a named group; politics and layoffs
+only when the story is not about the gaming scene or gaming hardware), and they must be
 topically relevant. A cluster is relevant when any member comes from a source
 whose ``topic`` is "gaming"; otherwise the seed title or the cluster's named
 entities must contain a ``relevance.keywords`` phrase as a whole word. Ineligible
@@ -266,6 +269,71 @@ def load_exclude_title_patterns(config: dict | None = None) -> list[str]:
     return list(DEFAULT_EXCLUDE_TITLE_PATTERNS)
 
 
+def load_blocked_topics(config: dict | None = None) -> list[tuple[str, str, bool]]:
+    """Blocked topics from ``score.blocked_topics`` as ``(group, pattern, unless_gaming)``.
+
+    The config maps a topic name (``labor_and_layoffs``) either to a list of
+    headline patterns (always blocked) or to a mapping with ``patterns`` and
+    ``unless_gaming: true`` (blocked only when the story is not about the gaming
+    scene or gaming hardware). There is no built-in default: a missing or
+    malformed block means no topic is blocked, so config.yaml is the single
+    source of truth.
+    """
+    if config is None:
+        config = load_config()
+    groups = (config.get("score") or {}).get("blocked_topics")
+    if not isinstance(groups, dict):
+        return []
+    topics: list[tuple[str, str, bool]] = []
+    for group, spec in groups.items():
+        unless_gaming = isinstance(spec, dict) and bool(spec.get("unless_gaming"))
+        patterns = spec.get("patterns") if isinstance(spec, dict) else spec
+        if not isinstance(patterns, list):
+            continue
+        topics.extend(
+            (str(group), str(pattern), unless_gaming)
+            for pattern in patterns
+            if str(pattern or "").strip()
+        )
+    return topics
+
+
+def load_gaming_scene_keywords(config: dict | None = None) -> list[str]:
+    """Gaming-scene keywords from ``score.gaming_scene_keywords`` (none when absent)."""
+    if config is None:
+        config = load_config()
+    keywords = (config.get("score") or {}).get("gaming_scene_keywords")
+    if not isinstance(keywords, list):
+        return []
+    return [str(keyword) for keyword in keywords if str(keyword or "").strip()]
+
+
+def gaming_scene_cluster(
+    cluster_dict: dict,
+    *,
+    keywords: list[str] | None = None,
+    source_topics: dict[str, str] | None = None,
+) -> bool:
+    """True when a story is about the gaming scene or gaming hardware.
+
+    That is when a member comes from a source whose topic is "gaming", or when the
+    seed title, a member's title or a named entity contains a gaming-scene keyword
+    as a whole word. Unlike :func:`relevant_cluster`, an empty keyword list means
+    "no keyword signal", not "everything is on-topic": this check lifts a block, so
+    it must be the stricter one.
+    """
+    topics = load_source_topics() if source_topics is None else source_topics
+    items = [item for item in cluster_dict.get("items") or [] if isinstance(item, dict)]
+    if any(topics.get(str(item.get("source_name") or "")) == "gaming" for item in items):
+        return True
+    keywords = load_gaming_scene_keywords() if keywords is None else keywords
+    if not keywords:
+        return False
+    texts = [str(cluster_dict.get("title") or ""), *(str(item.get("title") or "") for item in items)]
+    texts.extend(str(entity) for entity in cluster_dict.get("entities") or [])
+    return _matches_any(" ".join(texts), keywords)
+
+
 def load_relevance_keywords(config: dict | None = None) -> list[str]:
     """Topical relevance phrases from the ``relevance`` block of config.yaml."""
     if config is None:
@@ -500,6 +568,8 @@ def ineligible_reason(
     exclude_patterns: list[str] | None = None,
     min_sources: int | None = None,
     min_distinct_owners: int | None = None,
+    blocked_topics: list[tuple] | None = None,
+    gaming_scene_keywords: list[str] | None = None,
 ) -> str | None:
     """Why a cluster cannot be gathered, or None when it is eligible.
 
@@ -509,7 +579,8 @@ def ineligible_reason(
     format-exclusion pattern, and it is topically relevant
     (:func:`relevant_cluster`). Reasons are reported verbatim:
     ``"not confirmable"``, ``"too few sources"``, ``"too few independent owners"``,
-    ``"excluded pattern: <pattern>"``, or ``"off-topic"``.
+    ``"excluded pattern: <pattern>"``, ``"blocked topic: <group> (<pattern>)"`` or
+    ``"off-topic"``.
     """
     patterns = load_exclude_title_patterns() if exclude_patterns is None else list(exclude_patterns)
     if min_sources is None:
@@ -527,6 +598,15 @@ def ineligible_reason(
         return f"excluded pattern: {pattern!r}"
     if not relevant_cluster(cluster_dict):
         return "off-topic"
+    # After the relevance check: a story that is not about gaming at all is
+    # "off-topic"; a blocked topic is a gaming story the site declines to cover.
+    topics = load_blocked_topics() if blocked_topics is None else list(blocked_topics)
+    topic = cluster.cluster_blocked_topic(
+        cluster_dict, topics,
+        gaming_scene=gaming_scene_cluster(cluster_dict, keywords=gaming_scene_keywords),
+    )
+    if topic is not None:
+        return f"blocked topic: {topic[0]} ({topic[1]!r})"
     return None
 
 
@@ -588,8 +668,13 @@ def rank(
     news_verbs: list[str] | None = None,
     min_sources: int | None = None,
     min_distinct_owners: int | None = None,
+    blocked_topics: list[tuple] | None = None,
+    gaming_scene_keywords: list[str] | None = None,
 ) -> list[dict]:
     patterns = load_exclude_title_patterns() if exclude_patterns is None else list(exclude_patterns)
+    topics = load_blocked_topics() if blocked_topics is None else list(blocked_topics)
+    if gaming_scene_keywords is None:
+        gaming_scene_keywords = load_gaming_scene_keywords()
     if relevance_keywords is None:
         relevance_keywords = load_relevance_keywords()
     if source_topics is None:
@@ -614,6 +699,15 @@ def rank(
         excluded_by = cluster.excluded_title_pattern(
             str(cluster_dict.get("title") or ""), patterns
         )
+        if excluded_by is None:
+            topic = cluster.cluster_blocked_topic(
+                cluster_dict, topics,
+                gaming_scene=gaming_scene_cluster(
+                    cluster_dict, keywords=gaming_scene_keywords, source_topics=source_topics
+                ),
+            )
+            if topic is not None:
+                excluded_by = f"topic {topic[0]}: {topic[1]}"
         relevant = relevant_cluster(
             cluster_dict, keywords=relevance_keywords, source_topics=source_topics
         )
@@ -658,6 +752,8 @@ def pick(
     news_verbs: list[str] | None = None,
     min_sources: int | None = None,
     min_distinct_owners: int | None = None,
+    blocked_topics: list[tuple] | None = None,
+    gaming_scene_keywords: list[str] | None = None,
 ) -> dict | None:
     """Return the highest-scoring eligible cluster that reaches its threshold.
 
@@ -683,6 +779,8 @@ def pick(
         news_verbs=news_verbs,
         min_sources=min_sources,
         min_distinct_owners=min_distinct_owners,
+        blocked_topics=blocked_topics,
+        gaming_scene_keywords=gaming_scene_keywords,
     )
     eligible = [cluster for cluster in ranked if cluster.get("eligible")]
     if not eligible:
@@ -721,6 +819,8 @@ def pick_candidates(
     news_verbs: list[str] | None = None,
     min_sources: int | None = None,
     min_distinct_owners: int | None = None,
+    blocked_topics: list[tuple] | None = None,
+    gaming_scene_keywords: list[str] | None = None,
 ) -> list[dict]:
     """Rank once, then walk the ranked list for up to ``max_candidates`` stories.
 
@@ -747,6 +847,8 @@ def pick_candidates(
         news_verbs=news_verbs,
         min_sources=min_sources,
         min_distinct_owners=min_distinct_owners,
+        blocked_topics=blocked_topics,
+        gaming_scene_keywords=gaming_scene_keywords,
     )
     eligible = [cluster_dict for cluster_dict in ranked if cluster_dict.get("eligible")]
     if not eligible:
@@ -839,6 +941,9 @@ __all__ = [
     "load_min_sources",
     "load_news_settings",
     "load_performance",
+    "gaming_scene_cluster",
+    "load_blocked_topics",
+    "load_gaming_scene_keywords",
     "load_relevance_keywords",
     "load_source_topics",
     "min_score_for",

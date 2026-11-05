@@ -642,6 +642,8 @@ def run(
                 performance=performance,
                 min_sources=readiness_min_sources,
                 min_distinct_owners=min_distinct_owners,
+                blocked_topics=score_stage.load_blocked_topics(raw_config),
+                gaming_scene_keywords=score_stage.load_gaming_scene_keywords(raw_config),
             )
         if not candidates:
             return finish("nothing", "no story scored high enough")
@@ -679,12 +681,16 @@ def run(
             # why a story was skipped rather than silently dropping it.
             tried = {entry.get("cluster_id") for entry in candidates_report}
             patterns = score_stage.load_exclude_title_patterns(raw_config)
+            blocked_topics = score_stage.load_blocked_topics(raw_config)
+            gaming_scene_keywords = score_stage.load_gaming_scene_keywords(raw_config)
             skipped: list[dict] = []
             for cluster_dict in clusters:
                 if cluster_dict.get("id") in tried:
                     continue
                 reason = score_stage.ineligible_reason(
-                    cluster_dict, patterns, readiness_min_sources, min_distinct_owners
+                    cluster_dict, patterns, readiness_min_sources, min_distinct_owners,
+                    blocked_topics=blocked_topics,
+                    gaming_scene_keywords=gaming_scene_keywords,
                 )
                 if reason is None:
                     continue

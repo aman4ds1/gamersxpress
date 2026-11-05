@@ -1530,3 +1530,141 @@ def test_a_story_that_passes_clears_its_earlier_failures_by_url(tmp_path):
     result = run_once(tmp_path, dry_run=True, scenario="pass")
     assert result.status == "completed"
     assert json.loads(paths.failed.read_text(encoding="utf-8"))["stories"] == {}
+
+
+def test_a_blocked_topic_story_is_skipped_with_its_reason(tmp_path):
+    paths = make_paths(tmp_path)
+    lawsuit = "Xbox studio faces lawsuit from a former contributor"
+    items = [
+        item(lawsuit, "https://l.example/1", owner="owner-l1"),
+        item(lawsuit, "https://l.example/2", owner="owner-l2"),
+        item(dryrun.SAMPLE_TITLE, "https://s.example/1", owner="owner-s1"),
+        item(dryrun.SAMPLE_TITLE, "https://s.example/2", owner="owner-s2"),
+    ]
+    result = run_with_items(tmp_path, items)
+    assert result.status == "completed"
+    report = latest_candidates_report(paths)
+    assert [c["title"] for c in report["candidates"]] == [dryrun.SAMPLE_TITLE]
+    skipped = {entry["title"]: entry["reason"] for entry in report["skipped"]}
+    assert skipped[lawsuit].startswith("blocked topic: lawsuits_and_regulation (")
+
+
+def test_a_story_with_one_blocked_headline_is_still_blocked_under_a_neutral_seed(tmp_path):
+    # Real headlines, links and sources for one story: Eurogamer's (the seed) says Nexus
+    # Mods "won't ban AI mods outright", VGC's says "despite community backlash". The
+    # topic is judged on the cluster, not item by item at ingest or on the seed alone,
+    # so the neutral headline must not let the backlash story through.
+    paths = make_paths(tmp_path)
+    neutral = "Nexus Mods introduces new AI disclosure rules, but won't ban AI mods outright"
+    blocked = "Nexus Mods rules out full AI ban despite community backlash"
+    items = [
+        {**item(neutral, "https://eurogamer.net/nexus-mods-gen-ai-disclosure-rules", owner="ign-entertainment",
+                tier=2), "source_name": "Eurogamer"},
+        {**item(blocked, "https://videogameschronicle.com/news/nexus-mods-rules-out-full-ai-ban-despite-community-backlash/",
+                owner="1981-media", tier=2), "source_name": "VGC"},
+        item(dryrun.SAMPLE_TITLE, "https://s.example/1", owner="owner-s1"),
+        item(dryrun.SAMPLE_TITLE, "https://s.example/2", owner="owner-s2"),
+    ]
+    result = run_with_items(tmp_path, items)
+    assert result.status == "completed"
+    report = latest_candidates_report(paths)
+    assert [c["title"] for c in report["candidates"]] == [dryrun.SAMPLE_TITLE]
+    skipped = [entry for entry in report["skipped"] if "Nexus Mods" in entry["title"]]
+    assert len(skipped) == 1
+    assert skipped[0]["title"] == neutral  # the seed is the neutral headline
+    assert skipped[0]["source_count"] == 2
+    assert skipped[0]["reason"].startswith("blocked topic: backlash_and_controversy (")
+
+
+def _config_with_topics(tmp_path, blocked_topics, **score_overrides):
+    source_config = Path(run_module.__file__).resolve().parent / "config.yaml"
+    config = yaml.safe_load(source_config.read_text(encoding="utf-8"))
+    config.setdefault("score", {})["blocked_topics"] = blocked_topics
+    config["score"].update(score_overrides)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return config_path
+
+
+#: Relevant through the "cpu" keyword, but not about gaming.
+CPU_LAYOFFS_TITLE = "Intel lays off 500 staff in its CPU division"
+CPU_LAYOFFS_ITEMS = [
+    (CPU_LAYOFFS_TITLE, "https://l.example/1", "owner-l1"),
+    (CPU_LAYOFFS_TITLE, "https://l.example/2", "owner-l2"),
+]
+
+
+def _tried_titles(tmp_path):
+    return [c["title"] for c in latest_candidates_report(make_paths(tmp_path))["candidates"]]
+
+
+def test_layoffs_that_are_not_about_gaming_are_skipped_by_the_real_config(tmp_path):
+    items = [item(title, link, owner=owner) for title, link, owner in CPU_LAYOFFS_ITEMS] + [
+        item(dryrun.SAMPLE_TITLE, "https://s.example/1", owner="owner-s1"),
+        item(dryrun.SAMPLE_TITLE, "https://s.example/2", owner="owner-s2"),
+    ]
+    result = run_with_items(tmp_path, items)
+    assert result.status == "completed"
+    report = latest_candidates_report(make_paths(tmp_path))
+    assert [c["title"] for c in report["candidates"]] == [dryrun.SAMPLE_TITLE]
+    skipped = {entry["title"]: entry["reason"] for entry in report["skipped"]}
+    assert skipped[CPU_LAYOFFS_TITLE].startswith("blocked topic: labor_and_layoffs (")
+
+
+def test_layoffs_in_the_gaming_scene_are_tried_as_candidates(tmp_path):
+    layoffs = "Xbox studio lays off 100 staff in new round of layoffs"
+    items = [item(layoffs, "https://l.example/1", owner="owner-l1"),
+             item(layoffs, "https://l.example/2", owner="owner-l2")]
+    run_with_items(tmp_path, items)
+    # The dry-run stubs cannot confirm a story that is not the sample, but it was tried.
+    assert _tried_titles(tmp_path) == [layoffs]
+
+
+def test_candidate_selection_uses_the_blocked_topics_of_the_runs_config(tmp_path):
+    # With no blocked topics in this run's config the CPU layoffs story is tried like any other.
+    config_path = _config_with_topics(tmp_path, {})
+    items = [item(title, link, owner=owner) for title, link, owner in CPU_LAYOFFS_ITEMS]
+    run_with_items(tmp_path, items, config_path=config_path)
+    assert _tried_titles(tmp_path) == [CPU_LAYOFFS_TITLE]
+    assert latest_candidates_report(make_paths(tmp_path))["skipped"] == []
+
+
+def test_the_gaming_scene_keywords_of_the_runs_config_decide_what_counts_as_gaming(tmp_path):
+    # Making "cpu" a gaming-scene keyword lifts the layoffs block for this run only.
+    config = {"labor_and_layoffs": {"unless_gaming": True, "patterns": [r"\blays? off\b"]}}
+    items = [item(title, link, owner=owner) for title, link, owner in CPU_LAYOFFS_ITEMS]
+    config_path = _config_with_topics(tmp_path, config, gaming_scene_keywords=["cpu"])
+    run_with_items(tmp_path, items, config_path=config_path)
+    assert _tried_titles(tmp_path) == [CPU_LAYOFFS_TITLE]
+
+
+def test_a_custom_topic_in_the_runs_config_blocks_and_is_reported(tmp_path):
+    config_path = _config_with_topics(tmp_path, {"shake_ups": [r"\bnew round\b"]})
+    layoffs = "Xbox studio lays off 100 staff in new round of layoffs"
+    items = [item(layoffs, "https://l.example/1", owner="owner-l1"),
+             item(layoffs, "https://l.example/2", owner="owner-l2"),
+             item(dryrun.SAMPLE_TITLE, "https://s.example/1", owner="owner-s1"),
+             item(dryrun.SAMPLE_TITLE, "https://s.example/2", owner="owner-s2")]
+    result = run_with_items(tmp_path, items, config_path=config_path)
+    assert result.status == "completed"
+    report = latest_candidates_report(make_paths(tmp_path))
+    assert [c["title"] for c in report["candidates"]] == [dryrun.SAMPLE_TITLE]
+    skipped = {entry["title"]: entry["reason"] for entry in report["skipped"]}
+    assert skipped[layoffs].startswith("blocked topic: shake_ups (")
+
+
+def test_the_skipped_report_uses_the_gaming_scene_keywords_of_the_runs_config(tmp_path):
+    # With no gaming-scene keywords in this run's config, even Xbox layoffs are not "gaming"
+    # for the unless_gaming group: selection skips the story and the report says why.
+    layoffs = "Xbox studio lays off 100 staff in new round of layoffs"
+    config = {"labor_and_layoffs": {"unless_gaming": True, "patterns": [r"\blays? off\b"]}}
+    config_path = _config_with_topics(tmp_path, config, gaming_scene_keywords=[])
+    items = [item(layoffs, "https://l.example/1", owner="owner-l1"),
+             item(layoffs, "https://l.example/2", owner="owner-l2"),
+             item(dryrun.SAMPLE_TITLE, "https://s.example/1", owner="owner-s1"),
+             item(dryrun.SAMPLE_TITLE, "https://s.example/2", owner="owner-s2")]
+    run_with_items(tmp_path, items, config_path=config_path)
+    report = latest_candidates_report(make_paths(tmp_path))
+    assert [c["title"] for c in report["candidates"]] == [dryrun.SAMPLE_TITLE]
+    skipped = {entry["title"]: entry["reason"] for entry in report["skipped"]}
+    assert skipped[layoffs].startswith("blocked topic: labor_and_layoffs (")

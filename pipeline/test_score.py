@@ -1,4 +1,7 @@
+import re
 import time
+
+import pytest
 
 import cluster as cluster_mod
 import score
@@ -759,3 +762,308 @@ def test_load_min_distinct_owners_reads_config_and_defaults():
     assert score.load_min_distinct_owners({"score": {"min_distinct_owners": "x"}}) == (
         score.DEFAULT_MIN_DISTINCT_OWNERS
     )
+
+
+# --- blocked topics (score.blocked_topics) --------------------------------------------
+
+EXPECTED_TOPIC_GROUPS = {
+    "lawsuits_and_regulation", "backlash_and_controversy", "labor_and_layoffs", "politics",
+    "misconduct_allegations", "guides_and_service_posts", "reviews_and_impressions",
+    "roundups_and_newsletters", "non_gaming_enterprise",
+}
+#: Politics and layoffs are covered when the story is about the gaming scene or gaming hardware.
+CONDITIONAL_GROUPS = {"labor_and_layoffs", "politics"}
+
+#: (group, headline): headlines the shipped patterns must match. For the conditional
+#: groups this is the pattern check only; whether the story is gaming-related is
+#: decided separately (see GAMING_SCENE_COVERED below).
+BLOCKED_HEADLINES = [
+    ("lawsuits_and_regulation", "Elder Scrolls Skyblivion mod faces lawsuit from former volunteer"),
+    ("lawsuits_and_regulation", "Nintendo sues Palworld developer over patent claims"),
+    ("lawsuits_and_regulation", "UK regulators clear Xbox cloud gaming deal"),
+    ("lawsuits_and_regulation", "FTC challenges the console maker's studio acquisition"),
+    ("backlash_and_controversy", "Dead by Daylight removes free DLC following backlash"),
+    ("backlash_and_controversy", "Behaviour Interactive Addresses Dead by Daylight Controversy"),
+    ("backlash_and_controversy", "Dead by Daylight Fans Are Uninstalling the Game in Protest"),
+    ("backlash_and_controversy", "Fans call for a boycott of the new Call of Duty"),
+    ("backlash_and_controversy", "Steam game hit by review bombing after price hike"),
+    ("labor_and_layoffs", "Doom Director Says We're Doing Great After Half Of id Software Was Laid Off"),
+    ("labor_and_layoffs", "Microsoft announces new Xbox layoffs"),
+    ("labor_and_layoffs", "Raven Software QA workers vote to unionize"),
+    ("labor_and_layoffs", "SAG-AFTRA video game actors reach a new agreement"),
+    ("labor_and_layoffs", "Ubisoft staff stage walkout over return-to-office"),
+    ("labor_and_layoffs", "Intel lays off 500 staff in its CPU division"),
+    ("politics", "Trump administration weighs new video game violence rules"),
+    ("politics", "Senators question Roblox over child safety"),
+    ("politics", "AI data centers defeated at US midterm elections"),
+    ("politics", "Nvidia chip export controls tighten again"),
+    ("politics", "Putin demands Russian data centers supply capacity to the state"),
+    ("misconduct_allegations", "Former Activision exec accused of harassment"),
+    ("misconduct_allegations", "Former Xbox COO denies being fired for policy violations"),
+    ("misconduct_allegations", "New allegations surface against esports league owner"),
+    ("guides_and_service_posts", "Wordle Hints and Answer for November 4, 2026: Game #1964"),
+    ("guides_and_service_posts", "NYT Connections Hints Today (#1242): Answers for Wednesday"),
+    ("guides_and_service_posts", "How to Play GTA 6 Early on PS5 With the New Zealand Trick"),
+    ("guides_and_service_posts", "Genshin Impact: Imaginarium Theater 7.2 Guide (November 2026)"),
+    ("guides_and_service_posts", "Fortnite redeem codes for November 2026"),
+    ("guides_and_service_posts", "Where to buy the Switch 2 OLED right now"),
+    ("guides_and_service_posts", "Best gaming laptops of 2026"),
+    ("reviews_and_impressions", "Enshrouded 1.0 review"),
+    ("reviews_and_impressions", "Cougar DuoAir Review \u2013 Glass or Mesh?"),
+    ("reviews_and_impressions", "The Legend of Zelda: Ocarina of Time Is Still Perfect on Switch 2 | Review"),
+    ("reviews_and_impressions", "Creality K3 Review: It's a Tool Changer, not a game changer"),
+    ("reviews_and_impressions", "Hollow Knight: Silksong review in progress"),
+    ("reviews_and_impressions", "Hands-on with the DockCase Mount Ling 2 Pro"),
+    ("roundups_and_newsletters", "This week in PC games: go helldiving in Gravhounds"),
+    ("roundups_and_newsletters", "Weekly roundup: Xbox, PlayStation and Nintendo news"),
+    ("roundups_and_newsletters", "The GamesRadar newsletter returns"),
+    ("non_gaming_enterprise", "Intel Diverts 18A Capacity From Panther Lake to Meet Xeon Demand"),
+    ("non_gaming_enterprise", "AMD EPYC Venice CPUs reach tape-out"),
+    ("non_gaming_enterprise", "Creator says Amazon closed his account after he bought seven Nvidia DGX Sparks"),
+    ("non_gaming_enterprise", "Quantum computing startup partners with Nvidia"),
+]
+
+#: Gaming news that shares words with a blocked topic and must stay eligible.
+ALLOWED_HEADLINES = [
+    "Counter-Strike 2 update adds new Dust 2 changes",           # "strike" is only labor as "on strike"
+    "Doug Bowser steps down as Nintendo of America president",   # industry titles, not politics
+    "Assault Android Cactus 2 launches on Switch",               # "assault" is a game-title word
+    "Xbox raises console prices in the US as tariffs bite",      # price rises are hardware news
+    "Valve announces Steam Deck 2 release date",
+    "NVIDIA launches GeForce RTX 5090 Super with 32GB of GDDR7",
+    "Zelda: Ocarina of Time Remake Reviews Make It 2026's Highest Rated Game",  # news about reviews
+    "The Ocarina of Time remake has claimed 2026's review crown",
+    "Steam Making Big Changes to Its Game Review Process",
+    "AI data center demand pushes GPU and RAM prices up for PC gamers",
+    "Microsoft appoints a new CEO of Microsoft Gaming",
+    "Phantom Blade Zero sells 4 million copies in 72 hours",
+    "Call of Duty Warzone Season 1 officially launches this Friday",
+    "Summer Game Fest 2026 date announced",
+    "PlayStation State of Play returns next week with new announcements",
+    "Hollow Knight: Silksong wins Game of the Year",
+    "Elden Ring Nightreign adds a new Nightfarer",
+    "Nintendo Switch 2 sales top 20 million",
+]
+
+#: Layoffs and politics stories about the gaming scene or gaming hardware: covered.
+GAMING_SCENE_COVERED = [
+    "Microsoft announces new Xbox layoffs",
+    "Doom Director Says We're Doing Great After Half Of id Software Was Laid Off",
+    "Raven Software QA workers vote to unionize",
+    "SAG-AFTRA video game actors reach a new agreement",
+    "Trump administration weighs new video game violence rules",
+    "New export controls could hit GeForce RTX 5090 supply",
+    "Senators question Roblox over child safety in games",
+]
+
+#: The same topics with no link to gaming: skipped.
+NOT_GAMING_SKIPPED = [
+    "Intel lays off 500 staff in its CPU division",
+    "Nvidia chip export controls tighten again for China",
+    "AI data centers defeated at US midterm elections",
+    "MAGA clings to Darth Vader as it braces for election results",
+    "AI chip smugglers exploit trade control loophole to bring banned HBM into China",
+]
+
+
+def test_the_shipped_config_blocks_the_expected_gaming_topics():
+    topics = score.load_blocked_topics()
+    assert {group for group, *_rest in topics} == EXPECTED_TOPIC_GROUPS
+    for _group, pattern, _unless in topics:
+        re.compile(pattern)  # a pattern that does not compile silently becomes a substring match
+
+
+def test_only_politics_and_layoffs_are_lifted_for_the_gaming_scene():
+    conditional = {group for group, _pattern, unless_gaming in score.load_blocked_topics() if unless_gaming}
+    assert conditional == CONDITIONAL_GROUPS
+
+
+@pytest.mark.parametrize("group, headline", BLOCKED_HEADLINES)
+def test_a_blocked_headline_names_its_topic(group, headline):
+    hit = cluster_mod.blocked_topic(headline, score.load_blocked_topics())
+    assert hit is not None, headline
+    assert hit[0] == group
+
+
+@pytest.mark.parametrize("headline", ALLOWED_HEADLINES)
+def test_gaming_news_that_shares_a_word_is_not_blocked(headline):
+    assert cluster_mod.blocked_topic(headline, score.load_blocked_topics()) is None
+
+
+@pytest.mark.parametrize("group, headline", [
+    (group, headline) for group, headline in BLOCKED_HEADLINES if group not in CONDITIONAL_GROUPS
+])
+def test_the_other_groups_block_even_a_gaming_story(group, headline):
+    hit = cluster_mod.blocked_topic(headline, score.load_blocked_topics(), gaming_scene=True)
+    assert hit is not None and hit[0] == group
+
+
+@pytest.mark.parametrize("headline", GAMING_SCENE_COVERED)
+def test_politics_and_layoffs_about_gaming_are_covered(headline):
+    topics = score.load_blocked_topics()
+    assert cluster_mod.blocked_topic(headline, topics) is not None   # the pattern matches ...
+    assert cluster_mod.blocked_topic(headline, topics, gaming_scene=True) is None  # ... and is lifted
+
+
+def test_every_topic_group_is_exercised_by_a_blocked_headline():
+    assert {group for group, _headline in BLOCKED_HEADLINES} == EXPECTED_TOPIC_GROUPS
+
+
+def test_load_blocked_topics_reads_both_group_forms_in_order():
+    config = {"score": {"blocked_topics": {
+        # Blank entries are dropped: an empty regex would match every headline.
+        "alpha": ["one", "", "  ", None, "two"],
+        "beta": {"unless_gaming": True, "patterns": ["three"]},
+        "gamma": {"patterns": ["four"]},
+        "skipped": "not a list", "empty": [], "bad_mapping": {"unless_gaming": True, "patterns": "x"},
+    }}}
+    assert score.load_blocked_topics(config) == [
+        ("alpha", "one", False), ("alpha", "two", False),
+        ("beta", "three", True), ("gamma", "four", False),
+    ]
+
+
+@pytest.mark.parametrize("config", [
+    {}, {"score": {}}, {"score": None}, {"score": {"blocked_topics": None}},
+    {"score": {"blocked_topics": ["not", "a", "mapping"]}},
+])
+def test_a_missing_or_malformed_topics_block_blocks_nothing(config):
+    assert score.load_blocked_topics(config) == []
+
+
+def test_gaming_scene_keywords_come_from_the_config_and_leave_out_generic_hardware():
+    keywords = score.load_gaming_scene_keywords()
+    assert {"gaming", "xbox", "playstation", "nintendo", "geforce", "rtx", "radeon", "esports"} <= set(keywords)
+    assert not {"gpu", "cpu", "processor", "vram", "pc"} & set(keywords)
+    assert score.load_gaming_scene_keywords({}) == []
+    assert score.load_gaming_scene_keywords({"score": {"gaming_scene_keywords": ["", " ", "xbox", None]}}) == ["xbox"]
+    assert score.load_gaming_scene_keywords({"score": {"gaming_scene_keywords": "xbox"}}) == []
+
+
+LAWSUIT = "Elder Scrolls Skyblivion mod faces lawsuit from former volunteer"
+LAYOFFS = "Doom Director Says We're Doing Great After Half Of id Software Was Laid Off"
+CPU_LAYOFFS = "Intel lays off 500 staff in its CPU division"
+
+
+def gaming_cluster(title, **kwargs):
+    return two_source_cluster(title, source_names=("PC Gamer",), **kwargs)
+
+
+def hardware_cluster(title, **kwargs):
+    # Tom's Hardware is a "mixed" source, so only a keyword can make the story relevant.
+    return two_source_cluster(title, source_names=("Tom's Hardware",), **kwargs)
+
+
+def test_a_gaming_cluster_with_a_blocked_topic_is_ineligible_and_says_why():
+    c = gaming_cluster(LAWSUIT)
+    reason = score.ineligible_reason(c)
+    assert reason.startswith("blocked topic: lawsuits_and_regulation (")
+    ranked = score.rank([c])[0]
+    assert ranked["eligible"] is False
+    assert ranked["excluded_by"].startswith("topic lawsuits_and_regulation: ")
+
+
+def test_layoffs_in_the_gaming_scene_are_covered():
+    c = gaming_cluster(LAYOFFS)
+    assert score.ineligible_reason(c) is None
+    assert score.rank([c])[0]["eligible"] is True
+
+
+def test_layoffs_at_a_gaming_studio_from_a_mixed_source_need_a_gaming_keyword():
+    covered = hardware_cluster("Xbox studio lays off 100 staff in new round of layoffs")
+    assert score.ineligible_reason(covered) is None
+    # "cpu" makes the story relevant, but it is not gaming: it is skipped.
+    skipped = hardware_cluster(CPU_LAYOFFS)
+    assert score.ineligible_reason(skipped).startswith("blocked topic: labor_and_layoffs (")
+    assert score.rank([skipped])[0]["eligible"] is False
+
+
+def test_politics_about_gaming_hardware_is_covered_and_other_politics_is_not():
+    covered = hardware_cluster("New export controls could hit GeForce RTX 5090 supply")
+    assert score.ineligible_reason(covered) is None
+    skipped = hardware_cluster("Nvidia GPU export controls tighten again for China")
+    assert score.ineligible_reason(skipped).startswith("blocked topic: politics (")
+
+
+def test_a_gaming_story_in_an_always_blocked_group_is_still_skipped():
+    c = hardware_cluster("Xbox studio faces lawsuit over layoffs")
+    assert score.ineligible_reason(c).startswith("blocked topic: lawsuits_and_regulation (")
+
+
+def test_a_gaming_keyword_in_a_members_headline_or_entities_counts():
+    c = hardware_cluster(CPU_LAYOFFS)
+    assert score.ineligible_reason(c).startswith("blocked topic")
+    c["items"][1]["title"] = "Xbox maker Microsoft is cutting staff"
+    assert score.ineligible_reason(c) is None
+    c = hardware_cluster(CPU_LAYOFFS, entities=("Nintendo",))
+    assert score.ineligible_reason(c) is None
+
+
+def test_gaming_scene_cluster_needs_a_gaming_source_or_a_gaming_keyword():
+    topics = {"PC Gamer": "gaming", "Tom's Hardware": "mixed"}
+    assert score.gaming_scene_cluster(gaming_cluster(CPU_LAYOFFS), source_topics=topics) is True
+    assert score.gaming_scene_cluster(hardware_cluster(CPU_LAYOFFS), source_topics=topics) is False
+    assert score.gaming_scene_cluster(
+        hardware_cluster("Intel lays off staff in its Xbox chip team"), source_topics=topics,
+    ) is True
+    # An empty keyword list is "no signal", unlike the relevance gate where it means "on-topic".
+    assert score.gaming_scene_cluster(
+        hardware_cluster("Intel lays off staff in its Xbox chip team"), keywords=[], source_topics=topics,
+    ) is False
+    assert score.relevant_cluster(hardware_cluster(CPU_LAYOFFS), keywords=[], source_topics=topics) is True
+
+
+@pytest.mark.parametrize("title", [
+    "AI GPU orders surge", "Server CPU supply tightens", "Processor maker cuts staff", "AI chips head to China",
+])
+def test_generic_hardware_words_do_not_make_a_story_gaming(title):
+    assert score.gaming_scene_cluster(hardware_cluster(title), source_topics={"Tom's Hardware": "mixed"}) is False
+
+
+def test_an_empty_topic_list_covers_everything_again():
+    c = gaming_cluster(LAWSUIT)
+    assert score.ineligible_reason(c, blocked_topics=[]) is None
+    assert score.rank([c], blocked_topics=[])[0]["eligible"] is True
+
+
+def test_the_gaming_keywords_can_be_overridden():
+    c = hardware_cluster("Xbox studio lays off 100 staff in new round of layoffs")
+    assert score.ineligible_reason(c, gaming_scene_keywords=[]).startswith("blocked topic: labor_and_layoffs")
+    assert score.rank([c], gaming_scene_keywords=[])[0]["eligible"] is False
+    assert score.rank([c], gaming_scene_keywords=["xbox"])[0]["eligible"] is True
+
+
+def test_a_topic_in_any_members_headline_blocks_the_cluster():
+    # Kotaku says "faces a lawsuit"; the seed headline (PC Gamer's) does not.
+    c = gaming_cluster("Skyblivion modders say the project is moving on after a dispute")
+    assert score.ineligible_reason(c) is None
+    c["items"][1]["title"] = LAWSUIT
+    assert score.ineligible_reason(c).startswith("blocked topic: lawsuits_and_regulation")
+    assert score.rank([c])[0]["eligible"] is False
+
+
+def test_pick_candidates_skips_blocked_topics_and_keeps_the_rest():
+    blocked = gaming_cluster(LAWSUIT)
+    fine = gaming_cluster("Valve announces Steam Deck 2 release date")
+    picked = score.pick_candidates([blocked, fine], min_score=0, min_score_corroborated=0)
+    assert [c["title"] for c in picked] == ["Valve announces Steam Deck 2 release date"]
+    everything = score.pick_candidates(
+        [blocked, fine], min_score=0, min_score_corroborated=0, blocked_topics=[],
+    )
+    assert sorted(c["title"] for c in everything) == sorted([LAWSUIT, "Valve announces Steam Deck 2 release date"])
+    covered = score.pick_candidates(
+        [hardware_cluster(CPU_LAYOFFS)], min_score=0, min_score_corroborated=0, gaming_scene_keywords=["cpu"],
+    )
+    assert [c["title"] for c in covered] == [CPU_LAYOFFS]
+
+
+def test_off_topic_is_reported_before_a_blocked_topic():
+    c = two_source_cluster(
+        "Telecom operators lay off staff as AI shifts the network", source_names=("NVIDIA Blog",)
+    )
+    assert score.ineligible_reason(c) == "off-topic"
+
+
+def test_a_format_exclusion_is_reported_before_a_blocked_topic():
+    c = gaming_cluster("The podcast on why the studio faces a lawsuit")
+    assert score.ineligible_reason(c, ["podcast"]) == "excluded pattern: 'podcast'"
