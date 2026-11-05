@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from gates import find_leaks
-import verify as verify_module
 from providers import (
     Generation,
     RunState,
@@ -83,69 +82,47 @@ def _absolute_dates(text: Any) -> list[str]:
     return unique
 
 
-def _source_url_names(sources: Any) -> dict[str, str]:
-    """Map each source URL to its display name for per-claim attribution."""
-    mapping: dict[str, str] = {}
-    if not isinstance(sources, list):
-        return mapping
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        url = source.get("link") or source.get("url")
-        name = source.get("source_name") or source.get("name")
-        if isinstance(url, str) and url and isinstance(name, str) and name:
-            mapping[url] = name
-    return mapping
+def _outlet_names(sources: Any) -> set[str]:
+    """Folded display names of the sheet's sources (the outlets)."""
+    names: set[str] = set()
+    for source in sources if isinstance(sources, list) else []:
+        if isinstance(source, dict):
+            name = source.get("source_name") or source.get("name")
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip().lower())
+    return names
 
 
-_VERIFY_CONFIG: dict | None = None
+def _origin_is_outlet(claim: dict, outlets: set[str]) -> bool:
+    """True when a claim's origin is a news outlet, not a person or company."""
+    origin = str(claim.get("origin") or "").strip().lower()
+    return str(claim.get("speaker_type") or "").lower() == "outlet" or origin in outlets
 
 
-def _verify_config() -> dict:
-    global _VERIFY_CONFIG
-    if _VERIFY_CONFIG is None:
-        _VERIFY_CONFIG = verify_module.load_verify_config()
-    return _VERIFY_CONFIG
+def _writer_usable(claim: Any, outlets: set[str]) -> bool:
+    """False for a claim the writer could only state by naming an outlet.
 
-
-def _figure_sources(claim: dict, urls: list, url_names: dict[str, str]) -> list[str]:
-    """The outlets whose own report holds every figure in the claim's value.
-
-    A merged claim lists every outlet that covered the fact, but outlets often
-    give different figures ("431,000 players" in one, "833,000" in another).
-    The writer credits whoever ``sources`` names, so for a value with figures
-    the list keeps only the outlets the verifier will accept as reporting them
-    (``verify.outlet_number_check``). Returns [] when that leaves nothing to
-    narrow -- no figures, one outlet, or no outlet carries them all -- and the
-    full list is used.
+    The site writes in its own voice and never names an outlet in the text, so an
+    opinion or statement that belongs to an outlet, or an opinion with no named
+    origin, has no speaker to credit and is left out of the writer's sheet.
     """
-    named = [url for url in urls if url in url_names]
-    if len({url_names[url] for url in named}) < 2:
-        return []
-    config = _verify_config()
-    tokens = verify_module.figure_tokens(str(claim.get("value") or ""), config)
-    if not tokens:
-        return []
-    return sorted({
-        url_names[url]
-        for url in named
-        if verify_module.carries_figures(tokens, verify_module.claim_outlet_text(claim, url), config)
-    })
+    if not isinstance(claim, dict):
+        return True
+    kind = str(claim.get("kind") or "").lower()
+    origin = str(claim.get("origin") or "").strip().lower()
+    if kind == "opinion" and (not origin or origin == "unstated" or _origin_is_outlet(claim, outlets)):
+        return False
+    return not (kind == "statement" and _origin_is_outlet(claim, outlets))
 
 
-def _writer_claim(claim: Any, url_names: dict[str, str]) -> Any:
+def _writer_claim(claim: Any, outlets: set[str] = frozenset()) -> Any:
     """Reduce one claim to the fields the writer uses."""
     if not isinstance(claim, dict):
         return claim
     reduced: dict[str, Any] = {field: claim.get(field, "") for field in _CLAIM_FIELDS}
-    urls = claim.get("source_urls")
-    if not isinstance(urls, list):
-        single = claim.get("source_url")
-        urls = [single] if single else []
-    names = sorted({url_names[url] for url in urls if url in url_names})
-    names = _figure_sources(claim, urls, url_names) or names
-    if names:
-        reduced["sources"] = names
+    if _origin_is_outlet(claim, outlets):
+        # An outlet is not a speaker: the claim is stated directly, with no origin to name.
+        reduced["origin"] = "unstated"
     # The central flag is what the writer leads with, so it is always present.
     reduced["central"] = bool(claim.get("central"))
     dates = _absolute_dates(claim.get("value")) or _absolute_dates(claim.get("claim"))
@@ -160,6 +137,9 @@ def writer_view(facts: Any) -> Any:
     Keeps what the writer needs: ``generated_at`` (rule 64: the ``pubDate``), the
     front-matter ``sources`` (name + url, rule 68) and each claim's text, value,
     kind, origin, affiliation, the central flag and any absolute dates it names.
+    No claim lists the outlets that reported it: the writer states facts in the
+    site's own voice and never names an outlet in the text. Claims it could only
+    state by naming an outlet (see :func:`_writer_usable`) are left out.
     Drops pipeline detail the writer never uses: coherence, grounding,
     confirmation internals, ``origins_downgraded`` diagnostics, ``extractor``,
     ``fingerprint``, ``confidence`` and the per-source ``versions``/``source_urls``.
@@ -182,8 +162,10 @@ def writer_view(facts: Any) -> Any:
         ]
     claims = facts.get("claims")
     if isinstance(claims, list):
-        url_names = _source_url_names(sources)
-        view["claims"] = [_writer_claim(claim, url_names) for claim in claims]
+        outlets = _outlet_names(sources)
+        view["claims"] = [
+            _writer_claim(claim, outlets) for claim in claims if _writer_usable(claim, outlets)
+        ]
     note = single_origin_note(facts)
     if note:
         view["single_origin_note"] = note
@@ -204,13 +186,11 @@ def single_origin_note(facts: dict) -> str:
     speaker = str(origin.get("speaker") or "").strip()
     if not speaker:
         return ""
-    outlets = ", ".join(str(name) for name in origin.get("outlets") or [] if name)
-    reported = f" Name the outlets that reported it ({outlets})." if outlets else ""
     return (
         f"This story rests on one named source, {speaker}, and nothing independent confirms it. "
         f"Write every claim as {speaker}'s statement, in the same sentence "
         f"(\"{speaker} said ...\", \"according to {speaker}\"); never state a claim in the "
-        f"publication's own voice. Open by naming {speaker}.{reported} "
+        f"publication's own voice. Open by naming {speaker}. Do not name any outlet. "
         "Do not call it confirmed."
     )
 

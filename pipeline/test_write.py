@@ -41,7 +41,6 @@ def test_default_template_exists_and_has_placeholder():
     [
         "title:", "description:", "pubDate:", "category:", "tags:", "entities:", "sources:",
         "## What happened", "## Why gamers should care", "## Context and comparison",
-        "## What is unconfirmed",
     ],
 )
 def test_default_template_names_each_required_field_and_section(required):
@@ -91,34 +90,6 @@ def test_writer_template_modes_only_as_sources_call_them():
     assert "Modes only as the sources call them" in template
 
 
-def test_writer_template_attributes_source_angle():
-    template = write_module.load_template()
-    assert "Attribute a source's angle" in template
-    assert "Eurogamer reports" in template
-
-
-def test_writer_template_names_claim_kinds_and_origin():
-    template = write_module.load_template()
-    assert "Attribute by `kind`" in template
-    assert "`origin` and attribution" in template
-    for kind in ("confirmed", "reported", "estimate", "rumor", "opinion"):
-        assert kind in template
-
-
-def test_writer_template_attributes_estimates_with_hedges():
-    template = write_module.load_template()
-    assert "according to estimates from" in template
-    assert "Keep hedge words" in template
-    for hedge in ("estimated", "reportedly", "more than", "over"):
-        assert hedge in template
-
-
-def test_writer_template_attributes_unstated_origin_to_the_outlet():
-    template = write_module.load_template()
-    assert "unstated" in template
-    assert "attribute the claim to the outlet that reported it" in template
-
-
 def test_writer_template_bans_causal_connectives():
     template = write_module.load_template()
     assert "No causal or contrast connectives" in template
@@ -130,12 +101,6 @@ def test_writer_template_keeps_overlaps_and_percentages_exact():
     template = write_module.load_template()
     assert "Percentages and overlaps exactly as stated" in template
     assert "came from" in template
-
-
-def test_writer_template_groups_estimates_and_rumors_in_one_place():
-    template = write_module.load_template()
-    assert "One place for the unconfirmed" in template
-    assert "Group every estimate and rumor" in template
 
 
 def test_writer_template_states_each_fact_once():
@@ -606,13 +571,6 @@ def test_build_prompt_uses_the_compact_view():
     assert "A game was announced" in prompt
 
 
-def test_writer_template_states_absences_in_the_outlets_voice():
-    template = write_module.load_template()
-    assert "Absences belong to the outlet" in template
-    assert "Never attribute an absence" in template
-    assert "PC Gamer notes that Activision has not revealed an exact time" in template
-
-
 FLAGGED_SENTENCE = "The card ships with a two-year warranty worldwide."
 DEPENDENT_SENTENCE = "Beside this prediction, the schedule stays unclear worldwide."
 
@@ -777,41 +735,16 @@ def test_saved_sheet_writer_prompt_fits_groq_after_compaction():
     )
 
 
-def test_writer_template_cites_every_source_together():
-    template = write_module.load_template()
-    assert "cite every source together" in template
-    assert "according to Xbox Wire and PC Gamer" in template
-
-
-def test_writer_template_limits_outlet_sentence_openers():
-    template = write_module.load_template()
-    assert "Never open more than two consecutive sentences with the same outlet name" in template
-
-
 def test_writer_template_sections_need_two_supported_facts():
     template = write_module.load_template()
     assert "at least two facts for it" in template
     assert '"why it matters" filler section' in template
 
 
-def test_writer_template_unconfirmed_section_only_with_an_unconfirmed_claim():
-    template = write_module.load_template()
-    assert "only when the sheet holds an unconfirmed claim" in template
-
-
 def test_writer_template_never_refers_to_an_unstated_claim():
     template = write_module.load_template()
     assert "Never refer to a claim, prediction or rumor the article has not stated" in template
     assert "never open with" in template
-
-
-def test_writer_template_merges_fact_lines_that_make_one_point():
-    template = write_module.load_template()
-    assert "Fact lines making one point" in template
-    assert "never restate it later" in template
-    # The phrases earlier tests rely on are untouched.
-    assert "cite every source together" in template
-    assert "according to Xbox Wire and PC Gamer" in template
 
 
 def test_writer_template_credits_the_person_and_shares_only_the_common_title():
@@ -822,32 +755,11 @@ def test_writer_template_credits_the_person_and_shares_only_the_common_title():
     assert "a senior vice president at Nvidia" in template
 
 
-def test_writer_template_credits_the_relaying_outlet():
-    template = write_module.load_template()
-    assert "**Credit the relay.**" in template
-    assert "second-hand or translated" in template
-    assert "according to TechPowerUp News, Fisher told Taiwanese media" in template
-
-
 def test_writer_template_matches_the_verb_to_the_source():
     template = write_module.load_template()
     assert "**Match the verb.**" in template
     assert '"confirmed" only for a `confirmed` fact' in template
     assert "no verb more than twice" in template
-
-
-def test_writer_template_leaves_out_asides_and_keeps_rumor_support_with_the_rumor():
-    template = write_module.load_template()
-    assert "**No asides.**" in template
-    assert "context-dependent remark" in template
-    assert 'goes under "What is unconfirmed"' in template
-
-
-def test_writer_template_rules_are_numbered_without_gaps():
-    template = write_module.load_template()
-    numbers = [int(match) for match in re.findall(r"^(\d+)\. \*\*", template, re.MULTILINE)]
-    assert numbers == list(range(1, len(numbers) + 1))
-    assert numbers[-1] >= 36
 
 
 def test_writer_template_stays_within_its_token_ceiling():
@@ -874,15 +786,6 @@ def single_origin_sheet(**origin):
         },
     }
     return sheet
-
-
-def test_a_single_origin_story_adds_a_note_to_the_writers_facts():
-    view = write_module.writer_view(single_origin_sheet())
-    note = view["single_origin_note"]
-    assert "Romain Toutain" in note
-    assert "Eurogamer, Xbox Wire" in note
-    assert "never state a claim in the publication's own voice" in note
-    assert "Do not call it confirmed" in note
 
 
 @pytest.mark.parametrize("confirmation", [
@@ -936,81 +839,205 @@ def test_a_non_dict_sheet_is_passed_through_without_a_note():
     assert write_module.single_origin_note("a pre-rendered sheet") == ""
 
 
-# --- credit a figure only to the outlets that report it ---------------------------
+# --- the editorial voice: facts stated directly, no outlet names ---------------------
 
-PBZ_SOURCES = [
+
+def test_the_template_has_no_unconfirmed_section_or_outlet_credit_rules():
+    template = write_module.load_template()
+    assert "## What is unconfirmed" not in template
+    assert "What is unconfirmed" not in template
+    for removed in ("attribute it to the outlet", "Attribute a source's angle", "cite every source together"):
+        assert removed not in template
+
+
+def test_the_template_asks_for_the_sites_own_voice_with_facts_stated_directly():
+    template = write_module.load_template()
+    assert "**Editorial voice, facts stated directly.**" in template
+    assert "like an encyclopedia entry" in template
+    assert 'State a fact plainly: "The game is delayed to May 20, 2027"' in template
+    assert 'never "Eurogamer says the game is delayed"' in template
+
+
+def test_the_template_bans_outlet_attribution_and_outlet_names():
+    template = write_module.load_template()
+    for banned in ('"according to <outlet>"', '"<outlet> reports (that)"', '"<outlet> notes"', "claims"):
+        assert banned in template
+    assert "Never name an outlet or website in the title, description or body" in template
+    assert "the front matter `sources` is the only place outlets appear" in template
+    assert "A person or company that made a statement or estimate is named as its speaker" in template
+
+
+def test_the_template_handles_each_kind_without_naming_an_outlet():
+    template = write_module.load_template()
+    assert "**Treat each `kind` this way.**" in template
+    for kind in ("`confirmed`, `reported`", "`estimate`", "`statement`", "`rumor`", "`opinion`"):
+        assert kind in template
+    assert "state it directly" in template
+    assert 'when `origin` is `unstated`, leave the claim out' in template
+    assert "**`origin` is a speaker, not an outlet.**" in template
+    assert "never fall back to naming an outlet" in template
+
+
+def test_the_template_keeps_hedges_in_the_same_sentence_without_a_separate_section():
+    template = write_module.load_template()
+    assert "**Hedge in the same sentence.**" in template
+    assert "There is no separate section or heading for unconfirmed material" in template
+    assert '"is estimated to have sold"' in template
+    assert '"is rumored to"' in template
+    assert "Keep hedge words" in template
+    for hedge in ("estimated", "reportedly", "more than", "over"):
+        assert hedge in template
+    # A status tail on the claim itself is fine; an absence claim about a named party
+    # ("has not confirmed") needs a claim in the sheet that says so.
+    assert '"..., though the figure is unconfirmed"' in template
+    assert "vary the wording" in template
+    assert 'Never write that a named party "has not confirmed"' in template
+
+
+def test_the_template_states_absences_in_the_sites_own_voice():
+    template = write_module.load_template()
+    assert "**Absences in the site's own voice.**" in template
+    assert '"Activision has not revealed an exact time"' in template
+    assert 'never "Activision says it has not revealed an exact time"' in template
+
+
+def test_the_template_credits_the_speaker_never_the_relaying_outlet():
+    template = write_module.load_template()
+    assert "**Credit the speaker, not the relay.**" in template
+    assert '"Fisher told Taiwanese media"' in template
+    assert "never name the outlet that relayed it" in template
+
+
+def test_the_template_keeps_its_fact_once_and_aside_rules():
+    template = write_module.load_template()
+    assert "**State each fact once.**" in template
+    assert "never restate it later" in template
+    assert "**No asides.**" in template
+    assert "context-dependent remark" in template
+
+
+def test_the_description_and_body_length_rules_match_the_gates():
+    template = write_module.load_template()
+    assert "one line only, with no outlet names" in template
+    assert "200-400 words" in template
+    assert "must clear 200 words" in template
+    assert "320-450" not in template
+
+
+def test_writer_template_rules_are_numbered_without_gaps():
+    template = write_module.load_template()
+    numbers = [int(match) for match in re.findall(r"^(\d+)\. \*\*", template, re.MULTILINE)]
+    assert numbers == list(range(1, len(numbers) + 1))
+    assert numbers[-1] >= 30
+
+
+# --- the writer's facts view names no outlet ------------------------------------------
+
+VOICE_SOURCES = [
     {"source_name": "Polygon", "link": "https://polygon.example/pbz"},
     {"source_name": "Eurogamer", "link": "https://eurogamer.example/pbz"},
 ]
 
 
-def pbz_claim(**overrides):
+def voice_claim(**overrides):
     claim = {
         "claim": "Concurrent players at launch",
         "value": "attracted over 431,000 concurrent players at launch",
-        "kind": "reported",
+        "kind": "reported", "origin": "unstated", "affiliation": "", "speaker_type": "none",
         "source_urls": ["https://eurogamer.example/pbz", "https://polygon.example/pbz"],
-        "versions": [
-            {"source_url": "https://polygon.example/pbz",
-             "value": "833,000 concurrent players within hours of launch"},
-            {"source_url": "https://eurogamer.example/pbz",
-             "value": "attracted over 431,000 concurrent players at launch"},
-        ],
+        "versions": [{"source_url": "https://polygon.example/pbz", "value": "833,000 players"}],
     }
     claim.update(overrides)
     return claim
 
 
-def view_sources(claim):
-    view = write_module.writer_view({"sources": PBZ_SOURCES, "claims": [claim]})
-    return view["claims"][0].get("sources")
+def voice_view(*claims):
+    return write_module.writer_view({"sources": VOICE_SOURCES, "claims": list(claims)})
 
 
-def test_a_figure_is_credited_only_to_the_outlets_that_report_it():
-    assert view_sources(pbz_claim()) == ["Eurogamer"]
+def test_no_claim_in_the_writers_view_lists_the_outlets_that_reported_it():
+    view = voice_view(voice_claim())
+    assert "sources" not in view["claims"][0]
+    assert "Polygon" not in json.dumps(view["claims"]) and "Eurogamer" not in json.dumps(view["claims"])
+    # The front matter sources are still there, copied for the writer.
+    assert [source["name"] for source in view["sources"]] == ["Polygon", "Eurogamer"]
 
 
-def test_every_outlet_with_the_figure_keeps_its_credit():
-    claim = pbz_claim()
-    claim["versions"][0]["value"] = "over 431,000 people played at launch"
-    assert view_sources(claim) == ["Eurogamer", "Polygon"]
+def test_an_opinion_with_no_named_origin_is_left_out():
+    view = voice_view(
+        voice_claim(claim="Breathing room", value="the delay may give players breathing room", kind="opinion"),
+        voice_claim(),
+    )
+    assert [claim["claim"] for claim in view["claims"]] == ["Concurrent players at launch"]
 
 
-def test_an_outlets_evidence_counts_as_its_report():
-    claim = pbz_claim(evidence=[{
-        "source_url": "https://polygon.example/pbz", "quote": "It drew 431,000 players at launch.",
-    }])
-    assert view_sources(claim) == ["Eurogamer", "Polygon"]
+def test_an_opinion_from_a_named_person_is_kept():
+    view = voice_view(voice_claim(
+        claim="Verdict", value="the combat feels fluid", kind="opinion",
+        origin="Jane Doe", speaker_type="person",
+    ))
+    assert [(claim["kind"], claim["origin"]) for claim in view["claims"]] == [("opinion", "Jane Doe")]
 
 
-@pytest.mark.parametrize("overrides", [
-    # No figures: nothing to narrow.
-    {"value": "attracted a large crowd at launch"},
-    # No outlet holds the figure: the full list stays and the verifier decides.
-    {"value": "attracted 999 players at launch"},
-    # No per-outlet versions: the merged value is every outlet's.
-    {"versions": []},
-])
-def test_the_full_source_list_stays_when_there_is_nothing_to_narrow(overrides):
-    assert view_sources(pbz_claim(**overrides)) == ["Eurogamer", "Polygon"]
+@pytest.mark.parametrize("kind", ["opinion", "statement"])
+@pytest.mark.parametrize("origin, speaker_type", [("Eurogamer", "outlet"), ("polygon", "none"), ("kotaku.com", "outlet")])
+def test_an_opinion_or_statement_that_belongs_to_an_outlet_is_left_out(kind, origin, speaker_type):
+    view = voice_view(voice_claim(kind=kind, origin=origin, speaker_type=speaker_type), voice_claim(claim="Other"))
+    assert [claim["claim"] for claim in view["claims"]] == ["Other"]
 
 
-def test_a_single_source_claim_is_unchanged():
-    claim = pbz_claim(source_urls=["https://polygon.example/pbz"])
-    assert view_sources(claim) == ["Polygon"]
+@pytest.mark.parametrize("kind", ["reported", "estimate", "rumor", "confirmed"])
+def test_any_other_claim_with_an_outlet_origin_is_stated_without_an_origin(kind):
+    view = voice_view(voice_claim(kind=kind, origin="Eurogamer", speaker_type="outlet"))
+    assert view["claims"][0]["kind"] == kind
+    assert view["claims"][0]["origin"] == "unstated"
 
 
-def test_a_merged_value_does_not_count_for_an_outlet_without_its_own_version():
-    # Eurogamer and Polygon both covered it, but only Eurogamer has a version.
-    claim = pbz_claim()
-    claim["versions"] = claim["versions"][1:]
-    assert view_sources(claim) == ["Eurogamer"]
+def test_an_estimate_keeps_the_firm_that_made_it():
+    view = voice_view(voice_claim(
+        kind="estimate", value="estimated to have sold over 1 million copies",
+        origin="Alinea Analytics", speaker_type="organization",
+    ))
+    assert view["claims"][0]["origin"] == "Alinea Analytics"
 
 
-def test_an_outlet_giving_the_date_without_the_year_keeps_its_credit():
-    claim = pbz_claim(value="launches on October 29, 2026")
-    claim["versions"] = [
-        {"source_url": "https://polygon.example/pbz", "value": "out October 29"},
-        {"source_url": "https://eurogamer.example/pbz", "value": "launches on October 29, 2026"},
-    ]
-    assert view_sources(claim) == ["Eurogamer", "Polygon"]
+def test_a_statement_from_a_named_speaker_is_kept():
+    view = voice_view(voice_claim(
+        kind="statement", value="We are doing great", origin="Marty Stratton", speaker_type="person",
+    ))
+    assert [(claim["kind"], claim["origin"]) for claim in view["claims"]] == [("statement", "Marty Stratton")]
+
+
+def test_a_single_origin_story_tells_the_writer_to_name_the_speaker_and_no_outlet():
+    note = write_module.writer_view(single_origin_sheet())["single_origin_note"]
+    assert "Romain Toutain" in note
+    assert "Open by naming Romain Toutain" in note
+    assert "Do not name any outlet" in note
+    assert "never state a claim in the publication's own voice" in note
+    assert "Do not call it confirmed" in note
+    assert "Eurogamer" not in note and "Xbox Wire" not in note
+
+
+# --- the repair prompt: keep the speaker, drop the outlet ------------------------------------
+
+
+def repair_template():
+    return Path(write_module.DEFAULT_REPAIR_PROMPT_PATH).read_text(encoding="utf-8")
+
+
+def test_the_repair_prompt_keeps_speakers_and_drops_outlet_names():
+    template = repair_template()
+    assert "**Keep every speaker, drop every outlet name.**" in template
+    assert 'a replacement must still attribute the statement to that same speaker' in template
+    assert 'state the fact directly with no outlet name' in template
+    assert "the front matter `sources` is the only place outlets appear" in template
+    assert "Keep every hedge" in template
+    assert "Keep every attribution" not in template
+
+
+def test_the_repair_prompt_still_has_its_placeholders_and_numbered_rules():
+    template = repair_template()
+    for token in ("{{unsupported_clauses}}", "{{article}}", "{{facts_sheet}}"):
+        assert token in template
+    numbers = [int(match) for match in re.findall(r"^(\d+)\. ", template, re.MULTILINE)]
+    assert numbers == list(range(1, len(numbers) + 1))

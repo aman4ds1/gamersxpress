@@ -711,6 +711,7 @@ def test_draft_quality_gate_switches_and_limits_come_from_config():
         "check_circular_attribution",
         "check_thin_sections",
         "check_opener_variety",
+        "check_outlet_names",
         "check_entity_mentions",
     ):
         assert config[key] is True, key
@@ -1142,44 +1143,122 @@ def test_dry_run_sample_body_passes_the_new_quality_gates():
     assert result.passed, result.failures
 
 
-# --- the sentences that push one outlet past the opener limit ------------------------
+# --- outlet names: the site states facts in its own voice -------------------------------
 
 
-def opener_body(outlet, count, other=None):
-    lines = [f"{outlet} reports that fact number {i} changed." for i in range(1, count + 1)]
-    if other:
-        lines.append(f"{other} says that its own fact changed.")
-    return "\n".join(lines)
+def outlet_facts(*claim_values, sources=("Eurogamer", "Polygon"), entities=()):
+    return {
+        "id": "c1",
+        "sources": [
+            {"source_name": name, "link": f"https://{name.lower().split()[0]}.example/1", "tier": 2,
+             "owner": name.lower(), "region": "us"}
+            for name in sources
+        ],
+        "claims": [{"claim": value, "value": value} for value in claim_values],
+        "coherence": {"canonical_entities": list(entities)},
+    }
 
 
-def test_opener_sentences_are_the_ones_past_the_limit():
-    flagged = gates.repetitive_opener_sentences(opener_body("Eurogamer", 5), 3)
-    assert [item["sentence"] for item in flagged] == [
-        "Eurogamer reports that fact number 4 changed.",
-        "Eurogamer reports that fact number 5 changed.",
-    ]
-    assert [item["count"] for item in flagged] == [4, 5]
-    assert {item["outlet"] for item in flagged} == {"Eurogamer"}
+@pytest.mark.parametrize("sentence, outlets", [
+    ("Eurogamer reports that the game is delayed.", ["Eurogamer"]),
+    ("According to Polygon, the studio is hiring.", ["Polygon"]),
+    ("Polygon and Eurogamer reported on the launch.", ["Eurogamer", "Polygon"]),
+    ("The delay, per Eurogamer's report, is final.", ["Eurogamer"]),
+    ("According to EUROGAMER the game is late.", ["Eurogamer"]),
+])
+def test_a_sentence_naming_an_outlet_is_flagged(sentence, outlets):
+    assert gates.outlet_mentions(sentence, outlet_facts()) == [{"sentence": sentence, "outlets": outlets}]
 
 
-def test_openers_up_to_the_limit_flag_nothing():
-    assert gates.repetitive_opener_sentences(opener_body("Eurogamer", 3), 3) == []
+@pytest.mark.parametrize("text", [
+    "The game is delayed to May 20, 2027.",
+    "The renderer draws twice as many polygon edges.",   # a lowercase common word is not the outlet
+    "Eurogamers gather every year.",                     # a longer word is not the outlet
+    "## Eurogamer and Polygon coverage",                 # headings are not sentences
+    "- [Polygon](https://polygon.example/pbz)",          # a source link list is rejected elsewhere
+])
+def test_text_without_an_outlet_name_is_not_flagged(text):
+    assert gates.outlet_mentions(text, outlet_facts()) == []
 
 
-def test_each_outlet_is_counted_on_its_own():
-    body = opener_body("Eurogamer", 3, other="Polygon") + "\n" + opener_body("Polygon", 2)
-    assert gates.repetitive_opener_sentences(body, 3) == []
+def test_curly_apostrophes_still_match_an_outlet_name():
+    facts = outlet_facts(sources=("Tom's Hardware",))
+    assert gates.outlets_named("According to Tom\u2019s Hardware, it is fast.", facts) == ["Tom's Hardware"]
 
 
-def test_openers_that_are_not_reporting_verbs_are_not_counted():
-    # The gate only counts "<outlet> reports/reported/says/said"; so does this.
-    body = "\n".join(f"Eurogamer also reports that fact {i} changed." for i in range(6))
-    assert gates.repetitive_opener_sentences(body, 3) == []
+def test_an_outlet_a_claim_names_is_not_flagged():
+    facts = outlet_facts("Eurogamer is owned by IGN Entertainment")
+    assert gates.outlet_mentions("Eurogamer is a well known site.", facts) == []
+    assert gates.outlet_mentions("Polygon reports that it is late.", facts)[0]["outlets"] == ["Polygon"]
 
 
-@pytest.mark.parametrize("count", [3, 4, 7])
-def test_the_flagged_sentences_agree_with_the_gate_failure(count):
-    body = opener_body("Eurogamer", count)
-    assert bool(gates.repetitive_opener_sentences(body, 3)) == bool(
-        gates.repetitive_opener_failures(body, 3)
+def test_an_outlet_that_is_a_story_entity_is_not_flagged():
+    facts = outlet_facts(entities=("Polygon",))
+    assert gates.outlet_mentions("Polygon announced a new office.", facts) == []
+
+
+def test_no_sources_or_malformed_facts_flag_nothing():
+    for facts in (None, {}, {"sources": None}, {"sources": ["x", {"link": "https://a.example"}]}):
+        assert gates.outlet_mentions("Eurogamer reports it.", facts) == []
+        assert gates.outlets_named("Eurogamer reports it.", facts) == []
+
+
+def test_outlet_name_failures_cover_the_title_the_description_and_the_body():
+    failures = gates.outlet_name_failures(
+        "Eurogamer says Phantom Blade Zero sold 4 million",
+        "The launch, as reported by Polygon.",
+        "## What happened\n\nThe game sold 4 million copies.\n\nPolygon reports that it peaked at 833,921 players.",
+        outlet_facts(),
     )
+    assert failures[0].startswith("title names a source outlet ('Eurogamer')")
+    assert failures[1].startswith("description names a source outlet ('Polygon')")
+    assert failures[2].startswith("body names a source outlet ('Polygon'); outlets belong only in the front matter sources")
+    assert len(failures) == 3
+
+
+def test_a_clean_article_has_no_outlet_name_failures():
+    assert gates.outlet_name_failures(
+        "Phantom Blade Zero sells 4 million copies", "The game sold 4 million copies in 72 hours.",
+        "## What happened\n\nThe game sold 4 million copies.", outlet_facts(),
+    ) == []
+
+
+def test_the_gate_fails_an_article_that_names_an_outlet_in_the_body():
+    body = "## Overview\n\n" + filler(240) + "\n\nTier One reports that the launch window moved."
+    result = run(make_article(body=body)[0])
+    assert not result.passed
+    assert any(failure.startswith("body names a source outlet ('Tier One')") for failure in result.failures)
+    assert len(result.checks["outlet_names"]["failures"]) == 1
+
+
+def test_the_gate_fails_an_outlet_name_in_the_description():
+    description = "Nvidia has confirmed the launch window for its next graphics card, as reported by Tier Two."
+    result = run(make_article(front_overrides={"description": description})[0])
+    assert not result.passed
+    assert any(failure.startswith("description names a source outlet ('Tier Two')") for failure in result.failures)
+
+
+def test_the_outlet_name_switch_disables_the_gate():
+    body = "## Overview\n\n" + filler(240) + "\n\nTier One reports that the launch window moved."
+    result = run(make_article(body=body)[0], config=config_without("check_outlet_names"))
+    assert result.passed, result.failures
+    assert result.checks["outlet_names"]["failures"] == []
+
+
+def test_an_article_without_outlet_names_passes_the_outlet_gate():
+    result = run(make_article()[0])
+    assert result.checks["outlet_names"]["failures"] == []
+
+
+def test_the_outlet_name_switch_is_read_from_the_config_file(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("gates:\n  check_outlet_names: false\n", encoding="utf-8")
+    assert gates.load_gates_config(path)["check_outlet_names"] is False
+    path.write_text("gates:\n  check_outlet_names: maybe\n", encoding="utf-8")
+    assert gates.load_gates_config(path)["check_outlet_names"] is True  # not a boolean: the default
+
+
+def test_every_sentence_that_names_an_outlet_is_listed():
+    body = "Eurogamer reports it ships.\n\nThe game ships soon.\n\nPolygon says it is late."
+    found = gates.outlet_mentions(body, outlet_facts())
+    assert [item["outlets"] for item in found] == [["Eurogamer"], ["Polygon"]]

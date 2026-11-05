@@ -62,7 +62,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 import yaml
 
@@ -886,19 +886,11 @@ def load_verify_config(path: str | Path | None = None) -> dict:
         company_claim_terms = tuple(str(term) for term in terms if str(term).strip())
     else:
         company_claim_terms = DEFAULT_COMPANY_CLAIM_TERMS
-    # The opener limit is the publish gate's own setting, so the verifier flags
-    # exactly the sentences the gate would fail (0 turns the check off).
-    gate_section = raw.get("gates") or {}
-    if gate_section.get("check_opener_variety", gates.DEFAULT_GATES["check_opener_variety"]):
-        max_same_opener = int(gate_section.get("max_same_opener", gates.DEFAULT_GATES["max_same_opener"]))
-    else:
-        max_same_opener = 0
     return {
         "list_markers": section.get("list_markers") or DEFAULT_LIST_MARKERS,
         "whitelist": whitelist,
         "relative_time_words": relative_time_words,
         "company_claim_terms": company_claim_terms,
-        "max_same_opener": max_same_opener,
     }
 
 
@@ -1358,208 +1350,35 @@ def _company_claim_check(article: Any, config: dict) -> list[str]:
     return flagged
 
 
-# --- outlet checks -------------------------------------------------------------
+# --- outlet names ----------------------------------------------------------------
 #
-# Two deterministic checks on how the article names its sources. Both return
-# ``{"clause": sentence, "reason": ...}`` entries; the reason goes to the repair
-# prompt so the writer knows what to change.
+# The site states facts in its own voice and lists its outlets once, in the front
+# matter ``sources``: no body sentence says "<outlet> reports ...", "according to
+# <outlet>" or which outlets covered the story. The same check backs the publish
+# gate (``gates.outlet_name_failures``); here the flagged sentences go to the one
+# repair pass, each with its reason.
 
-#: "<outlets> reported on ..." / "covered ..." / "wrote about ...": the sentence
-#: says only that outlets covered the story, which is filler, not a fact.
-_COVERAGE_VERBS = (
-    r"(?:have\s+|has\s+|also\s+|both\s+)*"
-    r"(?:reported\s+on|reported\s+about|covered|wrote\s+about|written\s+about)\b"
-)
-COVERAGE_ONLY_REASON = (
-    "only says which outlets covered the story; it states no fact, so delete it"
-)
-
-#: "<outlets> report(s)/reported/note(s)/say(s)/... " or "according to <outlets>".
-_REPORT_VERBS = (
-    r"(?:also\s+)?(?:reports?|reported|notes?|noted|says?|said|writes?|wrote|states?|stated|"
-    r"adds?|added|details?|detailed|observes?|observed|confirms?|confirmed)\b"
+OUTLET_NAME_REASON = (
+    "names the outlet {outlets}; state the fact directly with no outlet name (outlets "
+    "belong only in the front matter sources), or delete the sentence if it only says "
+    "what an outlet covered"
 )
 
 
-def _source_names(facts: dict) -> dict[str, str]:
-    """Outlet name (folded) -> its link, for every source on the sheet."""
-    names: dict[str, str] = {}
-    for source in facts.get("sources") or []:
-        if not isinstance(source, dict):
-            continue
-        name = str(source.get("source_name") or "").strip()
-        link = str(source.get("link") or "").strip()
-        if name and link:
-            names[_fold(name)] = link
-    return names
-
-
-def _outlet_group_re(names: list[str]) -> str:
-    one = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
-    return rf"(?:{one})(?:\s*,\s*(?:{one}))*(?:,?\s+and\s+(?:{one}))?"
-
-
-def _body_sentences(article: Any) -> list[str]:
-    _front, body = _split_front_matter(_as_text(article))
-    out: list[str] = []
-    for line in body.splitlines():
-        if re.match(r"^\s{0,3}#{1,6}\s", line):
-            continue
-        line = line.strip()
-        if not line:
-            continue
-        out.extend(part.strip() for part in _SENTENCE_SPLIT_RE.split(line) if part.strip())
-    return out
-
-
-def _named_outlets(group: str, names: dict[str, str]) -> list[str]:
-    found: list[str] = []
-    for name in sorted(names, key=len, reverse=True):
-        if _mentions(group, name) and name not in found:
-            found.append(name)
-    return found
-
-
-def coverage_only_check(article: Any, facts: dict) -> list[dict]:
-    """Sentences whose subject is the sheet's outlets and whose verb is coverage."""
-    names = _source_names(facts)
-    if not names:
-        return []
-    pattern = re.compile(
-        rf"^(?:both\s+)?{_outlet_group_re(list(names))}\s+{_COVERAGE_VERBS}", re.I
-    )
-    return [
-        {"clause": sentence, "reason": COVERAGE_ONLY_REASON}
-        for sentence in _body_sentences(article)
-        if pattern.search(_fold(sentence))
-    ]
-
-
-def claim_outlet_text(claim: dict, link: str) -> str:
-    """What one claim holds from one outlet: its version, evidence, or own text.
-
-    A claim that records per-outlet ``versions`` lends its merged value only to
-    an outlet whose version it is; a claim from this outlet alone, or one with
-    no versions, is this outlet's text as a whole.
-    """
-    if not isinstance(claim, dict):
-        return ""
-    key = _link_key(link)
-    urls = [str(url) for url in claim.get("source_urls") or [] if url]
-    if claim.get("source_url"):
-        urls.append(str(claim["source_url"]))
-    url_keys = {_link_key(url) for url in urls}
-    versions = [v for v in claim.get("versions") or [] if isinstance(v, dict)]
-    parts = [str(v.get("value") or "") for v in versions if _link_key(v.get("source_url")) == key]
-    parts.extend(
-        str(e.get("quote") or "")
-        for e in claim.get("evidence") or []
-        if isinstance(e, dict) and _link_key(e.get("source_url")) == key
-    )
-    if key in url_keys and (url_keys == {key} or not versions):
-        parts.append(str(claim.get("claim") or ""))
-        parts.append(str(claim.get("value") or ""))
-    return "\n".join(part for part in parts if part)
-
-
-def _outlet_text(facts: dict, link: str) -> str:
-    """Everything the sheet holds from one outlet."""
-    return "\n".join(claim_outlet_text(claim, link) for claim in facts.get("claims") or [])
-
-
-def figure_tokens(text: str, config: dict) -> list[str]:
-    """The figure tokens (numbers, prices, dates) of ``text`` the checks compare."""
-    return [value["token"] for value in extract_values(text, config) if not _whitelisted(value, config)]
-
-
-def carries_figures(tokens: Iterable[str], text: str, config: dict) -> bool:
-    """True when every token in ``tokens`` is in ``text`` (dates may be partial there)."""
-    have = {value["token"] for value in extract_values(text, config)}
-    return all(
-        token in have or (token.startswith(_DATE_PREFIX) and _date_in_facts(token, have))
-        for token in tokens
-    )
-
-
-def opener_check(article: Any, config: dict) -> list[dict]:
-    """Sentences that give one outlet more openers than the publish gate allows.
-
-    The gate (``gates.repetitive_opener_failures``) rejects the finished article
-    with no way back, so the verifier flags the excess sentences while the one
-    repair is still available: it rewrites each to open with its fact.
-    """
-    limit = int(config.get("max_same_opener", gates.DEFAULT_GATES["max_same_opener"]))
-    if limit <= 0:
-        return []
+def outlet_mention_check(article: Any, facts: dict) -> list[dict]:
+    """Body sentences that name a source outlet, each with its repair reason."""
     _front, body = _split_front_matter(_as_text(article))
     return [
         {
-            "clause": item["sentence"],
-            "reason": (
-                f'{item["outlet"]} already opens {limit} sentences; start this one with '
-                f'its fact and put the outlet at the end ("..., {item["outlet"]} reports")'
-            ),
+            "clause": mention["sentence"],
+            "reason": OUTLET_NAME_REASON.format(outlets=", ".join(map(repr, mention["outlets"]))),
         }
-        for item in gates.repetitive_opener_sentences(body, limit)
+        for mention in gates.outlet_mentions(body, facts)
     ]
 
 
 def _clause_key(text: object) -> str:
     return _fold(text).rstrip(" .!?")
-
-
-def outlet_number_check(article: Any, facts: dict, config: dict) -> list[dict]:
-    """A number credited to an outlet must be in that outlet's own report.
-
-    "Eurogamer and Polygon report 431,000 players" fails when only Eurogamer's
-    version holds 431,000. Only sentences with exactly one attribution (one
-    outlet or one "A and B" group) are checked, so a sentence that credits two
-    figures to two outlets is never misread.
-    """
-    names = _source_names(facts)
-    if not names:
-        return []
-    group = _outlet_group_re(list(names))
-    attribution = re.compile(
-        rf"(?:according\s+to\s+({group}))|(?:(?<![\w])({group})\s+{_REPORT_VERBS})", re.I
-    )
-    texts: dict[str, set[str]] = {}
-    flagged: list[dict] = []
-    for sentence in _body_sentences(article):
-        folded = _fold(sentence)
-        matches = list(attribution.finditer(folded))
-        if len(matches) != 1:
-            continue
-        outlets = _named_outlets(matches[0].group(1) or matches[0].group(2), names)
-        values = [
-            value for value in extract_values(sentence, config) if not _whitelisted(value, config)
-        ]
-        if not outlets or not values:
-            continue
-        problems: list[str] = []
-        for outlet in outlets:
-            if outlet not in texts:
-                texts[outlet] = {
-                    v["token"] for v in extract_values(_outlet_text(facts, names[outlet]), config)
-                }
-            tokens = texts[outlet]
-            for value in values:
-                token = value["token"]
-                if token in tokens or (token.startswith(_DATE_PREFIX) and _date_in_facts(token, tokens)):
-                    continue
-                label = next(
-                    (s.get("source_name") for s in facts.get("sources") or []
-                     if isinstance(s, dict) and _fold(s.get("source_name")) == outlet),
-                    outlet,
-                )
-                problems.append(f'"{value["raw"]}" is not in {label}\'s report')
-        if problems:
-            flagged.append({
-                "clause": sentence,
-                "reason": "; ".join(_dedupe(problems))
-                + "; credit each figure only to the outlet that reports it",
-            })
-    return flagged
 
 
 # --- stage -------------------------------------------------------------------
@@ -1610,11 +1429,7 @@ def verify(
 
     code_result = code_check(article, sheet, config)
     company_claim_issues = _company_claim_check(article, config)
-    outlet_issues = (
-        coverage_only_check(article, sheet)
-        + outlet_number_check(article, sheet, config)
-        + opener_check(article, config)
-    )
+    outlet_issues = outlet_mention_check(article, sheet)
     duplicate_sources = find_sources_heading(article)
 
     # A sentence a code check flagged keeps the code check's wording, which

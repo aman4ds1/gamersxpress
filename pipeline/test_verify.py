@@ -2140,7 +2140,7 @@ def test_organization_only_copy_still_needs_a_link_to_the_named_person(tmp_path)
     assert STRATTON_CLAUSE in report.unsupported
 
 
-# --- coverage-only sentences ---------------------------------------------------------
+# --- outlet names in the body ------------------------------------------------------------
 
 
 def outlets_sheet():
@@ -2155,191 +2155,103 @@ def outlets_sheet():
             {
                 "claim": "Concurrent players at launch",
                 "value": "attracted over 431,000 concurrent players at launch",
-                "source_urls": ["https://eurogamer.example/pbz", "https://polygon.example/pbz"],
-                "kind": "reported",
-                "versions": [
-                    {"source_url": "https://polygon.example/pbz",
-                     "value": "833,000 concurrent players within hours of launch"},
-                    {"source_url": "https://eurogamer.example/pbz",
-                     "value": "attracted over 431,000 concurrent players at launch"},
-                ],
-            },
-            {
-                "claim": "Metacritic score",
-                "value": "a score of 88 on Metacritic",
-                "source_urls": ["https://polygon.example/pbz"],
+                "source_urls": ["https://eurogamer.example/pbz"],
                 "kind": "reported",
             },
         ],
     }
 
 
-@pytest.mark.parametrize("sentence", [
-    "Kotaku and PC Gamer reported on the executive's statements.",
-    "Polygon and Eurogamer have reported on the launch.",
-    "Polygon covered the announcement.",
-    "Polygon, Eurogamer and Polygon wrote about the sales.",
+@pytest.mark.parametrize("sentence, outlets", [
+    ("Eurogamer reports that the game attracted over 431,000 concurrent players.", ["Eurogamer"]),
+    ("According to Polygon, the studio is hiring.", ["Polygon"]),
+    ("Polygon and Eurogamer reported on the launch.", ["Polygon", "Eurogamer"]),
+    ("The studio is hiring, Polygon's report says.", ["Polygon"]),
 ])
-def test_coverage_only_sentence_is_flagged(sentence):
-    facts = outlets_sheet()
-    facts["sources"] += [
-        {"source_name": "Kotaku", "link": "https://kotaku.example/a"},
-        {"source_name": "PC Gamer", "link": "https://pcgamer.example/a"},
-    ]
-    flagged = verify_module.coverage_only_check(sentence + "\n", facts)
+def test_a_sentence_naming_an_outlet_is_flagged_with_a_reason(sentence, outlets):
+    flagged = verify_module.outlet_mention_check(sentence + "\n", outlets_sheet())
     assert [item["clause"] for item in flagged] == [sentence]
-    assert flagged[0]["reason"] == verify_module.COVERAGE_ONLY_REASON
-
-
-@pytest.mark.parametrize("sentence", [
-    "Polygon reports that the game sold 4 million copies.",
-    "Polygon reported that the studio is hiring.",
-    "Critics covered the launch widely.",
-])
-def test_reporting_a_fact_is_not_coverage_only(sentence):
-    assert verify_module.coverage_only_check(sentence + "\n", outlets_sheet()) == []
-
-
-# --- a figure credited to an outlet must be in that outlet's report -------------------
-
-
-def test_figure_credited_to_an_outlet_without_it_is_flagged():
-    article = "Eurogamer and Polygon report that the game attracted over 431,000 concurrent players.\n"
-    flagged = verify_module.outlet_number_check(article, outlets_sheet(), config())
-    assert len(flagged) == 1
-    assert '"431,000" is not in Polygon\'s report' in flagged[0]["reason"]
-    assert "Eurogamer's" not in flagged[0]["reason"]
+    reason = flagged[0]["reason"]
+    for outlet in outlets:
+        assert repr(outlet) in reason
+    assert "state the fact directly with no outlet name" in reason
+    assert "outlets belong only in the front matter sources" in reason
+    assert "delete the sentence if it only says what an outlet covered" in reason
 
 
 @pytest.mark.parametrize("article", [
-    "Eurogamer reports that the game attracted over 431,000 concurrent players.",
-    "According to Polygon, the game hit 833,000 concurrent players.",
-    "Polygon also reports that the game holds a Metacritic score of 88.",
-    # Two attributions in one sentence are not paired with figures.
-    "Eurogamer reports 431,000 players, while Polygon says 88.",
-    # No outlet credited: the code check's job, not this one's.
-    "The game attracted 431,000 concurrent players.",
+    "The game attracted over 431,000 concurrent players on Steam at launch.\n",
+    "## Polygon and Eurogamer coverage\n",
+    "The renderer draws twice as many polygon edges.\n",
+    "- [Polygon](https://polygon.example/pbz)\n",
 ])
-def test_figure_in_the_credited_outlets_report_passes(article):
-    assert verify_module.outlet_number_check(article + "\n", outlets_sheet(), config()) == []
+def test_text_without_an_outlet_name_is_not_flagged_by_the_verifier(article):
+    assert verify_module.outlet_mention_check(article, outlets_sheet()) == []
 
 
-def test_figure_from_a_single_outlet_claim_counts_as_that_outlets():
-    article = "According to Eurogamer, the game holds a Metacritic score of 88.\n"
-    flagged = verify_module.outlet_number_check(article, outlets_sheet(), config())
-    assert '"88" is not in Eurogamer\'s report' in flagged[0]["reason"]
+def test_the_front_matter_sources_are_not_checked_as_body_text():
+    article = (
+        "---\ntitle: Launch news\nsources:\n  - name: Polygon\n    url: https://polygon.example/pbz\n"
+        "  - name: Eurogamer\n    url: https://eurogamer.example/pbz\n---\n"
+        "The game attracted over 431,000 concurrent players.\n"
+    )
+    assert verify_module.outlet_mention_check(article, outlets_sheet()) == []
 
 
-def test_outlet_checks_reject_the_article_with_their_reason(tmp_path):
-    coverage = "Polygon and Eurogamer reported on the launch."
-    credited = "Polygon reports that the game attracted over 431,000 concurrent players."
+def test_verify_rejects_an_outlet_named_in_the_body_the_model_passed(tmp_path):
+    named = "Polygon reports that the game attracted over 431,000 concurrent players."
+    clean = "The studio thanked players for the launch."
+    clauses = [
+        {"clause": "the game attracted over 431,000 concurrent players", "fact_ids": ["F1"],
+         "match": "exact", "exceeds_facts": False, "difference": ""},
+        {"clause": "the studio thanked players for the launch", "fact_ids": ["F1"],
+         "match": "paraphrase", "exceeds_facts": False, "difference": ""},
+    ]
+    report = verify_module.verify(
+        f"{named} {clean}\n", outlets_sheet(), run_state=providers.RunState(),
+        generate=make_generate(model(clauses=clauses)), report_dir=tmp_path, verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected"
+    assert report.unsupported == [named]
+    reasons = {item["clause"]: item.get("reason") for item in report.unsupported_detail}
+    assert "names the outlet 'Polygon'" in reasons[named]
+
+
+def test_the_models_copy_of_an_outlet_flagged_clause_is_replaced_by_the_code_reason(tmp_path):
+    named = "Polygon and Eurogamer reported on the launch."
     payload = model(
-        clauses=[{
-            "clause": "the game attracted over 431,000 concurrent players", "fact_ids": ["F1"],
-            "match": "exact", "exceeds_facts": False, "difference": "",
-        }],
+        clauses=[{"clause": "reported on the launch", "fact_ids": ["F1"], "match": "paraphrase",
+                  "exceeds_facts": False, "difference": ""}],
         unsupported=["Polygon and Eurogamer reported on the launch"],
     )
     report = verify_module.verify(
-        f"{coverage} {credited}\n", outlets_sheet(), run_state=providers.RunState(),
+        named + "\n", outlets_sheet(), run_state=providers.RunState(),
         generate=make_generate(payload), report_dir=tmp_path, verify_config=config(),
     )
     assert report.passed is False
-    assert report.failure_reason == "article_rejected"
-    # The model's copy of the coverage sentence is replaced by the code check's.
-    assert report.unsupported == [coverage, credited]
-    reasons = {item["clause"]: item.get("reason") for item in report.unsupported_detail}
-    assert reasons[coverage] == verify_module.COVERAGE_ONLY_REASON
-    assert "not in Polygon's report" in reasons[credited]
+    assert report.unsupported == [named]
+    assert [item.get("reason") for item in report.unsupported_detail if item["clause"] == named][0]
 
 
-def test_headings_are_not_checked_for_credited_figures():
-    article = "## Eurogamer and Polygon report 431,000 players\nThe launch went well.\n"
-    assert verify_module.outlet_number_check(article, outlets_sheet(), config()) == []
-
-
-def test_a_misattributed_figure_alone_rejects_an_article_the_model_passed(tmp_path):
-    credited = "Polygon reports that the game attracted over 431,000 concurrent players."
-    payload = model(clauses=[{
-        "clause": "the game attracted over 431,000 concurrent players", "fact_ids": ["F1"],
-        "match": "exact", "exceeds_facts": False, "difference": "",
-    }])
+def test_an_article_in_the_sites_own_voice_still_passes(tmp_path):
+    sentence = "The game attracted over 431,000 concurrent players on Steam at launch."
+    clauses = [{"clause": "the game attracted over 431,000 concurrent players on Steam at launch",
+                "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}]
     report = verify_module.verify(
-        credited + "\n", outlets_sheet(), run_state=providers.RunState(),
-        generate=make_generate(payload), report_dir=tmp_path, verify_config=config(),
+        sentence + "\n", outlets_sheet(), run_state=providers.RunState(),
+        generate=make_generate(model(clauses=clauses)), report_dir=tmp_path, verify_config=config(),
     )
-    assert report.passed is False
-    assert report.unsupported == [credited]
+    assert report.passed is True, report.unsupported
 
 
-# --- one outlet opening too many sentences (the publish gate's limit) -------------------
-
-
-PLAN_NAMES = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"]
-
-
-def opener_article(count):
-    # No digits: a figure credited to Polygon would trip the per-outlet number check.
-    return "\n".join(
-        f"Polygon reports that the studio changed plan {PLAN_NAMES[i]}." for i in range(count)
-    ) + "\n"
-
-
-def opener_config(limit=3):
-    return {**config(), "max_same_opener": limit}
-
-
-def test_opener_check_flags_the_sentences_past_the_limit():
-    flagged = verify_module.opener_check(opener_article(5), opener_config())
+def test_every_sentence_that_names_an_outlet_is_flagged_once():
+    article = (
+        "Eurogamer reports that the game attracted over 431,000 players. The studio thanked players. "
+        "According to Polygon, the studio is hiring.\n"
+    )
+    flagged = verify_module.outlet_mention_check(article, outlets_sheet())
     assert [item["clause"] for item in flagged] == [
-        "Polygon reports that the studio changed plan delta.",
-        "Polygon reports that the studio changed plan echo.",
+        "Eurogamer reports that the game attracted over 431,000 players.",
+        "According to Polygon, the studio is hiring.",
     ]
-    assert all("Polygon already opens 3 sentences" in item["reason"] for item in flagged)
-    assert all('"..., Polygon reports"' in item["reason"] for item in flagged)
-
-
-def test_opener_check_passes_up_to_the_limit_and_when_switched_off():
-    assert verify_module.opener_check(opener_article(3), opener_config()) == []
-    assert verify_module.opener_check(opener_article(6), opener_config(limit=0)) == []
-
-
-def test_opener_check_ignores_front_matter():
-    # YAML list items that read like openers sit outside the article body.
-    tags = "\n".join(f"  - Polygon reports {word}" for word in ("a", "b", "c", "d", "e"))
-    article = f"---\ntitle: News\ntags:\n{tags}\n---\n" + opener_article(3)
-    assert verify_module.opener_check(article, opener_config()) == []
-
-
-def test_opener_check_defaults_to_the_gate_limit():
-    assert len(verify_module.opener_check(opener_article(5), config())) == 2
-
-
-def test_verify_rejects_excess_outlet_openers_the_model_passed(tmp_path):
-    clauses = [
-        {"clause": f"the studio changed plan {PLAN_NAMES[i]}", "fact_ids": ["F1"], "match": "paraphrase",
-         "exceeds_facts": False, "difference": ""}
-        for i in range(5)
-    ]
-    report = verify_module.verify(
-        opener_article(5), outlets_sheet(), run_state=providers.RunState(),
-        generate=make_generate(model(clauses=clauses)), report_dir=tmp_path,
-        verify_config=opener_config(),
-    )
-    assert report.passed is False
-    assert report.failure_reason == "article_rejected"
-    assert report.unsupported == [
-        "Polygon reports that the studio changed plan delta.",
-        "Polygon reports that the studio changed plan echo.",
-    ]
-    reasons = [item.get("reason") for item in report.unsupported_detail]
-    assert all("already opens 3 sentences" in reason for reason in reasons)
-
-
-def test_verify_config_reads_the_opener_limit_from_the_gates_section(tmp_path):
-    path = tmp_path / "config.yaml"
-    path.write_text("gates:\n  max_same_opener: 2\n", encoding="utf-8")
-    assert verify_module.load_verify_config(path)["max_same_opener"] == 2
-    path.write_text("gates:\n  check_opener_variety: false\n  max_same_opener: 2\n", encoding="utf-8")
-    assert verify_module.load_verify_config(path)["max_same_opener"] == 0
-    assert verify_module.load_verify_config(tmp_path / "missing.yaml")["max_same_opener"] == 3

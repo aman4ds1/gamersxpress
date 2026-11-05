@@ -22,7 +22,9 @@ block. The gates are:
 * **Draft quality** (config switches under ``gates``): no date/number token
   repeated past ``max_repeat_tokens``, no near-duplicate sentence pairs, no
   dangling anaphoric opener, no circular attribution, no thin H2 section, no
-  repetitive outlet openers past ``max_same_opener``, and every front-matter
+  repetitive outlet openers past ``max_same_opener``, an outlet's name anywhere in
+  the title, description or body (outlets belong only in the front matter
+  ``sources``), and every front-matter
   entity (plus the facts sheet's top primary entity) named in the article.
 * **Duplicates**: no duplicate slug or title, and no near-duplicate title inside
   the configurable window.
@@ -135,6 +137,7 @@ DEFAULT_GATES: dict[str, Any] = {
     "check_thin_sections": True,
     "check_opener_variety": True,
     "max_same_opener": 3,
+    "check_outlet_names": True,
     "check_entity_mentions": True,
 }
 
@@ -366,6 +369,7 @@ def load_gates_config(path: str | Path | None = None) -> dict:
         "check_circular_attribution",
         "check_thin_sections",
         "check_opener_variety",
+        "check_outlet_names",
         "check_entity_mentions",
     ):
         value = section.get(key, DEFAULT_GATES[key])
@@ -982,25 +986,100 @@ def repetitive_opener_failures(body: str, max_same: int = 3) -> list[str]:
     ]
 
 
-def repetitive_opener_sentences(body: str, max_same: int = 3) -> list[dict]:
-    """The sentences that push one outlet past ``max_same`` openers.
+def _plain_quotes(text: str) -> str:
+    """``text`` with curly apostrophes made straight (so "Tom\u2019s Hardware" matches)."""
+    return str(text or "").replace("\u2019", "'").replace("\u2018", "'")
 
-    Same count as :func:`repetitive_opener_failures`, but names the offending
-    sentences (the 4th, 5th... that one outlet opens) so a repair can rewrite
-    them: ``{"sentence", "outlet", "count"}`` with ``count`` the running total.
+
+def _outlet_regex(name: str) -> re.Pattern:
+    """Whole-name, case-insensitive match (so "Eurogamer's" matches, "Eurogamers" does not)."""
+    return re.compile(rf"(?<![\w-]){re.escape(_plain_quotes(name))}(?![\w-])", re.IGNORECASE)
+
+
+def _names_in(text: str, names: list[str]) -> list[str]:
+    """The ``names`` that ``text`` writes as a name, not as a lowercase common word.
+
+    An all-lowercase match ("polygon count") is a noun, not the outlet Polygon.
     """
-    counts: dict[str, int] = {}
-    excess: list[dict] = []
-    for sentence in _sentences(body):
-        match = _OUTLET_OPENER_RE.match(sentence)
-        if not match:
+    plain = _plain_quotes(text)
+    return [
+        name
+        for name in names
+        if any(match.group(0) != match.group(0).lower() for match in _outlet_regex(name).finditer(plain))
+    ]
+
+
+def _source_outlet_names(facts: dict | None) -> list[str]:
+    """Outlet names of the sheet's sources that the story itself does not mention.
+
+    The site states facts in its own voice and lists the outlets once, in the
+    front matter ``sources``. An outlet whose name also appears in a claim or is
+    one of the story's entities (a story about that outlet, or a speaker's own
+    words naming it) is left out, so a legitimate mention is never flagged.
+    """
+    facts = facts if isinstance(facts, dict) else {}
+    coherence = facts.get("coherence") if isinstance(facts.get("coherence"), dict) else {}
+    entities = [
+        str(entity)
+        for key in ("canonical_entities", "primary_entities")
+        for entity in coherence.get(key) or []
+    ]
+    story_text = _plain_quotes(" ".join([
+        *(
+            str(claim.get(field) or "")
+            for claim in facts.get("claims") or []
+            if isinstance(claim, dict)
+            for field in ("claim", "value", "origin", "affiliation")
+        ),
+        *entities,
+    ]))
+    names: list[str] = []
+    for source in facts.get("sources") or []:
+        if not isinstance(source, dict):
             continue
-        name = " ".join(match.group(1).split())
-        key = name.lower()
-        counts[key] = counts.get(key, 0) + 1
-        if counts[key] > max_same:
-            excess.append({"sentence": sentence, "outlet": name, "count": counts[key]})
-    return excess
+        name = str(source.get("source_name") or source.get("name") or "").strip()
+        if name and name not in names and not _outlet_regex(name).search(story_text):
+            names.append(name)
+    return names
+
+
+_SOURCE_LINK_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[")
+
+
+def outlets_named(text: str, facts: dict | None) -> list[str]:
+    """The source outlets ``text`` names (outlets a claim itself mentions are ignored)."""
+    return _names_in(text, _source_outlet_names(facts))
+
+
+def outlet_mentions(body: str, facts: dict | None) -> list[dict]:
+    """The body sentences that name a source outlet: ``{"sentence", "outlets"}``."""
+    names = _source_outlet_names(facts)
+    if not names:
+        return []
+    mentions: list[dict] = []
+    for sentence in _sentences(body):
+        # Headings, and a body Sources link list (rejected on its own elsewhere).
+        if sentence.lstrip().startswith("#") or _SOURCE_LINK_BULLET_RE.match(sentence):
+            continue
+        found = _names_in(sentence, names)
+        if found:
+            mentions.append({"sentence": sentence, "outlets": found})
+    return mentions
+
+
+def outlet_name_failures(title: str, description: str, body: str, facts: dict | None) -> list[str]:
+    """Failure messages for outlet names in the title, description or body."""
+    failures: list[str] = []
+    for label, text in (("title", title), ("description", description)):
+        found = outlets_named(text, facts)
+        if found:
+            failures.append(f"{label} names a source outlet ({', '.join(map(repr, found))}): {text!r}")
+    for mention in outlet_mentions(body, facts):
+        failures.append(
+            f"body names a source outlet ({', '.join(map(repr, mention['outlets']))}); "
+            f"outlets belong only in the front matter sources: {mention['sentence']!r}"
+        )
+    return failures
 
 
 def _mention_tokens(name: str) -> tuple[str, ...]:
@@ -1372,6 +1451,14 @@ def run_gates(
     if config.get("check_opener_variety", DEFAULT_GATES["check_opener_variety"]):
         opener_failures = repetitive_opener_failures(body, config["max_same_opener"])
     record("sentence_openers", opener_failures)
+
+    # 5l-2. voice: outlet names appear only in the front matter sources
+    outlet_failures: list[str] = []
+    if config.get("check_outlet_names", DEFAULT_GATES["check_outlet_names"]):
+        outlet_failures = outlet_name_failures(
+            title, str(front.get("description") or ""), body, facts,
+        )
+    record("outlet_names", outlet_failures)
 
     # 5m. entities appear in the article, and the top primary entity is listed
     mention_failures: list[str] = []

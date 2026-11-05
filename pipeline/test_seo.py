@@ -36,7 +36,7 @@ def make_facts(claim="The GeForce RTX 5090 launches at $1,999.", value="$1,999",
             }
         ],
         "sources": [
-            {"source_name": "NVIDIA", "link": "https://nvidia.example/5090", "tier": 1, "owner": "nvidia", "region": "global"}
+            {"source_name": "NVIDIA Newsroom", "link": "https://nvidia.example/5090", "tier": 1, "owner": "nvidia", "region": "global"}
         ],
     }
 
@@ -270,18 +270,6 @@ def test_validate_allows_overlap_percentage_without_origin_phrase():
 def test_causal_phrases_cover_the_writer_ban():
     for phrase in ("in contrast", "because", "driven by", "thanks to", "as a result"):
         assert phrase in seo.CAUSAL_PHRASES
-
-
-def test_seo_instruction_covers_attribution_and_relation_rules():
-    for required in (
-        "according to estimates from X",
-        "Eurogamer reports",
-        "Never state an estimate",
-        "in contrast",
-        "driven by",
-        "came from",
-    ):
-        assert required in seo.SYSTEM_INSTRUCTION
 
 
 # --- relative time, completeness and contrast --------------------------------
@@ -778,3 +766,67 @@ def test_generate_seo_does_not_save_a_dropped_new_entity(tmp_path):
     result, entities_path = run_dusk_seo_with(tmp_path, facts, ["FromSoftware", "Elden Ring"])
     assert "Elden Ring" not in result["entities"]
     assert "Elden Ring" not in [e["canonical"] for e in seo.load_entities(entities_path)]
+
+
+# --- the site's own voice: no outlet names in the title or description -------------------
+
+
+def test_seo_instruction_asks_for_the_sites_own_voice_and_hedges():
+    for required in (
+        "State facts directly in the site's own voice",
+        "never name a news outlet or website in the title or description",
+        "'Eurogamer reports'",
+        "Keep an estimate's or rumor's hedge",
+        "Never state an estimate or a rumor as fact",
+        "in contrast",
+        "driven by",
+        "came from",
+    ):
+        assert required in seo.SYSTEM_INSTRUCTION
+    assert "according to estimates from X" not in seo.SYSTEM_INSTRUCTION
+    assert "attribute to the outlet" not in seo.SYSTEM_INSTRUCTION
+
+
+def test_validate_rejects_an_outlet_name_in_the_title_or_description():
+    facts = make_facts()
+    title_errors = seo.validate(
+        seo_data(title="NVIDIA Newsroom says RTX 5090 costs $1,999"),
+        article=ARTICLE, facts=facts, entities=seo.load_entities(),
+    )
+    assert any(e.startswith("title names a source outlet ('NVIDIA Newsroom')") for e in title_errors)
+    description_errors = seo.validate(
+        seo_data(description="The flagship graphics card arrives with more memory, as reported by NVIDIA Newsroom today."),
+        article=ARTICLE, facts=facts, entities=seo.load_entities(),
+    )
+    assert any(e.startswith("description names a source outlet ('NVIDIA Newsroom')") for e in description_errors)
+
+
+def test_validate_accepts_a_title_and_description_without_an_outlet_name():
+    errors = seo.validate(seo_data(), article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert not any("source outlet" in e for e in errors)
+
+
+def test_generate_seo_retries_when_the_model_names_an_outlet(tmp_path):
+    bad = dusk_seo()
+    bad["title"] = "NVIDIA Newsroom says the console is delayed to 2027"
+    good = dusk_seo()
+    calls = []
+    sequence = make_generate([bad, good])
+
+    def generate(role, prompt, **kwargs):
+        calls.append(prompt)
+        return sequence(role, prompt, **kwargs)
+
+    facts = dusk_facts()
+    facts["sources"] = [{**facts["sources"][0], "source_name": "NVIDIA Newsroom"}, *facts["sources"][1:]]
+    entities_path = tmp_path / "entities.json"
+    seo.save_entities([], entities_path)
+    (tmp_path / "articles").mkdir()
+    (tmp_path / "drafts").mkdir()
+    result = seo.generate_seo(
+        DUSK_ARTICLE, facts, generate=generate, entities_path=entities_path,
+        articles_dir=tmp_path / "articles", drafts_dir=tmp_path / "drafts",
+    )
+    assert "NVIDIA Newsroom" not in result["title"]
+    assert len(calls) == 2
+    assert "title names a source outlet" in calls[1]

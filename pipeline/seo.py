@@ -50,6 +50,7 @@ from typing import Any, Callable, Iterable
 import cluster
 import verify
 from gates import (
+    outlets_named,
     entity_mention_failures,
     load_content_limits,
     load_content_rules,
@@ -202,10 +203,12 @@ SYSTEM_INSTRUCTION = (
     "date. Name the main game or product from the headline, every named "
     "character or product in the title, and the platforms in the entities "
     "field. "
-    "Attribute an estimate to its origin ('according to estimates from X') and "
-    "a reported claim to the outlet that reported it ('Eurogamer reports'); "
-    "when the origin is unstated, attribute to the outlet. Never state an "
-    "estimate or a reported claim as fact. Never link facts with a causal or "
+    "State facts directly in the site's own voice and never name a news "
+    "outlet or website in the title or description ('Eurogamer reports', "
+    "'according to PC Gamer'): the sources are listed in the front matter. "
+    "Keep an estimate's or rumor's hedge ('is estimated to', 'reportedly') in "
+    "the same sentence, naming the firm that made an estimate. Never state an "
+    "estimate or a rumor as fact. Never link facts with a causal or "
     "contrast connective ('in contrast', 'because', 'driven by', 'thanks to', "
     "'as a result', 'rather than', 'instead of') unless the facts sheet states "
     "that relationship, and never "
@@ -590,6 +593,14 @@ def validate(
     category = data.get("category", "")
     tags = data.get("tags", [])
     alt = data.get("imageAlt", "")
+
+    for label, text in (("title", title), ("description", description)):
+        named = outlets_named(text, facts) if isinstance(text, str) else []
+        if named:
+            errors.append(
+                f"{label} names a source outlet ({', '.join(map(repr, named))}); state the "
+                "fact directly, sources are listed in the front matter"
+            )
 
     if not isinstance(title, str) or not title.strip():
         errors.append("title is empty")
