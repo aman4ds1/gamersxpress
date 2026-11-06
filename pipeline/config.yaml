@@ -1146,7 +1146,7 @@ relevance:
 safety:
   daily_cap: 4
   publish_modes: [draft, auto]
-  breaker_threshold: 3
+  breaker_threshold: 5
 
 # Per-provider and per-role timeouts and TPM limits.
 provider:
