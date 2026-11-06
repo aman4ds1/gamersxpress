@@ -137,15 +137,17 @@ def test_fail_gate_exits_3_and_increments_breaker(tmp_path):
     assert breaker["consecutive_failures"] == 1
 
 
-def test_breaker_opens_after_three_gate_failures_and_pauses(tmp_path):
-    for index in range(3):
+def test_breaker_opens_after_the_configured_number_of_gate_failures_and_pauses(tmp_path):
+    config = yaml.safe_load((Path(run_module.__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8"))
+    threshold = int(config["safety"]["breaker_threshold"])
+    for index in range(threshold):
         # Advance past the 24h failed-story cooldown so the same story is retried.
         result = run_once(tmp_path, dry_run=True, scenario="fail-gate", now=NOW + dt.timedelta(hours=25 * index))
     assert result.status == "failed"
     assert result.exit_code == 3
     breaker = json.loads((tmp_path / "state" / "breaker.json").read_text(encoding="utf-8"))
     assert breaker["open"] is True
-    assert breaker["consecutive_failures"] == 3
+    assert breaker["consecutive_failures"] == threshold
     issue = tmp_path / "state" / "reports" / "issue.md"
     assert issue.is_file()
     issue_text = issue.read_text(encoding="utf-8")
@@ -156,7 +158,7 @@ def test_breaker_opens_after_three_gate_failures_and_pauses(tmp_path):
     assert paused.status == "paused"
     assert paused.exit_code == 0
     breaker = json.loads((tmp_path / "state" / "breaker.json").read_text(encoding="utf-8"))
-    assert breaker["consecutive_failures"] == 3
+    assert breaker["consecutive_failures"] == threshold
 
 
 def test_paused_env_stops_run_without_writing_state(tmp_path):
@@ -1668,3 +1670,23 @@ def test_the_skipped_report_uses_the_gaming_scene_keywords_of_the_runs_config(tm
     assert [c["title"] for c in report["candidates"]] == [dryrun.SAMPLE_TITLE]
     skipped = {entry["title"]: entry["reason"] for entry in report["skipped"]}
     assert skipped[layoffs].startswith("blocked topic: labor_and_layoffs (")
+
+
+def test_both_verifications_get_the_gathered_source_text_for_the_overlap_check(tmp_path):
+    real_verify = run_module.verify_stage.verify
+    seen = []
+
+    def verify(*args, **kwargs):
+        seen.append(kwargs.get("source_texts"))
+        report = real_verify(*args, **kwargs)
+        report.passed = False
+        report.failure_reason = "article_rejected"
+        report.unsupported = ["x"]
+        return report
+
+    def repair(draft, flagged_clauses, facts, **kwargs):
+        return providers.Generation("writer", "gemini", "g", "google", draft)
+
+    run_once(tmp_path, dry_run=True, scenario="pass", verify_fn=verify, repair_fn=repair)
+    assert len(seen) == 2
+    assert all(texts and all(isinstance(text, str) for text in texts) for texts in seen)

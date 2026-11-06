@@ -432,6 +432,43 @@ def _ngrams(words: list[str], n: int) -> set[tuple]:
     return {tuple(words[i : i + n]) for i in range(len(words) - n + 1)}
 
 
+def gathered_texts(gathered: dict | None) -> list[str]:
+    """The extracted text of each gathered source (what the overlap gate compares against)."""
+    return [str((source or {}).get("text") or "") for source in (gathered or {}).get("sources") or []]
+
+
+def overlap_sentences(body: str, source_texts: list[str], ngram: int, target_ratio: float) -> list[dict]:
+    """The most-copied sentences, enough of them to bring the overlap under ``target_ratio``.
+
+    Returns ``{"sentence", "copied"}`` (``copied`` = its ``ngram``-word runs found in
+    the sources), most-copied first, or [] when the article is already under the
+    target. The publish gate fails an article over its limit with no way back, so
+    these go to the one repair pass to be rewritten in the writer's own words.
+    """
+    source_grams: set[tuple] = set()
+    for text in source_texts:
+        source_grams |= _ngrams(_WORD_RE.findall(str(text).lower()), ngram)
+    if not source_grams:
+        return []
+    rows = []
+    for sentence in _sentences(body):
+        if sentence.lstrip().startswith("#"):
+            continue
+        grams = _ngrams(_WORD_RE.findall(sentence.lower()), ngram)
+        rows.append((sentence, grams, len(grams & source_grams)))
+    total = sum(len(g) for _s, g, _c in rows)
+    copied = sum(c for _s, _g, c in rows)
+    if not total:
+        return []
+    flagged: list[dict] = []
+    for sentence, _grams, count in sorted(rows, key=lambda row: -row[2]):
+        if count == 0 or copied / total <= target_ratio:
+            break
+        flagged.append({"sentence": sentence, "copied": count})
+        copied -= count
+    return flagged
+
+
 def overlap_ratio(body: str, sources_texts: list[str], ngram: int) -> float:
     body_ngrams = _ngrams(_WORD_RE.findall(body.lower()), ngram)
     if not body_ngrams:
@@ -1306,7 +1343,7 @@ def run_gates(
 
     # 4. text overlap
     overlap_cfg = config["overlap"]
-    source_texts = [str((source or {}).get("text") or "") for source in (gathered or {}).get("sources") or []]
+    source_texts = gathered_texts(gathered)
     ratio = overlap_ratio(body, source_texts, overlap_cfg["ngram"])
     overlap_failures: list[str] = []
     if ratio > overlap_cfg["max_ratio"]:

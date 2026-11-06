@@ -888,6 +888,7 @@ def run(
             verify_report = verify_fn(
                 draft, facts, run_state=run_state, generate=generate,
                 report_dir=paths.reports_dir, id=cluster_id,
+                source_texts=gates_stage.gathered_texts(gathered),
             )
 
         # One repair attempt: an article_rejected verdict with unsupported
@@ -941,6 +942,7 @@ def run(
                     verify_report = verify_fn(
                         draft, facts, run_state=run_state, generate=generate,
                         report_dir=paths.reports_dir, id=cluster_id,
+                        source_texts=gates_stage.gathered_texts(gathered),
                         repair={
                             "attempted": True,
                             "changed_clauses": changed_clauses,

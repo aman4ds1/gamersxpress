@@ -801,7 +801,7 @@ def generate_seo(
             logger.info("seo added required entities: %r -> %r", data["entities"], with_required)
             data["entities"], new_entities = with_required, required_new
         mentioned = drop_unmentioned_entities(
-            data["entities"], title=str(data.get("title") or ""), article=article,
+            data["entities"], title=str(data.get("title") or ""), article=_front_matter_body(article),
         )
         if mentioned != data["entities"]:
             logger.info(

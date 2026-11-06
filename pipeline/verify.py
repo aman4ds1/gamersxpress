@@ -1377,6 +1377,27 @@ def outlet_mention_check(article: Any, facts: dict) -> list[dict]:
     ]
 
 
+#: Overlap is flagged well before the publish gate's limit, because one repair may not fix every sentence.
+OVERLAP_MARGIN = 0.75
+OVERLAP_REASON = (
+    "copies {count} run(s) of {ngram} or more words from the sources; rewrite it in your own "
+    "words, keeping every figure, date and name"
+)
+
+
+def overlap_check(article: Any, source_texts: list[str] | None) -> list[dict]:
+    """Sentences that copy source wording, so the repair rewrites them before the overlap gate."""
+    if not source_texts:
+        return []
+    settings = gates.load_gates_config().get("overlap") or gates.DEFAULT_GATES["overlap"]
+    ngram, limit = int(settings["ngram"]), float(settings["max_ratio"])
+    _front, body = _split_front_matter(_as_text(article))
+    return [
+        {"clause": item["sentence"], "reason": OVERLAP_REASON.format(count=item["copied"], ngram=ngram)}
+        for item in gates.overlap_sentences(body, source_texts, ngram, limit * OVERLAP_MARGIN)
+    ]
+
+
 def _clause_key(text: object) -> str:
     return _fold(text).rstrip(" .!?")
 
@@ -1393,6 +1414,7 @@ def verify(
     prompt: str | None = None,
     report_dir: str | Path = DEFAULT_REPORT_DIR,
     verify_config: dict | None = None,
+    source_texts: list[str] | None = None,
     config_path: str | Path = DEFAULT_CONFIG_PATH,
     id: str | None = None,
     repair: dict | None = None,
@@ -1429,7 +1451,7 @@ def verify(
 
     code_result = code_check(article, sheet, config)
     company_claim_issues = _company_claim_check(article, config)
-    outlet_issues = outlet_mention_check(article, sheet)
+    outlet_issues = outlet_mention_check(article, sheet) + overlap_check(article, source_texts)
     duplicate_sources = find_sources_heading(article)
 
     # A sentence a code check flagged keeps the code check's wording, which

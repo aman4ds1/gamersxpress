@@ -1262,3 +1262,42 @@ def test_every_sentence_that_names_an_outlet_is_listed():
     body = "Eurogamer reports it ships.\n\nThe game ships soon.\n\nPolygon says it is late."
     found = gates.outlet_mentions(body, outlet_facts())
     assert [item["outlets"] for item in found] == [["Eurogamer"], ["Polygon"]]
+
+
+# --- sentences that copy source wording --------------------------------------------------------
+
+SRC = "the studio said the new console will launch in march with a price of 449 dollars and two colour options for early buyers"
+
+
+def test_gathered_texts_lists_each_sources_text():
+    assert gates.gathered_texts({"sources": [{"text": "a"}, {"text": None}, {}]}) == ["a", "", ""]
+    assert gates.gathered_texts(None) == [] and gates.gathered_texts({}) == []
+
+
+def test_the_most_copied_sentences_are_flagged_until_the_overlap_is_under_the_target():
+    body = f"## News\n\nSony confirmed it. {SRC.capitalize()}. A fresh sentence about something else entirely today, with new words."
+    flagged = gates.overlap_sentences(body, [SRC], 8, 0.1)
+    assert [f["sentence"] for f in flagged] == [f"{SRC.capitalize()}."]
+    assert flagged[0]["copied"] >= 1
+
+
+def test_an_article_under_the_target_flags_nothing():
+    body = "Sony confirmed the new console today with a price that was not disclosed in any of the posts we read."
+    assert gates.overlap_sentences(body, [SRC], 8, 0.5) == []
+    assert gates.overlap_sentences(f"{SRC}.", [SRC], 8, 1.0) == []
+
+
+@pytest.mark.parametrize("sources", [[], [""], ["too short"]])
+def test_no_usable_source_text_flags_nothing(sources):
+    assert gates.overlap_sentences(f"{SRC}.", sources, 8, 0.0) == []
+
+
+def test_headings_are_never_flagged_as_copied():
+    assert gates.overlap_sentences(f"## {SRC}", [SRC], 8, 0.0) == []
+
+
+def test_flagging_stops_once_enough_is_removed():
+    one, two = SRC.capitalize() + ".", "Another sentence copied from the source: " + SRC + "."
+    flagged = gates.overlap_sentences(f"{one} {two}", [SRC], 8, 0.55)
+    assert len(flagged) == 1
+    assert len(gates.overlap_sentences(f"{one} {two}", [SRC], 8, 0.0)) == 2

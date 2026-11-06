@@ -2255,3 +2255,33 @@ def test_every_sentence_that_names_an_outlet_is_flagged_once():
         "Eurogamer reports that the game attracted over 431,000 players.",
         "According to Polygon, the studio is hiring.",
     ]
+
+
+# --- source wording copied into the article ---------------------------------------------------
+
+COPIED = "the studio said the new console will launch in march with a price of 449 dollars and two colour options for early buyers"
+
+
+def test_a_copied_sentence_is_flagged_with_a_rewrite_reason():
+    article = f"Sony confirmed it today.\n\n{COPIED.capitalize()}.\n"
+    [item] = verify_module.overlap_check(article, [COPIED])
+    assert item["clause"] == f"{COPIED.capitalize()}."
+    assert "rewrite it in your own words" in item["reason"] and "8 or more words" in item["reason"]
+
+
+def test_copying_is_not_flagged_without_source_text_or_in_the_front_matter():
+    assert verify_module.overlap_check(f"{COPIED}.\n", None) == []
+    assert verify_module.overlap_check(f"{COPIED}.\n", []) == []
+    article = f"---\ndescription: {COPIED}\n---\nA different sentence with entirely new words about nothing in particular here.\n"
+    assert verify_module.overlap_check(article, [COPIED]) == []
+
+
+def test_verify_rejects_a_copied_sentence_the_model_passed(tmp_path):
+    copied = f"{COPIED.capitalize()}."
+    payload = model(clauses=[{"clause": COPIED, "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}])
+    report = verify_module.verify(
+        copied + "\n", outlets_sheet(), run_state=providers.RunState(), generate=make_generate(payload),
+        report_dir=tmp_path, verify_config=config(), source_texts=[COPIED],
+    )
+    assert report.passed is False and report.unsupported == [copied]
+    assert "rewrite it in your own words" in [d["reason"] for d in report.unsupported_detail if d["clause"] == copied][0]

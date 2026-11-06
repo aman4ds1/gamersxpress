@@ -830,3 +830,19 @@ def test_generate_seo_retries_when_the_model_names_an_outlet(tmp_path):
     assert "NVIDIA Newsroom" not in result["title"]
     assert len(calls) == 2
     assert "title names a source outlet" in calls[1]
+
+
+def test_generate_seo_checks_entities_against_the_body_not_the_front_matter_the_writer_wrote(tmp_path):
+    # The writer lists entities in its own front matter; that list must not make them "mentioned".
+    drafted = "---\ntitle: Draft\nentities:\n  - Valve\n  - FromSoftware\n---\n" + DUSK_ARTICLE
+    entities_path = tmp_path / "entities.json"
+    seo.save_entities([{"canonical": "FromSoftware", "aliases": []}, {"canonical": "Valve", "aliases": []}], entities_path)
+    (tmp_path / "articles").mkdir()
+    (tmp_path / "drafts").mkdir()
+    data = dusk_seo()
+    data["entities"] = ["FromSoftware", "Valve"]
+    result = seo.generate_seo(
+        drafted, dusk_facts(), generate=make_generate(data), entities_path=entities_path,
+        articles_dir=tmp_path / "articles", drafts_dir=tmp_path / "drafts",
+    )
+    assert "Valve" not in result["entities"] and "FromSoftware" in result["entities"]
