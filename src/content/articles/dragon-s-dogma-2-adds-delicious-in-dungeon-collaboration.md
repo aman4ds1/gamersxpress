@@ -39,7 +39,7 @@ Players who load save data during the collaboration period receive free outfits 
 
 ## Why gamers should care
 
-Players on PlayStation 5, Xbox Series X|S, and PC can recruit the Official Pawns from November 4, 2026 until January 29, 2027. The update becomes available on Nintendo Switch 2 on November 11, 2026, with Switch 2 players able to claim crossover items on November 12, 2026. The Pawns remain available until January 28, 2027 across all platforms.
+Players on PlayStation 5, Xbox Series X|S, and PC can recruit the Official Pawns from November 4, 2026 until January 28, 2027. The update becomes available on Nintendo Switch 2 on November 11, 2026, with Switch 2 players able to claim crossover items on November 12, 2026. The Pawns remain available until January 28, 2027 across all platforms.
 
 Players do not need the Dark Arisen edition to claim the collaboration rewards. The content is accessible by loading save data in either the base Dragon's Dogma 2 game or Dragon's Dogma 2: Dark Arisen.
 
