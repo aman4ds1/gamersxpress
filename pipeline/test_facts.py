@@ -8231,3 +8231,97 @@ def test_the_group_guard_keeps_a_model_group_with_a_rounded_figure():
     ]
     accepted, dropped = facts.apply_group_guards([["c1", "c2"]], items, ["Phantom Blade Zero"])
     assert [group["ids"] for group in accepted] == [["c1", "c2"]]
+
+
+# --- sources that disagree on a figure or date -----------------------------------------------
+
+
+def src_claim(host, value, kind="reported", text="Official Pawns availability"):
+    return {"claim": text, "value": value, "source_url": f"https://{host}/x", "confidence": 0.9,
+            "kind": kind, "origin": "unstated", "affiliation": "",
+            "evidence": [{"source_url": f"https://{host}/x", "quote": value}]}
+
+
+PAWNS = "Official Pawns are available from November 4, 2026 until January {day}, 2027"
+ENT = ["Dragon's Dogma 2"]
+
+
+def test_the_figure_more_sources_agree_on_wins_and_the_contradicting_source_is_dropped():
+    merged = facts.merge_claims([
+        src_claim("polygon.com", PAWNS.format(day=28)),
+        src_claim("dexerto.com", PAWNS.format(day=29)),
+        src_claim("eurogamer.net", "These Pawns are only available until January 28, 2027 on all platforms", text="Pawns end"),
+    ], entities=ENT)
+    assert len(merged) == 1 and merged[0]["value"].endswith("January 28, 2027")
+    assert sorted(u.split("/")[2] for u in merged[0]["source_urls"]) == ["eurogamer.net", "polygon.com"]
+    assert "January 29" not in json.dumps(merged) and "dexerto" not in json.dumps(merged)
+
+
+def test_the_dropped_source_leaves_no_version_or_evidence_behind():
+    merged = facts.merge_claims([
+        src_claim("polygon.com", PAWNS.format(day=28)),
+        src_claim("dexerto.com", PAWNS.format(day=29)),
+        src_claim("eurogamer.net", "Pawns end on January 28, 2027", text="Pawns end"),
+    ], entities=ENT)
+    claim = merged[0]
+    hosts = lambda items: sorted(i["source_url"].split("/")[2] if isinstance(i, dict) else i.split("/")[2] for i in items)  # noqa: E731
+    assert hosts(claim["versions"]) == hosts(claim["source_urls"]) == ["eurogamer.net", "polygon.com"]
+
+
+def test_keeping_sources_prunes_urls_versions_and_evidence():
+    claim = {
+        "value": "old", "source_urls": ["https://polygon.com/x", "https://dexerto.com/x"],
+        "versions": [{"source_url": "https://polygon.com/x", "value": "a"}, {"source_url": "https://dexerto.com/x", "value": "b"}],
+        "evidence": [{"source_url": "https://polygon.com/x"}, {"source_url": "https://dexerto.com/x"}],
+    }
+    kept = facts._keep_sources(claim, {facts._source_url_key("https://polygon.com/x")}, "a")
+    assert kept["value"] == "a" and kept["source_urls"] == ["https://polygon.com/x"]
+    assert [v["value"] for v in kept["versions"]] == ["a"]
+    assert [e["source_url"] for e in kept["evidence"]] == ["https://polygon.com/x"]
+
+
+def test_two_sources_against_one_inside_the_claim_decide_without_help():
+    merged = facts.merge_claims([
+        src_claim("polygon.com", PAWNS.format(day=28)),
+        src_claim("eurogamer.net", PAWNS.format(day=28)),
+        src_claim("dexerto.com", PAWNS.format(day=29)),
+    ], entities=ENT)
+    assert len(merged) == 1 and merged[0]["value"].endswith("January 28, 2027")
+    assert sorted(u.split("/")[2] for u in merged[0]["source_urls"]) == ["eurogamer.net", "polygon.com"]
+
+
+def test_a_tie_splits_the_claim_into_one_claim_per_source_wording():
+    merged = facts.merge_claims([
+        src_claim("polygon.com", PAWNS.format(day=28)),
+        src_claim("dexerto.com", PAWNS.format(day=29)),
+    ], entities=ENT)
+    assert sorted(m["value"][-12:] for m in merged) == ["nuary 28, 2027", "nuary 29, 2027"][0:0] or len(merged) == 2
+    assert {m["value"][-12:] for m in merged} == {"ary 28, 2027", "ary 29, 2027"}
+    assert len(merged) == 2
+    for m in merged:
+        assert len(m["source_urls"]) == 1 and len(m["versions"]) == 1
+        assert m["versions"][0]["value"] == m["value"]
+
+
+def test_versions_that_only_add_detail_are_not_a_conflict():
+    merged = facts.merge_claims([
+        src_claim("polygon.com", "The game sold more than 4 million copies"),
+        src_claim("eurogamer.net", "The game sold more than 4 million copies in 72 hours"),
+    ], entities=["The game"])
+    assert len(merged) == 1 and len(merged[0]["versions"]) == 2
+
+
+def test_a_claim_with_one_version_is_left_alone():
+    one = src_claim("polygon.com", PAWNS.format(day=28))
+    assert facts.merge_claims([one], entities=ENT)[0]["source_urls"] == ["https://polygon.com/x"]
+
+
+def test_other_claims_break_a_tie_between_two_sources():
+    merged = facts.merge_claims([
+        src_claim("polygon.com", PAWNS.format(day=28)),
+        src_claim("dexerto.com", PAWNS.format(day=29)),
+        src_claim("eurogamer.net", "Switch 2 players join later but it also ends on January 28, 2027", text="Switch 2 schedule"),
+    ], entities=ENT)
+    assert not any("dexerto.com" in m["source_urls"][0] for m in merged)
+    assert not any("January 29" in m["value"] for m in merged)
+    assert len(merged) == 2

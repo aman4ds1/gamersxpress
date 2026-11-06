@@ -4848,7 +4848,79 @@ def merge_claims(
     and keeping the lowest confidence. ``entities`` is the story's primary
     entity list, used to check that the merged claims share a subject.
     """
-    return [_merge_group(group) for group in _claim_groups(claims, entities=entities)]
+    merged = [_merge_group(group) for group in _claim_groups(claims, entities=entities)]
+    return _resolve_version_conflicts(merged)
+
+
+def _keep_sources(claim: dict, urls: set[str], value: str) -> dict:
+    """A copy of ``claim`` that only the sources in ``urls`` back, worded as ``value``."""
+    keep = lambda url: _source_url_key(url) in urls  # noqa: E731
+    return {
+        **claim,
+        "value": value,
+        "source_urls": [url for url in claim.get("source_urls") or [] if keep(url)],
+        "versions": [v for v in claim.get("versions") or [] if keep(v.get("source_url"))],
+        "evidence": [e for e in claim.get("evidence") or [] if keep(e.get("source_url"))],
+    }
+
+
+def _resolve_version_conflicts(claims: list[dict]) -> list[dict]:
+    """Settle sources that disagree on a figure or date inside one merged claim.
+
+    Two claims merge when they share *some* figure ("from Nov 4 until Jan 28" and
+    "from Nov 4 until Jan 29" share "Nov 4"), so a merged claim can hold versions
+    that contradict each other, worded by whichever source scored best. Two
+    versions contradict when each states a figure the other lacks (extra detail
+    in one is not a contradiction). The version that most others contradict is
+    dropped from the claim, with its source, until none contradict. A tie is
+    broken by how many sources in the other claims state the figures one version
+    has and the other lacks. When that is tied too nothing is guessed: each
+    remaining version becomes its own claim, worded and sourced as that source
+    wrote it.
+    """
+    resolved: list[dict] = []
+    for claim in claims:
+        versions = [v for v in claim.get("versions") or [] if isinstance(v, dict)]
+        tokens = [_figure_and_month_tokens(v.get("value")) - _MONTHS for v in versions]
+        alive = list(range(len(versions)))
+
+        def clash(i: int, j: int) -> bool:
+            return bool(tokens[i] - tokens[j]) and bool(tokens[j] - tokens[i])
+
+        def backers(i: int, rivals: list[int]) -> int:
+            contested = set().union(*(tokens[i] - tokens[j] for j in rivals)) if rivals else set()
+            return len({
+                _source_url_key(v.get("source_url"))
+                for other in claims if other is not claim
+                for v in other.get("versions") or []
+                if contested and contested <= _figure_and_month_tokens(v.get("value"))
+            })
+
+        split = False
+        while len(alive) > 1:
+            counts = {i: [j for j in alive if j != i and clash(i, j)] for i in alive}
+            worst = max(len(rivals) for rivals in counts.values())
+            if worst == 0:
+                break
+            top = [i for i in alive if len(counts[i]) == worst]
+            if len(top) > 1:
+                support = {i: backers(i, counts[i]) for i in top}
+                top = [i for i in top if support[i] == min(support.values())]
+                if len(top) > 1:
+                    split = True
+                    break
+            alive.remove(top[0])
+        if split:
+            resolved += [
+                _keep_sources(claim, {_source_url_key(versions[i].get("source_url"))}, str(versions[i].get("value")))
+                for i in alive
+            ]
+        elif len(alive) == len(versions):
+            resolved.append(claim)
+        else:
+            urls = {_source_url_key(versions[i].get("source_url")) for i in alive}
+            resolved.append(_keep_sources(claim, urls, str(versions[min(alive)].get("value"))))
+    return resolved
 
 
 def _collapse_contained_origins(names: set[str]) -> list[str]:
