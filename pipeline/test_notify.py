@@ -210,3 +210,94 @@ def test_quiet_runs_send_nothing(status):
 
 def test_a_paused_run_with_an_open_breaker_does_not_repeat_the_alert():
     assert notify.build_message({"status": "paused", "breaker": {"open": True}}) is None
+
+
+# --- the "published" message (auto mode) ----------------------------------------------------
+
+LIVE = [{"slug": "phantom-blade-zero-sells-4-million", "title": "Phantom Blade Zero sells 4 million copies",
+         "description": "S-Game says the action RPG passed 4 million sales in 72 hours."}]
+UNPUBLISH = "https://github.com/aman4ds1/gamersxpress/actions/workflows/unpublish.yml"
+
+
+def test_the_live_message_has_the_title_the_summary_the_live_link_and_the_takedown():
+    message = notify.build_live_message(LIVE, unpublish_url=UNPUBLISH)
+    assert message.startswith("✅ <b>Published:</b> Phantom Blade Zero sells 4 million copies")
+    assert "S-Game says the action RPG passed 4 million sales in 72 hours." in message
+    assert '<a href="https://gamersxpress.com/news/phantom-blade-zero-sells-4-million/">Read it live</a>' in message
+    assert f'<a href="{UNPUBLISH}">Unpublish it</a>' in message
+    assert "<code>phantom-blade-zero-sells-4-million</code>" in message
+
+
+def test_the_live_message_without_a_takedown_link_or_description_is_still_complete():
+    message = notify.build_live_message([{"slug": "a-post", "title": "A post"}])
+    assert "A post" in message and "Read it live" in message
+    assert "Unpublish" not in message and "Wrong?" not in message
+
+
+def test_the_live_message_lists_every_new_article():
+    articles = [{"slug": "one", "title": "One"}, {"slug": "two", "title": "Two"}]
+    message = notify.build_live_message(articles)
+    assert message.count("Published:") == 2 and "/news/one/" in message and "/news/two/" in message
+
+
+@pytest.mark.parametrize("articles", [[], [{"title": "No slug"}], [{"slug": ""}]])
+def test_there_is_no_live_message_without_an_article(articles):
+    assert notify.build_live_message(articles) is None
+
+
+def test_model_text_in_the_live_message_is_escaped():
+    message = notify.build_live_message([{"slug": "a", "title": "<b>Hack</b> & <script>", "description": "x <i>y</i>"}])
+    assert "<script>" not in message and "&lt;script&gt;" in message and "&amp;" in message
+    assert "<i>y</i>" not in message
+
+
+def test_the_takedown_link_must_point_at_github():
+    message = notify.build_live_message(LIVE, unpublish_url="https://evil.example/unpublish")
+    assert "evil.example" not in message and "Unpublish it" not in message
+
+
+def test_the_live_link_always_points_at_the_site_whatever_the_slug_says(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://staging.example/")
+    message = notify.build_live_message([{"slug": "a-post", "title": "A post"}])
+    assert 'href="https://staging.example/news/a-post/"' in message
+    assert notify.article_url("a-post") == "https://staging.example/news/a-post/"
+
+
+def test_the_site_link_helper_refuses_other_hosts():
+    assert notify._link("https://evil.example/x", "x", prefix=notify.site_url()) is None
+    assert notify._link("https://gamersxpress.com/x", "x", prefix=notify.site_url())
+
+
+def test_a_run_that_already_published_sends_no_draft_alert():
+    report = {"status": "completed", "slug": "a-post", "category": "pc", "mode": "auto"}
+    assert notify.build_message(report, title="A post", published=True) is None
+    assert "Draft ready" in notify.build_message(report, title="A post")
+
+
+def test_a_failed_run_is_still_reported_when_the_published_flag_is_set():
+    report = {"status": "failed", "slug": "a-post", "failures": ["x"]}
+    assert "Draft failed its checks" in notify.build_message(report, published=True)
+
+
+def test_the_deploy_failed_message_links_the_run_and_only_github_links():
+    message = notify.build_deploy_failed_message("https://github.com/o/r/actions/runs/5")
+    assert "Deploy failed" in message and 'href="https://github.com/o/r/actions/runs/5"' in message
+    assert "href" not in notify.build_deploy_failed_message("https://evil.example/run")
+    assert "Deploy failed" in notify.build_deploy_failed_message(None)
+
+
+def test_the_unpublished_message_names_the_article():
+    message = notify.build_unpublished_message("a-post", "A post", "https://github.com/o/r/actions/runs/6")
+    assert "Unpublished:</b> A post" in message and "runs/6" in message
+    assert "Unpublished:</b> a-post" in notify.build_unpublished_message("a-post")
+
+
+def test_article_description_reads_the_front_matter(tmp_path):
+    path = tmp_path / "a.md"
+    path.write_text('---\ntitle: "T"\ndescription: "One line."\n---\n\ndescription: not this one\n', encoding="utf-8")
+    assert notify.article_description(path) == "One line."
+    # A "description:" line in the body is not the article's description.
+    path.write_text("---\ntitle: T\n---\n\ndescription: in the body\n", encoding="utf-8")
+    assert notify.article_description(path) is None
+    assert notify.article_description(tmp_path / "missing.md") is None
+    assert notify.article_description(None) is None

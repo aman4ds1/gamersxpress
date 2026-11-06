@@ -1,20 +1,30 @@
 # CI setup: scheduled pipeline, deploy and Telegram alerts
 
-Three GitHub workflows (`.github/workflows/`):
+Five GitHub workflows (`.github/workflows/`):
 
 | Workflow | When | What it does |
 |---|---|---|
 | `site-check.yml` | every push to `main`, every pull request | site build and checks, pipeline tests, the three dry runs |
-| `pipeline.yml` | hourly, or by hand | runs the pipeline in **draft** mode, opens one pull request per finished article, sends a Telegram alert |
-| `deploy.yml` | a site change lands on `main` (including merging a draft) | checks, builds and deploys to Cloudflare Workers |
+| `pipeline.yml` | hourly, or by hand | runs the pipeline; in **draft** mode opens one pull request per finished article, in **auto** mode pushes it to `main`; sends a Telegram alert when something needs you |
+| `deploy.yml` | a site change lands on `main` (including a merged draft), or started by `pipeline.yml` / `unpublish.yml` | checks, builds and deploys to Cloudflare Workers |
+| `announce.yml` | after every Deploy run | sends the Telegram "Published" message for a new article once the site is live, or an alert when the deploy failed |
+| `unpublish.yml` | by hand | takes one article off the site (with the slug) and redeploys |
 
-**How an article gets published:** the pipeline finishes a story, pushes it to a branch
-`draft/<slug>-<run id>` and opens a pull request. Telegram tells you. You read it, and
-**merging the pull request publishes it** (Deploy runs by itself). Closing the pull
-request rejects it.
+**Two ways an article gets published** (the `PUBLISH_MODE` variable):
 
-Only `draft` mode exists here. `auto` mode is not wired up, on purpose
-(docs/PLAN.md: stay in draft until about 50 articles are reviewed).
+- **`draft` (the default).** The pipeline finishes a story, pushes it to a branch
+  `draft/<slug>-<run id>` and opens a pull request. Telegram tells you. You read it, and
+  **merging the pull request publishes it** (Deploy runs by itself). Closing the pull
+  request rejects it.
+- **`auto`.** The pipeline pushes a finished article straight to `main` (one commit with
+  just the article and its cover, never forced), starts Deploy, and **Telegram sends one
+  message when the post is live**: title, summary, a link to the live page and a link to
+  take it down. You check the final post there; nothing waits for your approval. The safety
+  rails stay: every publish gate and the site check still have to pass, `DAILY_CAP` limits
+  the number per day, a relayed (single-origin) story is always a draft pull request, and
+  if the push cannot be made the article becomes a draft pull request instead.
+
+Switching is one variable, so you can go back to reviewing drafts at any time.
 
 ## One-time setup
 
@@ -47,8 +57,8 @@ Variables (the **Variables** tab):
 | Name | Value | Meaning |
 |---|---|---|
 | `PAUSED` | `false` | set to `true` to stop all runs (kill switch) |
-| `PUBLISH_MODE` | `draft` | the only supported value |
-| `DAILY_CAP` | `2` | most articles drafted per day |
+| `PUBLISH_MODE` | `draft` | `draft` (pull request to review) or `auto` (publish straight to `main`, then report on Telegram) |
+| `DAILY_CAP` | `2` | most articles drafted or published per day |
 
 ### 3. Repository settings
 
@@ -70,6 +80,34 @@ Actions tab > **Pipeline** > **Run workflow**.
 3. Run it with nothing ticked. This is the first real run. It creates the `pipeline-state`
    branch (see below) and, if a story is confirmed and passes its checks, opens the first
    draft pull request.
+
+## Going automatic (`PUBLISH_MODE=auto`)
+
+Do this once, after the first real drafts look right:
+
+1. **Settings > Rules** (the ruleset that protects `main`): it must **not** require pull
+   requests or status checks, or the pipeline cannot push. Blocking force pushes and
+   deletions is fine, and recommended.
+2. Run **Pipeline** by hand with nothing ticked once more in `draft` mode, to confirm
+   everything is still green.
+3. Set the variable `PUBLISH_MODE` to `auto`. For the first day also set `DAILY_CAP` to `1`.
+4. The next story that passes its checks is pushed to `main`, deployed, and announced on
+   Telegram with its live link.
+
+**If a post is wrong:** open **Actions > Unpublish > Run workflow**, type the slug (the last
+part of the web address; the Telegram message shows it) and run it. The article and cover
+are removed from `main` in one commit, the site redeploys without it, and Telegram confirms.
+The story stays marked as seen, so it is not written again. To put it back, revert the
+"Unpublish" commit. To stop publishing altogether, set `PAUSED` to `true` or
+`PUBLISH_MODE` back to `draft`.
+
+**What can go wrong, and what you see:**
+
+- A failed Deploy sends a Telegram alert; a published article may not be live until Deploy
+  is re-run by hand from the Actions tab.
+- Auto mode needs the workflow token to start Deploy: **Settings > Actions > General >
+  Workflow permissions** must be *Read and write*.
+- Telegram only announces articles that a deploy *added*. Editing or deleting one sends nothing.
 
 ## Reviewing a draft
 
@@ -114,7 +152,6 @@ at the files. Deleting the branch starts the pipeline from a clean slate.
 
 ## Not built yet
 
-- `auto` publish mode (commit straight to `main`)
 - the weekly summary message
 - Lighthouse, link checking and automatic revert after a failed site check
 - Search Console and PageSpeed data

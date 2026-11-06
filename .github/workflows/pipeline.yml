@@ -1,8 +1,16 @@
 name: Pipeline
 
-# Runs the news pipeline on a schedule, in DRAFT mode only (docs/PLAN.md section 11):
-# a finished article goes to its own branch and a pull request. Merging that pull
-# request publishes it, and the Deploy workflow then ships the site.
+# Runs the news pipeline on a schedule. PUBLISH_MODE decides what happens to a
+# finished article (docs/PLAN.md section 11):
+#
+#   draft (default)  the article goes to its own branch and a pull request. Merging
+#                    that pull request publishes it, and the Deploy workflow then
+#                    ships the site.
+#   auto             the article is pushed straight to main, this workflow starts
+#                    the Deploy workflow, and the Announce workflow sends the
+#                    Telegram message once the post is live. A relayed
+#                    (single-origin) story, or a push that fails, still becomes a
+#                    draft pull request. The Unpublish workflow takes a post down.
 #
 # One-time setup, secrets, variables and how to reset the circuit breaker are in
 # docs/CI-SETUP.md.
@@ -38,6 +46,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: write   # auto mode starts the Deploy workflow (a push made with the workflow token does not)
 
 jobs:
   telegram-test:
@@ -68,10 +77,10 @@ jobs:
       PAUSED: ${{ vars.PAUSED || 'false' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Only draft mode is supported here
+      - name: Only draft or auto mode is supported here
         run: |
-          if [ "$PUBLISH_MODE" != "draft" ]; then
-            echo "::error::PUBLISH_MODE is '$PUBLISH_MODE'. This workflow only supports 'draft'. Set the PUBLISH_MODE variable to draft."
+          if [ "$PUBLISH_MODE" != "draft" ] && [ "$PUBLISH_MODE" != "auto" ]; then
+            echo "::error::PUBLISH_MODE is '$PUBLISH_MODE'. Set the PUBLISH_MODE variable to draft or auto."
             exit 1
           fi
 
@@ -127,9 +136,26 @@ jobs:
         if: ${{ always() && !inputs.dry_run && steps.restore.outcome == 'success' }}
         run: python -m pipeline.ci save
 
+      # Auto mode: push the finished article straight to main. If it cannot (a single-origin
+      # story, a rejected push), the step reports published=false and the draft branch below
+      # takes over, so the owner still gets a pull request to review.
+      - name: Publish to main
+        id: publish
+        continue-on-error: true
+        if: ${{ !inputs.dry_run && env.PUBLISH_MODE == 'auto' && steps.pipeline.outputs.exit_code == '0' }}
+        run: python -m pipeline.ci publish-main
+
+      # A push made with the workflow token does not start other workflows, so the deploy is
+      # started here. The Announce workflow reports on it when it finishes.
+      - name: Start the deploy
+        if: ${{ !inputs.dry_run && steps.publish.outputs.published == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy.yml --ref main
+
       - name: Push the draft branch
         id: draft
-        if: ${{ !inputs.dry_run && steps.pipeline.outputs.exit_code == '0' }}
+        if: ${{ !inputs.dry_run && steps.pipeline.outputs.exit_code == '0' && steps.publish.outputs.published != 'true' }}
         run: python -m pipeline.ci draft-branch --run-url "$RUN_URL" --pr-body-file "$RUNNER_TEMP/pr-body.md"
 
       - name: Open the pull request
@@ -184,7 +210,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PR_URL: ${{ steps.pr.outputs.pr_url }}
-        run: python -m pipeline.ci notify --run-url "$RUN_URL" --pr-url "$PR_URL"
+          PUBLISHED: ${{ steps.publish.outputs.published }}
+        run: python -m pipeline.ci notify --run-url "$RUN_URL" --pr-url "$PR_URL" --published "$PUBLISHED"
 
       # A failed or skipped run is reported by Telegram and stays green here; only a
       # configuration error turns the job red (and emails the owner).

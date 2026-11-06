@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
-NAMES = ["pipeline", "site-check", "deploy"]
+NAMES = ["pipeline", "site-check", "deploy", "announce", "unpublish"]
 
 
 def load(name):
@@ -94,12 +94,14 @@ def test_only_one_pipeline_run_at_a_time_and_none_is_cancelled():
     assert concurrency["cancel-in-progress"] is False
 
 
-def test_the_pipeline_refuses_any_mode_but_draft():
+def test_the_pipeline_refuses_any_mode_but_draft_or_auto():
     doc = load("pipeline")
-    guard = step_named(doc, "run", "draft mode")
-    assert "draft" in guard["run"] and "exit 1" in guard["run"]
+    guard = step_named(doc, "run", "draft or auto mode")
+    assert '"draft"' in guard["run"] and '"auto"' in guard["run"] and "exit 1" in guard["run"]
     # The guard comes before anything else runs.
     assert steps_of(doc, "run")[0] is guard
+    # Draft stays the default: nothing publishes on its own until the variable says auto.
+    assert doc["jobs"]["run"]["env"]["PUBLISH_MODE"] == "${{ vars.PUBLISH_MODE || 'draft' }}"
 
 
 def test_the_kill_switch_variable_stops_the_job():
@@ -118,7 +120,10 @@ def test_state_is_saved_even_after_a_failed_run_but_never_after_a_failed_restore
 
 def test_a_dry_run_never_restores_saves_or_opens_a_pull_request():
     doc = load("pipeline")
-    for fragment in ["restore saved state", "save state", "push the draft branch", "send the telegram alert"]:
+    for fragment in [
+        "restore saved state", "save state", "publish to main", "start the deploy",
+        "push the draft branch", "send the telegram alert",
+    ]:
         assert "!inputs.dry_run" in step_named(doc, "run", fragment)["if"], fragment
 
 
@@ -202,3 +207,118 @@ def test_cloudflare_secrets_reach_only_the_deploy_step():
 def test_deploys_never_overlap_and_are_never_cancelled():
     concurrency = load("deploy")["concurrency"]
     assert concurrency["group"] == "deploy" and concurrency["cancel-in-progress"] is False
+
+
+
+# --- auto mode: publish to main, deploy, announce -------------------------------------------
+
+
+def test_auto_mode_publishes_only_in_auto_mode_after_a_clean_run_and_never_in_a_dry_run():
+    step = step_named(load("pipeline"), "run", "publish to main")
+    condition = step["if"]
+    assert "env.PUBLISH_MODE == 'auto'" in condition
+    assert "steps.pipeline.outputs.exit_code == '0'" in condition
+    assert "!inputs.dry_run" in condition
+    assert step["run"] == "python -m pipeline.ci publish-main"
+
+
+def test_a_failed_publish_falls_back_to_the_draft_pull_request():
+    doc = load("pipeline")
+    publish = step_named(doc, "run", "publish to main")
+    draft = step_named(doc, "run", "push the draft branch")
+    # The publish step may fail without stopping the job, and the draft step then takes over.
+    assert publish["continue-on-error"] is True
+    assert "steps.publish.outputs.published != 'true'" in draft["if"]
+    ids = [step.get("id") for step in steps_of(doc, "run")]
+    assert ids.index("publish") < ids.index("draft")
+
+
+def test_publishing_comes_after_the_state_is_saved_and_before_the_draft_branch():
+    doc = load("pipeline")
+    steps = steps_of(doc, "run")
+    save, publish = step_named(doc, "run", "save state"), step_named(doc, "run", "publish to main")
+    deploy, draft = step_named(doc, "run", "start the deploy"), step_named(doc, "run", "push the draft branch")
+    assert steps.index(save) < steps.index(publish) < steps.index(deploy) < steps.index(draft)
+
+
+def test_the_deploy_is_started_by_hand_because_a_workflow_token_push_starts_nothing():
+    doc = load("pipeline")
+    step = step_named(doc, "run", "start the deploy")
+    assert step["run"] == "gh workflow run deploy.yml --ref main"
+    assert step["if"].count("steps.publish.outputs.published == 'true'") == 1
+    assert "github.token" in step["env"]["GH_TOKEN"]
+    assert doc["permissions"]["actions"] == "write"
+
+
+def test_the_pipeline_alert_knows_whether_the_run_already_published():
+    step = step_named(load("pipeline"), "run", "send the telegram alert")
+    assert step["env"]["PUBLISHED"] == "${{ steps.publish.outputs.published }}"
+    assert '--published "$PUBLISHED"' in step["run"]
+
+
+def test_the_announce_workflow_runs_only_after_a_deploy_on_main():
+    doc = load("announce")
+    on = triggers(doc)
+    assert set(on) == {"workflow_run"}
+    assert on["workflow_run"]["workflows"] == ["Deploy"] and on["workflow_run"]["types"] == ["completed"]
+    for job in doc["jobs"].values():
+        assert "github.event.workflow_run.head_branch == 'main'" in job["if"]
+    assert "conclusion == 'success'" in doc["jobs"]["announce"]["if"]
+    assert "conclusion == 'failure'" in doc["jobs"]["deploy-failed"]["if"]
+
+
+def test_the_announce_workflow_checks_out_the_deployed_commit_and_its_parent():
+    checkout = steps_of(load("announce"), "announce")[0]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"]["ref"] == "${{ github.event.workflow_run.head_sha }}"
+    assert checkout["with"]["fetch-depth"] == 2
+
+
+def test_the_announce_workflow_only_reads_the_repository():
+    assert load("announce")["permissions"] == {"contents": "read"}
+
+
+def test_telegram_secrets_are_only_where_a_message_is_sent():
+    holders = {}
+    for name in NAMES:
+        for job in load(name)["jobs"].values():
+            for step in job["steps"]:
+                env = str(step.get("env", {}))
+                for secret in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+                    if f"secrets.{secret}" in env:
+                        holders.setdefault((name, secret), set()).add(step["name"])
+    for secret in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+        assert holders[("announce", secret)] == {"Send the Telegram announcement", "Send the Telegram alert"}
+        assert holders[("unpublish", secret)] == {"Remove the article from main"}
+        assert ("deploy", secret) not in holders and ("site-check", secret) not in holders
+
+
+def test_the_announce_and_unpublish_workflows_have_no_other_secrets():
+    for name in ("announce", "unpublish"):
+        text = (WORKFLOWS / f"{name}.yml").read_text(encoding="utf-8")
+        assert set(re.findall(r"secrets\.(\w+)", text)) == {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
+
+
+def test_unpublish_runs_only_by_hand_with_a_slug_that_reaches_the_script_through_env():
+    doc = load("unpublish")
+    on = triggers(doc)
+    assert set(on) == {"workflow_dispatch"}
+    assert on["workflow_dispatch"]["inputs"]["slug"]["required"] is True
+    step = step_named(doc, "unpublish", "remove the article")
+    assert step["env"]["SLUG"] == "${{ inputs.slug }}"
+    assert 'unpublish --slug "$SLUG"' in step["run"]
+
+
+def test_unpublish_never_overlaps_itself_and_starts_the_deploy_afterwards():
+    doc = load("unpublish")
+    assert doc["concurrency"]["group"] == "unpublish" and doc["concurrency"]["cancel-in-progress"] is False
+    steps = steps_of(doc, "unpublish")
+    assert steps[-1]["run"] == "gh workflow run deploy.yml --ref main"
+    assert doc["permissions"] == {"contents": "write", "actions": "write"}
+
+
+def test_every_workflow_that_starts_the_deploy_may_do_so():
+    for name in ("pipeline", "unpublish"):
+        assert load(name)["permissions"]["actions"] == "write", name
+    for name in ("deploy", "site-check", "announce"):
+        assert "actions" not in load(name)["permissions"], name

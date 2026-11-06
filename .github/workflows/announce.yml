@@ -1,0 +1,61 @@
+name: Announce
+
+# Tells Telegram when a deploy made a new article live (the owner's check of the final
+# post), and when a deploy failed. It runs after the Deploy workflow finishes, so the
+# Telegram secrets never sit in the deploy job. A deploy that adds no article, or an
+# article that was only edited, sends nothing.
+
+on:
+  workflow_run:
+    workflows: ["Deploy"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: announce
+  cancel-in-progress: false
+
+jobs:
+  announce:
+    name: Announce a new article
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Send the Telegram announcement
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          UNPUBLISH_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/unpublish.yml
+        run: python -m pipeline.ci announce --head "$HEAD_SHA" --unpublish-url "$UNPUBLISH_URL"
+
+  deploy-failed:
+    name: Report a failed deploy
+    if: ${{ github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_branch == 'main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Send the Telegram alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: python -m pipeline.ci deploy-failed --run-url "$RUN_URL"

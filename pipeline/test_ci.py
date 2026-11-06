@@ -373,3 +373,393 @@ def test_cli_breaker_status_reports_whether_the_breaker_is_open(repo, tmp_path, 
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     assert ci.main(["breaker-status", "--repo", str(repo)]) == 0
     assert out.read_text().strip() == f"breaker_open={expected}"
+
+
+# --- publishing straight to main (auto mode) ------------------------------------------
+
+AUTO_REPORT = {**REPORT, "mode": "auto"}
+SLUG = "sony-shows-prism-collection"
+ARTICLE = f"src/content/articles/{SLUG}.md"
+COVER = f"public/covers/{SLUG}.webp"
+
+
+def remote_git(repo, *args):
+    return git(repo, "--git-dir", str(repo.parent / "remote.git"), *args)
+
+
+def sync_to_remote(repo):
+    """Like a later runner's fresh checkout of main: drop the run's untracked files, then pull."""
+    git(repo, "clean", "-fdq", "src", "public")
+    git(repo, "pull", "-q", "origin", "main")
+
+
+def test_publish_pushes_exactly_the_article_and_its_cover_to_main(repo):
+    add_article(repo)
+    before = remote_git(repo, "rev-parse", "main")
+    info = ci.prepare_publish_commit(repo, AUTO_REPORT)
+    assert info["slug"] == SLUG and info["title"] == "Sony shows the Prism Collection"
+    assert info["files"] == [ARTICLE, COVER]
+    assert remote_git(repo, "rev-parse", "main") == info["commit"]
+    assert remote_git(repo, "rev-parse", f"{info['commit']}^") == before
+    assert sorted(remote_git(repo, "diff", "--name-only", before, "main").split()) == sorted([ARTICLE, COVER])
+    assert remote_git(repo, "log", "-1", "--format=%s", "main") == "Publish: Sony shows the Prism Collection"
+
+
+def test_publish_leaves_the_working_tree_and_index_alone_and_carries_no_state(repo):
+    add_article(repo)
+    write_json(repo / "data" / "pool.json", {"items": ["changed by the run"]})
+    head = git(repo, "rev-parse", "HEAD")
+    status = git(repo, "status", "--porcelain")
+    info = ci.prepare_publish_commit(repo, AUTO_REPORT)
+    assert git(repo, "rev-parse", "HEAD") == head
+    assert git(repo, "status", "--porcelain") == status
+    assert git(repo, "diff", "--cached", "--name-only") == ""
+    assert "data/pool.json" not in remote_git(repo, "show", "--name-only", "--format=", info["commit"]).split()
+
+
+def test_publish_without_a_cover_still_works(repo):
+    add_article(repo, cover=False)
+    assert ci.prepare_publish_commit(repo, AUTO_REPORT)["files"] == [ARTICLE]
+
+
+@pytest.mark.parametrize("report", [
+    {**REPORT, "mode": "draft"},                    # a single-origin story is downgraded to a draft
+    {**REPORT},                                     # no mode recorded
+    {**AUTO_REPORT, "status": "failed"},
+    {**AUTO_REPORT, "status": "nothing"},
+    {**AUTO_REPORT, "status": "paused"},
+])
+def test_only_a_completed_auto_run_is_published(repo, report):
+    add_article(repo)
+    before = remote_git(repo, "rev-parse", "main")
+    assert ci.prepare_publish_commit(repo, report) is None
+    assert remote_git(repo, "rev-parse", "main") == before
+
+
+def test_a_completed_run_whose_article_is_missing_publishes_nothing(repo):
+    before = remote_git(repo, "rev-parse", "main")
+    assert ci.prepare_publish_commit(repo, AUTO_REPORT) is None
+    assert remote_git(repo, "rev-parse", "main") == before
+
+
+@pytest.mark.parametrize("slug", ["../evil", "Upper-Case", "has space", "a/b", "", "-lead", "x" * 200])
+def test_publish_refuses_an_unsafe_slug(repo, slug):
+    add_article(repo)
+    with pytest.raises(ci.CiError, match="unsafe article slug"):
+        ci.prepare_publish_commit(repo, {**AUTO_REPORT, "slug": slug})
+
+
+def test_publish_builds_on_a_main_that_moved_after_the_checkout(repo, tmp_path):
+    add_article(repo)
+    other = fresh_clone(repo, tmp_path, "other")
+    (other / "src" / "content" / "articles" / "someone-elses-post.md").write_text('---\ntitle: "Other"\n---\n', encoding="utf-8")
+    git(other, "add", "-A")
+    git(other, "commit", "-m", "someone else published")
+    git(other, "push", "origin", "main")
+    info = ci.prepare_publish_commit(repo, AUTO_REPORT)
+    names = remote_git(repo, "ls-tree", "-r", "--name-only", "main").split()
+    assert ARTICLE in names and "src/content/articles/someone-elses-post.md" in names
+    assert remote_git(repo, "log", "--format=%s", "-2", "main").splitlines() == ["Publish: Sony shows the Prism Collection", "someone else published"]
+    assert info["commit"] == remote_git(repo, "rev-parse", "main")
+
+
+def test_publish_never_overwrites_an_article_already_on_main(repo, tmp_path):
+    add_article(repo)
+    other = fresh_clone(repo, tmp_path, "other")
+    (other / ARTICLE).write_text('---\ntitle: "Already live"\n---\n', encoding="utf-8")
+    git(other, "add", "-A")
+    git(other, "commit", "-m", "already published")
+    git(other, "push", "origin", "main")
+    before = remote_git(repo, "rev-parse", "main")
+    with pytest.raises(ci.CiError, match="already on main"):
+        ci.prepare_publish_commit(repo, AUTO_REPORT)
+    assert remote_git(repo, "rev-parse", "main") == before
+
+
+def reject_pushes_to_main(repo):
+    hook = repo.parent / "remote.git" / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho rejected >&2\nexit 1\n")
+    hook.chmod(0o755)
+
+
+def test_publish_gives_up_after_its_attempts_and_changes_nothing(repo):
+    add_article(repo)
+    before = remote_git(repo, "rev-parse", "main")
+    reject_pushes_to_main(repo)
+    with pytest.raises(ci.CiError, match="after 2 attempts"):
+        ci.prepare_publish_commit(repo, AUTO_REPORT, attempts=2)
+    assert remote_git(repo, "rev-parse", "main") == before
+
+
+def test_publish_never_forces_the_push(repo, monkeypatch):
+    add_article(repo)
+    pushes = []
+    real = ci._git
+
+    def spy(repo_, *args, **kwargs):
+        if args and args[0] == "push":
+            pushes.append(args)
+        return real(repo_, *args, **kwargs)
+
+    monkeypatch.setattr(ci, "_git", spy)
+    ci.prepare_publish_commit(repo, AUTO_REPORT)
+    assert len(pushes) == 1
+    assert not any(arg.startswith("--force") or arg == "-f" or arg.startswith("+") for arg in pushes[0])
+
+
+# --- announcing what a deploy made live ---------------------------------------------------
+
+
+def commit_article(repo, slug, title, description=None, branch="main"):
+    front = f'---\ntitle: "{title}"\n' + (f'description: "{description}"\n' if description else "") + "---\n\nBody.\n"
+    (repo / "src" / "content" / "articles" / f"{slug}.md").write_text(front, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", f"add {slug}")
+    return git(repo, "rev-parse", "HEAD")
+
+
+def test_announce_lists_the_article_a_publish_commit_added(repo):
+    add_article(repo)
+    ci.prepare_publish_commit(repo, AUTO_REPORT)
+    sync_to_remote(repo)
+    assert ci.announce_new_articles(repo) == [
+        {"slug": SLUG, "title": "Sony shows the Prism Collection", "description": None}
+    ]
+
+
+def test_announce_reads_the_description(repo):
+    commit_article(repo, "new-post", "A new post", "What happened, in one line.")
+    [article] = ci.announce_new_articles(repo)
+    assert article["description"] == "What happened, in one line."
+
+
+def test_announce_ignores_edits_deletions_and_other_files(repo):
+    commit_article(repo, "old-post", "Old post")
+    (repo / "src" / "content" / "articles" / "old-post.md").write_text('---\ntitle: "Old post edited"\n---\n', encoding="utf-8")
+    git(repo, "commit", "-am", "edit")
+    assert ci.announce_new_articles(repo) == []
+    git(repo, "rm", "-q", "src/content/articles/old-post.md")
+    git(repo, "commit", "-m", "delete")
+    assert ci.announce_new_articles(repo) == []
+    write_json(repo / "data" / "x.json", {})
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "state")
+    assert ci.announce_new_articles(repo) == []
+
+
+def test_announce_follows_the_first_parent_of_a_merge(repo):
+    git(repo, "checkout", "-q", "-b", "draft/x")
+    commit_article(repo, "merged-post", "Merged post")
+    git(repo, "checkout", "-q", "main")
+    git(repo, "merge", "--no-ff", "-m", "Merge draft", "draft/x")
+    assert [a["slug"] for a in ci.announce_new_articles(repo)] == ["merged-post"]
+
+
+def test_announce_for_an_explicit_commit_and_for_a_first_commit(repo):
+    sha = commit_article(repo, "pinned-post", "Pinned post")
+    commit_article(repo, "later-post", "Later post")
+    assert [a["slug"] for a in ci.announce_new_articles(repo, head=sha)] == ["pinned-post"]
+    first = git(repo, "rev-list", "--max-parents=0", "HEAD")
+    assert ci.announce_new_articles(repo, head=first) == []
+
+
+@pytest.mark.parametrize("head", ["main", "HEAD~1", "; rm -rf /", "abc", "G" * 40])
+def test_announce_refuses_anything_but_a_commit_id(repo, head):
+    with pytest.raises(ci.CiError, match="unsafe commit id"):
+        ci.announce_new_articles(repo, head=head)
+
+
+# --- unpublishing ---------------------------------------------------------------------
+
+
+def published_repo(repo):
+    add_article(repo)
+    ci.prepare_publish_commit(repo, AUTO_REPORT)
+    sync_to_remote(repo)
+    return repo
+
+
+def test_unpublish_removes_the_article_and_its_cover_with_one_commit(repo):
+    published_repo(repo)
+    before = remote_git(repo, "rev-parse", "main")
+    info = ci.prepare_unpublish_commit(repo, SLUG)
+    assert info["title"] == "Sony shows the Prism Collection" and info["files"] == [ARTICLE, COVER]
+    names = remote_git(repo, "ls-tree", "-r", "--name-only", "main").split()
+    assert ARTICLE not in names and COVER not in names
+    assert remote_git(repo, "rev-parse", f"{info['commit']}^") == before
+    assert remote_git(repo, "log", "-1", "--format=%s", "main") == f"Unpublish: {SLUG}"
+
+
+def test_unpublish_without_a_cover_removes_just_the_article(repo):
+    add_article(repo, cover=False)
+    ci.prepare_publish_commit(repo, AUTO_REPORT)
+    assert ci.prepare_unpublish_commit(repo, SLUG)["files"] == [ARTICLE]
+
+
+def test_unpublish_of_an_article_that_is_not_published_changes_nothing(repo):
+    before = remote_git(repo, "rev-parse", "main")
+    with pytest.raises(ci.CiError, match="nothing to unpublish"):
+        ci.prepare_unpublish_commit(repo, "never-published")
+    assert remote_git(repo, "rev-parse", "main") == before
+
+
+@pytest.mark.parametrize("slug", ["../evil", "Upper-Case", "a/b", "", None])
+def test_unpublish_refuses_an_unsafe_slug(repo, slug):
+    with pytest.raises(ci.CiError, match="unsafe article slug"):
+        ci.prepare_unpublish_commit(repo, slug)
+
+
+def test_unpublish_retries_when_main_moved_and_leaves_other_articles_alone(repo, tmp_path):
+    published_repo(repo)
+    other = fresh_clone(repo, tmp_path, "other")
+    commit_article(other, "keeper", "Keeper")
+    git(other, "push", "origin", "main")
+    ci.prepare_unpublish_commit(repo, SLUG)
+    names = remote_git(repo, "ls-tree", "-r", "--name-only", "main").split()
+    assert "src/content/articles/keeper.md" in names and ARTICLE not in names
+
+
+# --- the command line --------------------------------------------------------------------
+
+
+def outputs_of(path):
+    return dict(line.split("=", 1) for line in path.read_text().splitlines())
+
+
+def test_cli_publish_main_reports_what_it_published(repo, tmp_path, monkeypatch):
+    add_article(repo)
+    write_json(repo / "data" / "reports" / "last-run.json", AUTO_REPORT)
+    out = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    assert ci.main(["publish-main", "--repo", str(repo)]) == 0
+    assert outputs_of(out) == {"published": "true", "slug": SLUG, "title": "Sony shows the Prism Collection"}
+
+
+def test_cli_publish_main_for_a_draft_run_says_nothing_was_published(repo, tmp_path, monkeypatch):
+    add_article(repo)
+    write_json(repo / "data" / "reports" / "last-run.json", {**REPORT, "mode": "draft"})
+    out = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    assert ci.main(["publish-main", "--repo", str(repo)]) == 0
+    assert outputs_of(out) == {"published": "false"}
+
+
+def test_cli_publish_main_fails_loudly_when_the_push_is_rejected(repo, tmp_path, monkeypatch):
+    add_article(repo)
+    write_json(repo / "data" / "reports" / "last-run.json", AUTO_REPORT)
+    reject_pushes_to_main(repo)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
+    assert ci.main(["publish-main", "--repo", str(repo)]) == 1
+
+
+def test_cli_notify_is_silent_for_a_run_that_already_published(repo, monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send_telegram", lambda text, **kw: sent.append(text) or True)
+    write_json(repo / "data" / "reports" / "last-run.json", AUTO_REPORT)
+    assert ci.main(["notify", "--repo", str(repo), "--published", "true"]) == 0
+    assert sent == []
+    assert ci.main(["notify", "--repo", str(repo), "--published", "false"]) == 0
+    assert len(sent) == 1 and "Draft ready" in sent[0]
+
+
+def test_cli_announce_sends_the_live_message(repo, monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send_telegram", lambda text, **kw: sent.append(text) or True)
+    commit_article(repo, "fresh-post", "Fresh post", "A short summary.")
+    assert ci.main(["announce", "--repo", str(repo), "--unpublish-url", "https://github.com/o/r/actions/workflows/unpublish.yml"]) == 0
+    assert len(sent) == 1
+    assert "Fresh post" in sent[0] and "https://gamersxpress.com/news/fresh-post/" in sent[0]
+    assert "unpublish.yml" in sent[0] and "<code>fresh-post</code>" in sent[0]
+
+
+def test_cli_announce_with_no_new_article_sends_nothing(repo, monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send_telegram", lambda text, **kw: sent.append(text) or True)
+    write_json(repo / "data" / "x.json", {})
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "state only")
+    assert ci.main(["announce", "--repo", str(repo)]) == 0
+    assert sent == []
+
+
+def test_cli_deploy_failed_sends_an_alert(repo, monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send_telegram", lambda text, **kw: sent.append(text) or True)
+    assert ci.main(["deploy-failed", "--repo", str(repo), "--run-url", "https://github.com/o/r/actions/runs/9"]) == 0
+    assert len(sent) == 1 and "Deploy failed" in sent[0] and "runs/9" in sent[0]
+
+
+def test_cli_unpublish_removes_the_article_and_confirms_on_telegram(repo, monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send_telegram", lambda text, **kw: sent.append(text) or True)
+    published_repo(repo)
+    assert ci.main(["unpublish", "--repo", str(repo), "--slug", SLUG]) == 0
+    assert ARTICLE not in remote_git(repo, "ls-tree", "-r", "--name-only", "main").split()
+    assert len(sent) == 1 and "Unpublished" in sent[0] and "Sony shows the Prism Collection" in sent[0]
+
+
+def test_cli_unpublish_of_an_unknown_article_fails_and_says_nothing(repo, monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send_telegram", lambda text, **kw: sent.append(text) or True)
+    assert ci.main(["unpublish", "--repo", str(repo), "--slug", "nothing-here"]) == 1
+    assert sent == []
+
+
+# --- gaps found by mutation checks ------------------------------------------------------------
+
+
+def reject_first_push_only(repo, tmp_path):
+    """A remote that refuses the first push to it and accepts the next: a lost race."""
+    marker = tmp_path / "first-push-seen"
+    hook = repo.parent / "remote.git" / "hooks" / "pre-receive"
+    hook.write_text(f'#!/bin/sh\nif [ ! -f "{marker}" ]; then touch "{marker}"; echo "raced" >&2; exit 1; fi\n')
+    hook.chmod(0o755)
+
+
+def test_publish_retries_a_push_that_lost_a_race(repo, tmp_path):
+    add_article(repo)
+    reject_first_push_only(repo, tmp_path)
+    info = ci.prepare_publish_commit(repo, AUTO_REPORT, attempts=3)
+    assert remote_git(repo, "rev-parse", "main") == info["commit"]
+
+
+def test_publish_with_one_attempt_does_not_survive_a_lost_race(repo, tmp_path):
+    add_article(repo)
+    before = remote_git(repo, "rev-parse", "main")
+    reject_first_push_only(repo, tmp_path)
+    with pytest.raises(ci.CiError, match="after 1 attempts"):
+        ci.prepare_publish_commit(repo, AUTO_REPORT, attempts=1)
+    assert remote_git(repo, "rev-parse", "main") == before
+
+
+def test_unpublish_retries_a_push_that_lost_a_race(repo, tmp_path):
+    published_repo(repo)
+    reject_first_push_only(repo, tmp_path)
+    info = ci.prepare_unpublish_commit(repo, SLUG, attempts=3)
+    assert remote_git(repo, "rev-parse", "main") == info["commit"]
+
+
+def test_publish_refuses_a_commit_that_would_change_more_than_the_article_and_cover(repo, tmp_path):
+    # An orphan cover with identical bytes already on main would not show up as a change:
+    # the commit would not be exactly the files the run produced, so nothing is pushed.
+    add_article(repo)
+    other = fresh_clone(repo, tmp_path, "other")
+    (other / "public" / "covers").mkdir(parents=True)
+    (other / COVER).write_bytes(b"RIFFfake")
+    git(other, "add", "-A")
+    git(other, "commit", "-m", "orphan cover")
+    git(other, "push", "origin", "main")
+    before = remote_git(repo, "rev-parse", "main")
+    with pytest.raises(ci.CiError, match="unexpected files"):
+        ci.prepare_publish_commit(repo, AUTO_REPORT)
+    assert remote_git(repo, "rev-parse", "main") == before
+
+
+def test_announce_ignores_files_in_the_articles_folder_that_are_not_articles(repo):
+    folder = repo / "src" / "content" / "articles"
+    (folder / "notes.txt").write_text("not an article", encoding="utf-8")
+    (folder / "Bad_Name.md").write_text('---\ntitle: "Bad name"\n---\n', encoding="utf-8")
+    (folder / "good-post.md").write_text('---\ntitle: "Good post"\n---\n', encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-m", "mixed files")
+    assert [a["slug"] for a in ci.announce_new_articles(repo)] == ["good-post"]

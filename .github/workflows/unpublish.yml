@@ -1,0 +1,51 @@
+name: Unpublish
+
+# Takes one article off the live site: removes it (and its cover) from main with one
+# commit, then redeploys. Run it from the Actions tab (Run workflow) and type the
+# article's slug, the last part of its web address; the Telegram "published" message
+# shows it too. The story stays marked as seen, so the pipeline will not write it again.
+# To put an article back, revert the "Unpublish" commit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: "Slug of the article to take down (the last part of its web address)"
+        required: true
+        type: string
+
+# One at a time, and never alongside a pipeline run that is about to push to main.
+concurrency:
+  group: unpublish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write   # starts the Deploy workflow (a push made with the workflow token does not)
+
+jobs:
+  unpublish:
+    name: Remove the article
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The slug is typed by a person: it reaches the script through an env var, and the
+      # script accepts only a plain lowercase slug.
+      - name: Remove the article from main
+        env:
+          SLUG: ${{ inputs.slug }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m pipeline.ci unpublish --slug "$SLUG" --run-url "$RUN_URL"
+
+      - name: Start the deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy.yml --ref main
