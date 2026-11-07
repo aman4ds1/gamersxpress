@@ -1160,6 +1160,12 @@ safety:
   daily_cap: 4
   publish_modes: [draft, auto]
   breaker_threshold: 5
+  # When the publish gates reject a draft and every failure traces to specific sentences
+  # (a restated sentence, a date said a third time, copied source wording, a banned
+  # phrase), one repair rewrites or deletes just those sentences, the draft is verified
+  # again and the gates re-run. Failures no sentence is behind (a thin section, a missing
+  # source) still reject the draft. Costs two extra model calls on a draft that needs it.
+  gate_repair: true
 
 # Per-provider and per-role timeouts and TPM limits.
 provider:

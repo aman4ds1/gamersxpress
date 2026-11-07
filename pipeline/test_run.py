@@ -1690,3 +1690,130 @@ def test_both_verifications_get_the_gathered_source_text_for_the_overlap_check(t
     run_once(tmp_path, dry_run=True, scenario="pass", verify_fn=verify, repair_fn=repair)
     assert len(seen) == 2
     assert all(texts and all(isinstance(text, str) for text in texts) for texts in seen)
+
+
+# --- one repair when the publish gates fail on specific sentences -------------------------------
+
+import gates as gates_module  # noqa: E402
+
+
+def first_long_sentence(article):
+    _front, body = gates_module.parse_front_matter(article)
+    return next(s for s in gates_module._sentences(body) if len(s) > 50 and not s.lstrip().startswith(("#", "-")))
+
+
+class GateRig:
+    """A gates_fn that fails the first article on a quoted sentence, and a repair that deletes it."""
+
+    def __init__(self, *, first_failures=None, second_passes=True, repair_edit=None):
+        self.articles, self.repairs = [], []
+        self.first_failures, self.second_passes, self.repair_edit = first_failures, second_passes, repair_edit
+        self.real = run_module.gates_stage.run_gates
+
+    def gates(self, article, **kwargs):
+        self.articles.append(article)
+        if len(self.articles) == 1:
+            sentence = first_long_sentence(article)
+            self.sentence = sentence
+            failures = [f.replace("{S}", sentence[:30]) for f in self.first_failures] if self.first_failures else [f"banned phrase {sentence[:30]!r}"]
+            return gates_module.GateResult(passed=False, failures=failures)
+        if self.second_passes:
+            return self.real(article, **kwargs)
+        return gates_module.GateResult(passed=False, failures=["still failing"])
+
+    def repair(self, draft, flagged, facts, **kwargs):
+        self.repairs.append(flagged)
+        text = self.repair_edit(draft, flagged) if self.repair_edit else draft.replace(flagged[0]["clause"], "").replace("  ", " ")
+        return providers.Generation("writer", "gemini", "g", "google", text)
+
+
+def test_gate_failures_on_specific_sentences_get_one_repair_and_a_second_gate_run(tmp_path):
+    rig = GateRig()
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, repair_fn=rig.repair)
+    assert result.status == "completed"
+    assert len(rig.repairs) == 1 and len(rig.articles) == 2
+    assert [r["clause"] for r in rig.repairs[0]] == [rig.sentence]
+    assert rig.sentence in rig.articles[0] and rig.sentence not in rig.articles[1]
+    saved = (tmp_path / "state" / "articles" / f"{dryrun.SAMPLE_SLUG}.md").read_text(encoding="utf-8")
+    assert rig.sentence not in saved
+
+
+def test_the_repaired_draft_is_verified_again_before_the_second_gate_run(tmp_path):
+    rig, verified = GateRig(), []
+    real_verify = run_module.verify_stage.verify
+
+    def verify(draft, *args, **kwargs):
+        verified.append((draft, kwargs.get("repair")))
+        return real_verify(draft, *args, **kwargs)
+
+    run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, repair_fn=rig.repair, verify_fn=verify)
+    assert len(verified) == 2 and verified[0][1] is None
+    assert verified[1][1]["attempted"] is True and verified[1][1]["stage"] == "gates"
+    assert rig.sentence not in verified[1][0]
+
+
+def test_a_failure_no_sentence_is_behind_is_not_repaired(tmp_path):
+    rig = GateRig(first_failures=["thin section: Overview (needs at least 2 sentences and 40 words; has 1 and 60)"])
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, repair_fn=rig.repair)
+    assert result.status == "failed" and result.report["error"] == "publish gates failed"
+    assert rig.repairs == [] and len(rig.articles) == 1
+    assert result.report["failures"] == ["thin section: Overview (needs at least 2 sentences and 40 words; has 1 and 60)"]
+
+
+def test_one_unfixable_failure_among_fixable_ones_skips_the_repair(tmp_path):
+    rig = GateRig(first_failures=["banned phrase '{S}'", "body has 61 words (min 200)"])
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, repair_fn=rig.repair)
+    assert result.status == "failed" and rig.repairs == []
+
+
+def test_a_repair_that_touches_other_sentences_is_rejected_and_the_gate_failure_stands(tmp_path):
+    def tamper(draft, flagged):
+        _front, body = gates_module.parse_front_matter(draft)
+        other = [x for x in gates_module._sentences(body) if x != flagged[0]["clause"] and len(x) > 50][-1]
+        return draft.replace(flagged[0]["clause"], "").replace(other, other.upper())
+
+    rig = GateRig(repair_edit=tamper)
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, repair_fn=rig.repair)
+    assert result.status == "failed" and result.report["error"] == "publish gates failed"
+    assert len(rig.repairs) == 1 and len(rig.articles) == 1
+
+
+def test_a_gate_repair_that_fails_verification_keeps_the_original_failure(tmp_path):
+    rig = GateRig()
+    real_verify = run_module.verify_stage.verify
+    calls = []
+
+    def verify(*args, **kwargs):
+        calls.append(1)
+        report = real_verify(*args, **kwargs)
+        if len(calls) == 2:
+            report.passed = False
+            report.failure_reason = "article_rejected"
+        return report
+
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, repair_fn=rig.repair, verify_fn=verify)
+    assert result.status == "failed" and result.report["error"] == "publish gates failed"
+    assert len(rig.articles) == 1
+
+
+def test_when_the_gates_still_fail_after_the_repair_the_run_fails_with_the_new_failures(tmp_path):
+    rig = GateRig(second_passes=False)
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, repair_fn=rig.repair)
+    assert result.status == "failed" and result.report["failures"] == ["still failing"]
+    assert len(rig.repairs) == 1 and len(rig.articles) == 2
+
+
+def test_gate_repair_can_be_switched_off_in_the_config(tmp_path):
+    config = yaml.safe_load((Path(run_module.__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8"))
+    config["safety"]["gate_repair"] = False
+    path = tmp_path / "config-off.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    rig = GateRig()
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, repair_fn=rig.repair, config_path=path)
+    assert result.status == "failed" and rig.repairs == [] and len(rig.articles) == 1
+
+
+def test_a_clean_article_never_triggers_a_gate_repair(tmp_path):
+    rig = GateRig()
+    result = run_once(tmp_path, dry_run=True, scenario="pass", repair_fn=rig.repair)
+    assert result.status == "completed" and rig.repairs == []

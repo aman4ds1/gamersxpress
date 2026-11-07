@@ -63,6 +63,7 @@ import cover as cover_stage
 import dryrun as dryrun_stage
 import facts as facts_stage
 import gates as gates_stage
+import gaterepair as gaterepair_stage
 import gather as gather_stage
 import ingest as ingest_stage
 import link as link_stage
@@ -459,6 +460,7 @@ def run(
     threshold = int(safety.get("breaker_threshold", CIRCUIT_BREAKER_THRESHOLD))
     daily_cap = int(env.get("DAILY_CAP") or safety.get("daily_cap", 4))
     modes = tuple(safety.get("publish_modes") or publish_stage.PUBLISH_MODES)
+    gate_repair = bool(safety.get("gate_repair", True))
     publish_mode = str(env.get("PUBLISH_MODE", "draft"))
     gates_config = gates_stage.load_gates_config(config_path)
     verify_config = verify_stage.load_verify_config(config_path)
@@ -993,13 +995,81 @@ def run(
                 front = publish_stage.build_front_matter(facts, seo, cover)
                 article = publish_stage.assemble_article(body, front)
 
-            with timings.stage("gates"):
-                gate_result = gates_fn(
-                    article, slug=slug, facts=facts, cluster_id=cluster_id, gathered=gathered,
-                    verify_report=verify_report.to_dict(), run_state=run_state, config=gates_config,
+            def run_gates(text: str, report: Any) -> Any:
+                return gates_fn(
+                    text, slug=slug, facts=facts, cluster_id=cluster_id, gathered=gathered,
+                    verify_report=report.to_dict(), run_state=run_state, config=gates_config,
                     articles_dir=paths.articles_dir, page_template=paths.page_template, now=now,
                     link_checker=link_checker, site_checks=site_checks,
                 )
+
+            with timings.stage("gates"):
+                gate_result = run_gates(article, verify_report)
+
+            # One rescue for a gate failure. When every failure traces to specific
+            # sentences (a restated sentence, a date said a third time, copied
+            # wording, a banned phrase), a single repair deletes or rewrites just
+            # those, the draft is verified again, and the gates run again. A failure
+            # no sentence is behind (a thin section, a missing source) is not
+            # repairable and rejects the draft as before.
+            if not gate_result.passed and gate_repair:
+                _draft_front, draft_body = gates_stage.parse_front_matter(draft)
+                requests, unfixable = gaterepair_stage.repair_requests(
+                    gate_result.failures, draft_body,
+                    source_texts=gates_stage.gathered_texts(gathered),
+                    name_text=" ".join(
+                        [str(front.get("title") or ""), *[str(e) for e in front.get("entities") or []]]
+                    ),
+                    settings=gates_config,
+                )
+                if unfixable or not requests:
+                    logger.info("gate failures are not repairable: %s", "; ".join(unfixable or gate_result.failures))
+                else:
+                    gate_clauses = [request["clause"] for request in requests]
+                    with timings.stage("repair"):
+                        fixed = repair_fn(
+                            draft, requests, facts, run_state=run_state, generate=generate,
+                        )
+                        publish_stage.save_repair(
+                            draft, fixed.value, slug=slug, drafts_dir=paths.drafts_dir,
+                            changed_clauses=gate_clauses,
+                        )
+                        gate_repair_problems = write_stage.validate_repair(draft, fixed.value, gate_clauses)
+                    if gate_repair_problems:
+                        logger.warning(
+                            "gate repair rejected (the draft is kept): %s", "; ".join(gate_repair_problems)
+                        )
+                    else:
+                        with timings.stage("verify"):
+                            recheck = verify_fn(
+                                fixed.value, facts, run_state=run_state, generate=generate,
+                                report_dir=paths.reports_dir, id=cluster_id,
+                                source_texts=gates_stage.gathered_texts(gathered),
+                                repair={
+                                    "attempted": True,
+                                    "stage": "gates",
+                                    "changed_clauses": gate_clauses,
+                                    "original_chars": len(draft),
+                                    "repaired_chars": len(fixed.value),
+                                },
+                            )
+                        if not recheck.passed:
+                            logger.warning(
+                                "gate repair failed re-verification (%s): the draft is kept",
+                                recheck.failure_reason,
+                            )
+                        else:
+                            fixed_linked = link_fn(fixed.value, index, self_id=slug, now=now)
+                            fixed_article = publish_stage.assemble_article(_body_of(fixed_linked.article), front)
+                            with timings.stage("gates"):
+                                fixed_result = run_gates(fixed_article, recheck)
+                            logger.info(
+                                "gate repair: %d sentence(s) changed, gates %s",
+                                len(gate_clauses), "passed" if fixed_result.passed else "still fail",
+                            )
+                            draft, verify_report = fixed.value, recheck
+                            article, gate_result = fixed_article, fixed_result
+
             if not gate_result.passed:
                 _record_attempt("gate failure")
                 return _fail(
