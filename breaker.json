@@ -1,0 +1,10 @@
+{
+  "consecutive_failures": 4,
+  "last_failure_date": "2026-11-07",
+  "open": false,
+  "recent_failures": [
+    "verification failed (verifier_output_invalid): nintendo-has-no-plans-for-another-switch-2-price-hike",
+    "publish gates failed: assassin-s-creed-valhalla-update-adds-new-game-plus-and-pssr",
+    "verification failed (article_rejected): nintendo-has-no-plans-for-another-switch-2-price-hike"
+  ]
+}

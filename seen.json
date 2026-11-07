@@ -1,0 +1,53 @@
+{
+  "clusters": {
+    "4fa80a82eb65": {
+      "member_urls": [
+        "https://eurogamer.net/god-of-war-laufey-delayed-may-three-months",
+        "https://gamespot.com/articles/god-of-war-laufey-delayed/",
+        "https://gematsu.com/2026/11/god-of-war-laufey-delayed-to-may-20-2027",
+        "https://kotaku.com/god-of-war-laufey-delay-ps5-new-release-date-santa-monica-2000753374",
+        "https://polygon.com/god-of-war-laufey-delayed-ps5-2027/",
+        "https://pushsquare.com/news/2026/11/ps5-exclusive-god-of-war-laufey-has-officially-been-delayed-by-three-months",
+        "https://techpowerup.com/354471/god-of-war-laufey-delayed-to-may",
+        "https://videogameschronicle.com/news/god-of-war-laufey-has-officially-been-delayed/"
+      ],
+      "primary_entities": [
+        "big",
+        "god of war laufey",
+        "god of war laufey hit",
+        "officially been",
+        "ps5 exclusive god of war laufey",
+        "sony santa monica",
+        "three-month"
+      ],
+      "story_type": "delay",
+      "first_seen": "2026-11-05T03:33:08.237155+00:00",
+      "last_seen": "2026-11-05T03:33:08.237155+00:00"
+    },
+    "0a6e18587217": {
+      "member_urls": [
+        "https://dexerto.com/gaming/dragons-dogma-2-wins-fans-over-with-free-delicious-in-dungeon-crossover-3424633/",
+        "https://eurogamer.net/dragons-dogma-2-dungeon-meshi-collaboration-out-now",
+        "https://gematsu.com/2026/11/dragons-dogma-ii-dark-arisen-x-delicious-in-dungeon-collaboration-announced",
+        "https://kotaku.com/dragons-dogma-2-drops-surprise-delicious-in-dungeon-collab-2000753287",
+        "https://polygon.com/capcom-dragons-dogma-2-delicious-in-dungeon-collaboration-announced/"
+      ],
+      "primary_entities": [
+        "capcom officially",
+        "delicious",
+        "dragon's dogma 2",
+        "dragon’s dogma",
+        "dragon’s dogma 2",
+        "dragon’s dogma 2 drops surprise delicious",
+        "dragon’s dogma ii dark arisen",
+        "dungeon",
+        "dungeon collab",
+        "next collaboration delicious",
+        "pc playstation and xbox"
+      ],
+      "story_type": "announcement",
+      "first_seen": "2026-11-06T01:37:11.438636+00:00",
+      "last_seen": "2026-11-06T01:37:11.438636+00:00"
+    }
+  }
+}
