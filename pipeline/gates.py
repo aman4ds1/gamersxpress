@@ -818,6 +818,27 @@ def _empty_sections(body: str) -> list[str]:
 # --- draft-quality gate helpers ----------------------------------------------
 
 
+def _fact_occurrences(text: str, name_numbers: set[str]) -> list[tuple[str, str]]:
+    """Every date and number fact in ``text`` as ``(key, surface)``, in the order found."""
+    found: list[tuple[str, str]] = []
+    masked = text or ""
+    for pattern, key_fn in _DATE_SPECS:
+        for match in list(pattern.finditer(masked)):
+            found.append((key_fn(match), " ".join(match.group(0).split())))
+        masked = pattern.sub(lambda _match: " " * len(_match.group(0)), masked)
+    for match in _NUMBER_TOKEN_RE.finditer(masked):
+        key = match.group(0).replace(",", "")
+        # Judge a year on the raw text: "1,999" is a price, "1999" a year.
+        if _YEAR_RE.match(match.group(0)) or key in name_numbers:
+            continue
+        found.append((key, match.group(0)))
+    return found
+
+
+def _name_numbers(name_text: str) -> set[str]:
+    return {match.group(0).replace(",", "") for match in _NUMBER_TOKEN_RE.finditer(name_text or "")}
+
+
 def repeated_fact_tokens(
     body: str, max_repeat: int = 2, *, name_text: str = ""
 ) -> list[str]:
@@ -833,30 +854,36 @@ def repeated_fact_tokens(
     entity names; "5090" in "GeForce RTX 5090" names the product and appears in
     every sentence about it.
     """
-    name_numbers = {
-        match.group(0).replace(",", "") for match in _NUMBER_TOKEN_RE.finditer(name_text or "")
-    }
     counts: dict[str, int] = {}
     surface: dict[str, str] = {}
-    masked = body or ""
-    for pattern, key_fn in _DATE_SPECS:
-        for match in list(pattern.finditer(masked)):
-            key = key_fn(match)
-            counts[key] = counts.get(key, 0) + 1
-            surface.setdefault(key, " ".join(match.group(0).split()))
-        masked = pattern.sub(lambda _match: " " * len(_match.group(0)), masked)
-    for match in _NUMBER_TOKEN_RE.finditer(masked):
-        key = match.group(0).replace(",", "")
-        # Judge a year on the raw text: "1,999" is a price, "1999" a year.
-        if _YEAR_RE.match(match.group(0)) or key in name_numbers:
-            continue
+    for key, shown in _fact_occurrences(body or "", _name_numbers(name_text)):
         counts[key] = counts.get(key, 0) + 1
-        surface.setdefault(key, match.group(0))
+        surface.setdefault(key, shown)
     return [
         f"repeated fact: {surface[key]}"
         for key in sorted(counts, key=lambda item: surface[item])
         if counts[key] > max_repeat
     ]
+
+
+def repeated_fact_sentences(body: str, max_repeat: int = 2, *, name_text: str = "") -> list[dict]:
+    """The sentences that state a date or number once it has already been given ``max_repeat`` times.
+
+    Same counting as :func:`repeated_fact_tokens`; returns ``{"sentence", "fact"}``
+    for each sentence that pushes a fact over the limit, so a repair can cut them.
+    """
+    numbers = _name_numbers(name_text)
+    seen: dict[str, int] = {}
+    flagged: list[dict] = []
+    for sentence in _sentences(body):
+        over = []
+        for key, shown in _fact_occurrences(sentence, numbers):
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] > max_repeat:
+                over.append(shown)
+        if over:
+            flagged.append({"sentence": sentence, "fact": over[0]})
+    return flagged
 
 
 def _content_words(text: str) -> set[str]:
@@ -883,6 +910,24 @@ def near_duplicate_sentence_failures(body: str, threshold: float = 0.7) -> list[
                     f"near-duplicate sentences: {sentences[first]!r} and {sentences[second]!r}"
                 )
     return failures
+
+
+def near_duplicate_sentences(body: str, threshold: float = 0.7) -> list[dict]:
+    """Each sentence that restates an earlier one, as ``{"sentence", "earlier"}``.
+
+    Same content-word overlap as :func:`near_duplicate_sentence_failures`, but
+    every later sentence is returned (once) so a repair can delete it.
+    """
+    sentences = _sentences(body)
+    contents = [_content_words(sentence) for sentence in sentences]
+    flagged: list[dict] = []
+    for second in range(1, len(sentences)):
+        for first in range(second):
+            left, right = contents[first], contents[second]
+            if left and right and len(left & right) / len(left | right) >= threshold:
+                flagged.append({"sentence": sentences[second], "earlier": sentences[first]})
+                break
+    return flagged
 
 
 def dangling_reference_failures(body: str) -> list[str]:
@@ -1134,7 +1179,10 @@ def entity_mention_failures(
 
     Every front-matter entity must occur in the body or the title (normalised
     for case, accents and possessives), and the story's top primary entity --
-    the first canonical entity of the facts sheet -- must be among them.
+    the first canonical entity of the facts sheet -- must be among them *when the
+    title or body names it*: an entity the article never mentions (a headline
+    word the extraction took for a name) cannot be listed, and no list could
+    satisfy both rules.
     """
     failures: list[str] = []
     names = [str(entity).strip() for entity in entities or [] if str(entity).strip()]
@@ -1151,8 +1199,10 @@ def entity_mention_failures(
     if canonical:
         top = canonical[0].strip()
         top_tokens = _mention_tokens(top)
-        if top_tokens and not any(
-            _name_covers(_mention_tokens(name), top_tokens) for name in names
+        if (
+            top_tokens
+            and _contains_run(text_tokens, top_tokens)
+            and not any(_name_covers(_mention_tokens(name), top_tokens) for name in names)
         ):
             failures.append(
                 f"top primary entity {top!r} is missing from the front matter entities"

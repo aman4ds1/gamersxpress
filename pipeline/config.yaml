@@ -327,6 +327,19 @@ facts:
     - releases
     - release date
     - update
+    # Headline adjectives and adverbs that look like names in a title-cased headline.
+    - anticipated
+    - upcoming
+    - long-awaited
+    - official
+    - exclusive
+    - massive
+    - major
+    - huge
+    - free
+    - latest
+    - brand-new
+    - highly
     - updates
     - new
     - roster

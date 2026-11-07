@@ -1398,6 +1398,35 @@ def overlap_check(article: Any, source_texts: list[str] | None) -> list[dict]:
     ]
 
 
+REPEATED_FACT_REASON = (
+    "states {fact} again after it was already given; delete this sentence, or cut the repeated "
+    "date or number and keep every other fact"
+)
+NEAR_DUPLICATE_REASON = "restates an earlier sentence; delete this one and keep the earlier sentence"
+
+
+def repetition_check(article: Any) -> list[dict]:
+    """Repeated dates and near-duplicate sentences, flagged so the repair cuts them before the gates."""
+    settings = gates.load_gates_config()
+    defaults = gates.DEFAULT_GATES
+    _front, body = _split_front_matter(_as_text(article))
+    issues: list[dict] = []
+    if settings.get("check_repeated_facts", defaults["check_repeated_facts"]):
+        name_text = _front  # title and entities: a product number in them is a name, not a repeated fact
+        limit = int(settings.get("max_repeat_tokens", defaults["max_repeat_tokens"]))
+        issues += [
+            {"clause": item["sentence"], "reason": REPEATED_FACT_REASON.format(fact=item["fact"])}
+            for item in gates.repeated_fact_sentences(body, limit, name_text=name_text)
+        ]
+    if settings.get("check_near_duplicate_sentences", defaults["check_near_duplicate_sentences"]):
+        threshold = float(settings.get("near_duplicate_threshold", defaults["near_duplicate_threshold"]))
+        issues += [
+            {"clause": item["sentence"], "reason": NEAR_DUPLICATE_REASON}
+            for item in gates.near_duplicate_sentences(body, threshold)
+        ]
+    return issues
+
+
 def _clause_key(text: object) -> str:
     return _fold(text).rstrip(" .!?")
 
@@ -1451,7 +1480,7 @@ def verify(
 
     code_result = code_check(article, sheet, config)
     company_claim_issues = _company_claim_check(article, config)
-    outlet_issues = outlet_mention_check(article, sheet) + overlap_check(article, source_texts)
+    outlet_issues = outlet_mention_check(article, sheet) + overlap_check(article, source_texts) + repetition_check(article)
     duplicate_sources = find_sources_heading(article)
 
     # A sentence a code check flagged keeps the code check's wording, which

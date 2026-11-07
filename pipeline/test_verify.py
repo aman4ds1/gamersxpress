@@ -2285,3 +2285,40 @@ def test_verify_rejects_a_copied_sentence_the_model_passed(tmp_path):
     )
     assert report.passed is False and report.unsupported == [copied]
     assert "rewrite it in your own words" in [d["reason"] for d in report.unsupported_detail if d["clause"] == copied][0]
+
+
+# --- repeated facts and restated sentences ------------------------------------------------------
+
+REPEATED = (
+    "The update arrived on November 5, 2026. It adds New Game Plus and a new difficulty option.\n\n"
+    "Players get it free as of November 5, 2026. The free update is live on PlayStation 5 and Xbox Series X today.\n\n"
+    "Servers went live on November 5, 2026 worldwide. The update is live on PlayStation 5 and Xbox Series X today.\n"
+)
+
+
+def test_a_third_mention_of_a_date_and_a_restated_sentence_are_flagged_for_the_repair():
+    issues = verify_module.repetition_check(REPEATED)
+    by_clause = {item["clause"]: item["reason"] for item in issues}
+    assert "November 5, 2026" in by_clause["Servers went live on November 5, 2026 worldwide."]
+    assert "delete this sentence" in by_clause["Servers went live on November 5, 2026 worldwide."]
+    assert by_clause["The update is live on PlayStation 5 and Xbox Series X today."] == verify_module.NEAR_DUPLICATE_REASON
+    assert "The update arrived on November 5, 2026." not in by_clause
+
+
+def test_clean_text_has_no_repetition_flags():
+    assert verify_module.repetition_check("One thing happened on May 2. A very different thing followed on June 9.\n") == []
+
+
+def test_a_product_number_in_the_front_matter_is_not_a_repeated_fact():
+    article = "---\ntitle: GeForce RTX 5090 launches\nentities:\n  - GeForce RTX 5090\n---\nThe RTX 5090 ships soon. The RTX 5090 costs more. The RTX 5090 runs hot.\n"
+    assert verify_module.repetition_check(article) == []
+
+
+def test_verify_rejects_repetition_the_model_passed_so_the_repair_can_cut_it(tmp_path):
+    payload = model(clauses=[{"clause": "x", "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}])
+    report = verify_module.verify(
+        REPEATED, outlets_sheet(), run_state=providers.RunState(), generate=make_generate(payload),
+        report_dir=tmp_path, verify_config=config(),
+    )
+    assert report.passed is False
+    assert "Servers went live on November 5, 2026 worldwide." in report.unsupported

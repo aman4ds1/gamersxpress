@@ -977,3 +977,10 @@ def test_a_cluster_passes_the_gaming_flag_to_every_headline():
     c = _topic_cluster("A neutral headline", "Half of the studio was laid off")
     assert cluster.cluster_blocked_topic(c, UNLESS, gaming_scene=False) == ("labor", r"\blaid off\b")
     assert cluster.cluster_blocked_topic(c, UNLESS, gaming_scene=True) == ("backlash", r"\blaid off\b")
+
+
+def test_headline_adjectives_are_not_story_entities():
+    stop = cluster.entity_stop_list()
+    for word in ("Anticipated", "Upcoming", "Official", "Exclusive", "Latest", "Free"):
+        assert cluster.is_stop_entity(word, stop=stop), word
+    assert not cluster.is_stop_entity("Assassin's Creed Valhalla", stop=stop)

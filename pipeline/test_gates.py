@@ -1301,3 +1301,64 @@ def test_flagging_stops_once_enough_is_removed():
     flagged = gates.overlap_sentences(f"{one} {two}", [SRC], 8, 0.55)
     assert len(flagged) == 1
     assert len(gates.overlap_sentences(f"{one} {two}", [SRC], 8, 0.0)) == 2
+
+
+# --- the top entity is only required when the article names it ---------------------------------
+
+
+def test_a_top_primary_entity_the_article_never_names_is_not_required():
+    # "Anticipated" is a headline word the extraction took for a name: no list could hold it.
+    facts = clean_facts()
+    facts["coherence"]["canonical_entities"] = ["Anticipated", "Apex Controller"]
+    result = run(clean_article(front_overrides={"entities": ["Novatek", "Apex Controller"]}), facts=facts)
+    assert not any("top primary entity" in failure for failure in result.failures)
+
+
+def test_a_top_primary_entity_the_article_names_is_still_required():
+    facts = clean_facts()
+    facts["coherence"]["canonical_entities"] = ["Novatek", "Apex Controller"]
+    result = run(clean_article(front_overrides={"entities": ["Apex Controller"]}), facts=facts)
+    assert any("top primary entity 'Novatek' is missing" in failure for failure in result.failures)
+
+
+# --- sentences that repeat a fact or each other --------------------------------------------------
+
+REPEATING = (
+    "The update arrived on November 5, 2026. It adds New Game Plus. "
+    "Players get it free as of November 5, 2026. Nothing else changed. "
+    "Servers went live on November 5, 2026 worldwide."
+)
+
+
+def test_repeated_fact_sentences_flags_the_sentence_that_pushes_a_date_over_the_limit():
+    flagged = gates.repeated_fact_sentences(REPEATING, 2)
+    assert [f["sentence"] for f in flagged] == ["Servers went live on November 5, 2026 worldwide."]
+    assert flagged[0]["fact"] == "November 5, 2026"
+    assert gates.repeated_fact_sentences(REPEATING, 3) == []
+
+
+def test_repeated_fact_sentences_agrees_with_the_gate_that_fails_the_article():
+    assert gates.repeated_fact_tokens(REPEATING, 2) == ["repeated fact: November 5, 2026"]
+    assert gates.repeated_fact_sentences(REPEATING, 2)
+
+
+def test_a_number_in_the_story_name_is_not_a_repeated_fact_for_the_sentence_flags():
+    text = "The RTX 5090 ships soon. The RTX 5090 costs more. The RTX 5090 runs hot."
+    assert gates.repeated_fact_sentences(text, 2, name_text="GeForce RTX 5090") == []
+    assert gates.repeated_fact_sentences(text, 2)
+
+
+def test_near_duplicate_sentences_returns_each_later_restatement_once():
+    text = (
+        "The free update is live on PlayStation 5 and Xbox Series X today. "
+        "A different sentence covers the new difficulty options and bug fixes. "
+        "The update is live on PlayStation 5 and Xbox Series X today."
+    )
+    flagged = gates.near_duplicate_sentences(text, 0.7)
+    assert [f["sentence"] for f in flagged] == ["The update is live on PlayStation 5 and Xbox Series X today."]
+    assert flagged[0]["earlier"].startswith("The free update is live")
+    assert gates.near_duplicate_sentences(text, 0.99) == []
+
+
+def test_near_duplicate_sentences_finds_nothing_in_distinct_text():
+    assert gates.near_duplicate_sentences("One thing happened. A very different thing followed later.", 0.7) == []
