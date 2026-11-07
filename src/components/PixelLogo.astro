@@ -1,0 +1,25 @@
+---
+/** The GamersXpress pixel mark: "G" in the text color, "X" in gold (light) / silver (dark). */
+interface Props {
+  width?: number;
+  animated?: boolean;
+}
+const { width = 52, animated = true } = Astro.props;
+const G = ['.###.', '#...#', '#....', '#.###', '#...#', '#...#', '.###.'];
+const X = ['#...#', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '#...#'];
+const pixels = (rows: string[], ox: number) =>
+  rows.flatMap((row, y) =>
+    [...row].flatMap((c, x) => (c === '#' ? [{ x: ox + x, y: y + 1, d: (((ox + x) + y) * 0.07).toFixed(2) }] : [])),
+  );
+const g = pixels(G, 1);
+const x = pixels(X, 7);
+---
+
+<svg width={width} height={Math.round((width * 9) / 13)} viewBox="0 0 13 9" shape-rendering="crispEdges" aria-hidden="true">
+  <g style="--base: var(--ink); fill: var(--ink)">
+    {g.map((p) => <rect class={animated ? 'gx-px' : undefined} x={p.x} y={p.y} width="1" height="1" style={animated ? `animation-delay:${p.d}s` : undefined} />)}
+  </g>
+  <g style="--base: var(--gold); fill: var(--gold)">
+    {x.map((p) => <rect class={animated ? 'gx-px' : undefined} x={p.x} y={p.y} width="1" height="1" style={animated ? `animation-delay:${p.d}s` : undefined} />)}
+  </g>
+</svg>

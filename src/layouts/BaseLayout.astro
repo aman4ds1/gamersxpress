@@ -35,6 +35,18 @@ const {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width" />
     <meta name="generator" content={Astro.generator} />
+    <script is:inline>
+      try {
+        const saved = localStorage.getItem('gx-theme');
+        if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
+      } catch (e) {}
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Press+Start+2P&display=swap"
+    />
     <SEO
       title={title}
       description={description}
@@ -57,6 +69,11 @@ const {
   <body
     class="flex min-h-screen flex-col bg-surface text-ink antialiased"
   >
+    <div class="gx-bg" aria-hidden="true">
+      <span class="gx-blob gx-b1"></span><span class="gx-blob gx-b2"></span><span class="gx-blob gx-b3"></span>
+      <span class="gx-gridlines"></span>
+      <span class="gx-shape gx-s1"></span><span class="gx-shape gx-s2"></span><span class="gx-shape gx-s3"></span><span class="gx-shape gx-s4"></span><span class="gx-shape gx-s5"></span>
+    </div>
     <Header />
     <main class="flex-1" data-pagefind-body>
       <slot />

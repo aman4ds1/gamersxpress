@@ -1,0 +1,73 @@
+/* GamersXpress design: pixel logo, gold (light) / silver (dark) card linings, moving background. */
+@property --gx-a { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+@keyframes gx-spin { to { --gx-a: 360deg; } }
+@keyframes gx-drift1 { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(160px, 120px) scale(1.15); } }
+@keyframes gx-drift2 { 0%, 100% { transform: translate(0, 0) scale(1.1); } 50% { transform: translate(-180px, 90px) scale(0.95); } }
+@keyframes gx-drift3 { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(120px, -140px) scale(1.2); } }
+@keyframes gx-gridmove { to { background-position: 0 56px, 56px 0; } }
+@keyframes gx-float { 0% { transform: translateY(0) rotate(0); } 100% { transform: translateY(-420px) rotate(180deg); opacity: 0; } }
+@keyframes gx-flow { to { background-position: 200% 0; } }
+@keyframes gx-px { 0%, 100% { opacity: 0.7; } 40% { opacity: 1; } }
+@keyframes gx-pxc { 0%, 100% { fill: var(--base); } 33% { fill: var(--a1); } 66% { fill: var(--a2); } }
+@keyframes gx-blink { 50% { opacity: 0; } }
+
+body { font-family: var(--font-sans); }
+.gx-display { font-family: "Chakra Petch", var(--font-sans); }
+.gx-mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+.gx-pixel { font-family: "Press Start 2P", ui-monospace, monospace; }
+
+/* background */
+.gx-bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.gx-blob { position: absolute; width: 620px; height: 620px; border-radius: 50%; filter: blur(70px); }
+.gx-b1 { top: -180px; left: -140px; background: radial-gradient(circle, var(--c1), transparent 65%); animation: gx-drift1 22s ease-in-out infinite; }
+.gx-b2 { top: 240px; right: -200px; background: radial-gradient(circle, var(--c2), transparent 65%); animation: gx-drift2 26s ease-in-out infinite; }
+.gx-b3 { bottom: -220px; left: 30%; background: radial-gradient(circle, var(--c3), transparent 65%); animation: gx-drift3 30s ease-in-out infinite; }
+.gx-gridlines { position: absolute; inset: 0; background-image: linear-gradient(var(--gc) 1px, transparent 1px), linear-gradient(90deg, var(--gc) 1px, transparent 1px); background-size: 56px 56px; animation: gx-gridmove 6s linear infinite; -webkit-mask-image: radial-gradient(ellipse at 50% 30%, #000 30%, transparent 75%); mask-image: radial-gradient(ellipse at 50% 30%, #000 30%, transparent 75%); }
+.gx-shape { position: absolute; bottom: -40px; width: 14px; height: 14px; opacity: 0.55; animation: gx-float 18s linear infinite; }
+.gx-s1 { left: 8%; border: 2px solid var(--a1); border-radius: 50%; }
+.gx-s2 { left: 26%; border: 2px solid var(--a2); animation-duration: 22s; animation-delay: -6s; }
+.gx-s3 { left: 58%; width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 14px solid var(--a3); animation-duration: 20s; animation-delay: -12s; }
+.gx-s4 { left: 80%; border: 2px solid var(--a1); animation-duration: 24s; animation-delay: -3s; }
+.gx-s5 { left: 44%; border: 2px solid var(--a2); border-radius: 50%; animation-duration: 26s; animation-delay: -16s; }
+
+/* header / footer */
+.gx-bar { position: sticky; top: 0; z-index: 30; background: var(--bar); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+.gx-wrap { max-width: 1240px; margin: 0 auto; padding-left: 32px; padding-right: 32px; }
+.gx-nav a { text-decoration: none; padding: 12px 2px; border-bottom: 2px solid transparent; }
+.gx-nav a:hover, .gx-nav a[aria-current='page'] { color: var(--ink); border-bottom-color: var(--a1); }
+.gx-iconbtn { min-width: 44px; height: 44px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 12px; cursor: pointer; }
+.gx-iconbtn:hover { border-color: var(--gold); }
+.gx-px { animation: gx-px 1.6s ease-in-out infinite, gx-pxc 4.8s linear infinite; }
+.gx-blink { animation: gx-blink 1s steps(1) infinite; }
+.gx-footer { position: relative; border-top: 1px solid var(--line); background: var(--bar); backdrop-filter: blur(12px); }
+
+/* labels */
+.gx-grad { background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3), var(--a1)); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: gx-flow 6s linear infinite; }
+.gx-gradbar { background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3), var(--a1)); background-size: 200% 100%; animation: gx-flow 6s linear infinite; }
+.gx-chip { display: inline-block; padding: 5px 9px; border-radius: 6px; background: var(--chip, #6d28d9); color: #fff; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; text-decoration: none; }
+.gx-topic { display: inline-block; padding: 6px 11px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink-muted); font-size: 13px; font-weight: 600; text-decoration: none; background: var(--card); }
+.gx-topic:hover { color: var(--ink); border-color: var(--gold); }
+
+/* cards: still outline, it moves on hover / keyboard focus */
+.gx-lined { display: block; text-decoration: none; padding: 1.5px; border-radius: 14px; background: conic-gradient(from var(--gx-a), var(--l1) 0deg, var(--l2) 50deg, var(--l3) 95deg, var(--l1) 150deg, var(--l1) 210deg, var(--l2) 260deg, var(--l3) 305deg, var(--l1) 360deg); animation: gx-spin 2.6s linear infinite paused; transition: transform 0.25s ease, box-shadow 0.25s ease; }
+.gx-lined:hover, .gx-lined:focus-visible { transform: translateY(-3px); animation-play-state: running; box-shadow: 0 14px 34px var(--glow); }
+.gx-lined:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 4px; }
+.gx-card { position: relative; height: 100%; box-sizing: border-box; border-radius: 12.5px; background: var(--card); padding: 26px 24px 22px; display: flex; flex-direction: column; gap: 12px; }
+.gx-hero { border-radius: 18px; padding: 2px; }
+.gx-hero .gx-card { border-radius: 16px; padding: 52px 52px 44px; gap: 18px; align-items: flex-start; }
+.gx-tick { position: absolute; width: 10px; height: 10px; border-color: var(--gold); border-style: solid; opacity: 0.7; }
+.gx-tl { top: 10px; left: 10px; border-width: 2px 0 0 2px; }
+.gx-br { bottom: 10px; right: 10px; border-width: 0 2px 2px 0; }
+.gx-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 22px; }
+.gx-cta { display: inline-block; padding: 12px 20px; border-radius: 10px; color: #fff; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; font-weight: 700; letter-spacing: 0.14em; }
+
+@media (max-width: 640px) {
+  .gx-bar { position: relative; }
+  .gx-wrap { padding-left: 18px; padding-right: 18px; }
+  .gx-hero .gx-card { padding: 34px 24px 28px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gx-blob, .gx-gridlines, .gx-shape, .gx-grad, .gx-gradbar, .gx-px, .gx-blink, .gx-lined { animation: none; }
+  .gx-shape { display: none; }
+  .gx-lined:hover, .gx-lined:focus-visible { transform: none; }
+}

@@ -1,4 +1,6 @@
 ---
+import PixelLogo from './PixelLogo.astro';
+
 const year = new Date().getFullYear();
 const footerLinks = [
   { label: 'About', href: '/about' },
@@ -10,27 +12,17 @@ const footerLinks = [
 ];
 ---
 
-<footer class="border-t border-line bg-surface">
-  <div class="mx-auto max-w-6xl px-4 py-6 text-sm text-ink-subtle">
-    <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-      <p>&copy; {year} GamersXpress. All rights reserved.</p>
-      <p>Gaming news, hardware, and esports coverage.</p>
-    </div>
-    <nav aria-label="Footer" class="mt-4">
+<footer class="gx-footer mt-auto">
+  <div class="gx-wrap flex flex-wrap items-center justify-between gap-5 py-8 text-sm text-ink-muted">
+    <span class="flex items-center gap-2.5">
+      <PixelLogo width={30} animated={false} />
+      <span class="gx-pixel text-[11px] text-ink">GAMERS<span style="color: var(--gold)">X</span>PRESS</span>
+    </span>
+    <nav aria-label="Footer">
       <ul class="flex flex-wrap gap-x-5 gap-y-2">
-        {
-          footerLinks.map((item) => (
-            <li>
-              <a
-                href={item.href}
-                class="transition-colors hover:text-ink-brand"
-              >
-                {item.label}
-              </a>
-            </li>
-          ))
-        }
+        {footerLinks.map((item) => <li><a href={item.href} class="hover:text-ink">{item.label}</a></li>)}
       </ul>
     </nav>
+    <span>&copy; {year} GamersXpress</span>
   </div>
 </footer>

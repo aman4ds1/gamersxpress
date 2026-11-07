@@ -1,64 +1,67 @@
 ---
+import PixelLogo from './PixelLogo.astro';
+
 const navItems = [
-  { label: 'Home', href: '/' },
   { label: 'PC', href: '/category/pc' },
   { label: 'PlayStation', href: '/category/playstation' },
   { label: 'Xbox', href: '/category/xbox' },
   { label: 'Nintendo', href: '/category/nintendo' },
   { label: 'Hardware', href: '/category/hardware' },
   { label: 'Esports', href: '/category/esports' },
-  { label: 'Tools', href: '/tools' },
 ];
+const path = Astro.url.pathname.replace(/\/+$/, '');
 ---
 
-<header class="border-b border-line bg-surface">
-  <div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
-    <a
-      href="/"
-      class="text-xl font-extrabold tracking-tight text-ink-brand"
-    >
-      GamersXpress
+<header class="gx-bar">
+  <div class="gx-wrap flex min-h-[76px] flex-wrap items-center justify-between gap-4">
+    <a href="/" aria-label="GamersXpress home" class="flex items-center gap-3 no-underline">
+      <PixelLogo width={52} />
+      <span class="flex flex-col gap-2 leading-none">
+        <span class="gx-pixel text-[14px] text-ink">GAMERS<span style="color: var(--gold)">X</span>PRESS</span>
+        <span class="gx-pixel text-[8px] tracking-[0.2em] text-ink-muted">
+          PRESS START<span class="gx-blink ml-1.5 inline-block h-2 w-1.5 align-[-1px]" style="background: var(--gold)"></span>
+        </span>
+      </span>
     </a>
-
-    <nav aria-label="Main" class="hidden md:block">
-      <ul class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm font-medium">
-        {
-          navItems.map((item) => (
-            <li>
-              <a
-                href={item.href}
-                class="text-ink-muted transition-colors hover:text-ink-brand"
-              >
-                {item.label}
-              </a>
-            </li>
-          ))
-        }
-      </ul>
+    <nav class="gx-nav flex flex-wrap gap-x-6 gap-y-1 text-sm font-semibold text-ink-muted" aria-label="Main">
+      {
+        navItems.map((item) => (
+          <a href={item.href} aria-current={path === item.href ? 'page' : undefined}>
+            {item.label}
+          </a>
+        ))
+      }
     </nav>
-
-    <details class="relative md:hidden">
-      <summary
-        class="inline-flex cursor-pointer list-none items-center rounded-sm border border-line-strong px-3 py-1.5 text-sm font-medium text-ink-strong select-none [&::-webkit-details-marker]:hidden"
-      >
-        Menu
-      </summary>
-      <nav aria-label="Main mobile">
-        <ul class="absolute right-0 z-20 mt-2 w-52 rounded-sm border border-line-elevated bg-surface-raised p-2 shadow-lg">
-          {
-            navItems.map((item) => (
-              <li>
-                <a
-                  href={item.href}
-                  class="block rounded-sm px-3 py-2 text-sm text-ink-strong hover:bg-surface-hover"
-                >
-                  {item.label}
-                </a>
-              </li>
-            ))
-          }
-        </ul>
-      </nav>
-    </details>
+    <div class="flex items-center gap-2.5">
+      <a href="/search" class="gx-iconbtn" aria-label="Search">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+      </a>
+      <button type="button" class="gx-iconbtn gx-mono text-xs tracking-wider" id="theme-toggle" aria-label="Switch theme">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path></svg>
+        <span id="theme-toggle-text">THEME</span>
+      </button>
+    </div>
   </div>
 </header>
+
+<script>
+  const button = document.getElementById('theme-toggle');
+  const text = document.getElementById('theme-toggle-text');
+  const media = window.matchMedia('(prefers-color-scheme: dark)');
+  const current = () => document.documentElement.dataset.theme ?? (media.matches ? 'dark' : 'light');
+  const label = () => {
+    const next = current() === 'dark' ? 'light' : 'dark';
+    if (text) text.textContent = next.toUpperCase();
+    button?.setAttribute('aria-label', `Switch to ${next} mode`);
+  };
+  button?.addEventListener('click', () => {
+    const next = current() === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    try {
+      localStorage.setItem('gx-theme', next);
+    } catch (e) {}
+    label();
+  });
+  media.addEventListener('change', label);
+  label();
+</script>

@@ -1,5 +1,6 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
+import ArticleCard from '../../components/ArticleCard.astro';
 import { getCollection } from 'astro:content';
 import type { CollectionEntry } from 'astro:content';
 import { entitySlug } from '../../data/entities';
@@ -56,43 +57,17 @@ const description =
     { name: entity, path: `/topic/${slug}` },
   ]}
 >
-  <div class="mx-auto max-w-6xl px-4 py-10">
-    <h1 class="text-3xl font-extrabold tracking-tight">{entity}</h1>
-    <p class="mt-2 text-ink-muted">{summary}</p>
+  <div class="gx-wrap flex flex-col gap-8 pt-12 pb-24">
+    <header class="flex flex-col gap-3 border-b border-line pb-5">
+      <span class="gx-mono gx-grad text-xs font-bold tracking-[0.2em]">// TOPIC</span>
+      <h1 class="gx-display text-[clamp(30px,4vw,48px)] font-bold text-ink">{entity}</h1>
+      <p class="max-w-[680px] text-ink-muted">{summary}</p>
+    </header>
     {
       count > 0 ? (
-        <ul class="mt-8 space-y-8">
-          {articles.map((article) => (
-            <li>
-              <article>
-                <p class="text-sm text-ink-subtle">
-                  <time datetime={article.data.pubDate.toISOString()}>
-                    {article.data.pubDate.toLocaleDateString('en-US', {
-                      year: 'numeric',
-                      month: 'long',
-                      day: 'numeric',
-                    })}
-                  </time>
-                </p>
-                <h2 class="mt-1 text-xl font-bold tracking-tight">
-                  <a
-                    href={`/news/${article.id}`}
-                    class="hover:text-accent"
-                  >
-                    {article.data.title}
-                  </a>
-                </h2>
-                <p class="mt-2 text-ink-muted">
-                  {article.data.description}
-                </p>
-              </article>
-            </li>
-          ))}
-        </ul>
+        <div class="gx-cards">{articles.map((article) => <ArticleCard article={article} />)}</div>
       ) : (
-        <div class="mt-8 rounded-sm border border-dashed border-line-strong p-8 text-center text-sm text-ink-subtle">
-          New {entity} articles are coming soon.
-        </div>
+        <p class="text-ink-muted">New {entity} articles are coming soon.</p>
       )
     }
   </div>

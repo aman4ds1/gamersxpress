@@ -1,0 +1,26 @@
+---
+import type { CollectionEntry } from 'astro:content';
+import { CATEGORY_COLORS, CATEGORY_LABELS } from '../data/categories';
+
+interface Props {
+  article: CollectionEntry<'articles'>;
+}
+
+const { article } = Astro.props;
+const { title, description, pubDate, category } = article.data;
+---
+
+<a href={`/news/${article.id}`} class="gx-lined">
+  <article class="gx-card min-h-[240px]">
+    <span class="gx-tick gx-tl" aria-hidden="true"></span><span class="gx-tick gx-br" aria-hidden="true"></span>
+    <div class="flex items-center justify-between gap-2.5">
+      <span class="gx-chip" style={`--chip:${CATEGORY_COLORS[category]}`}>{CATEGORY_LABELS[category]}</span>
+      <time class="gx-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted" datetime={pubDate.toISOString()}>
+        {pubDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+      </time>
+    </div>
+    <h3 class="gx-display text-[21px] leading-snug font-bold text-ink">{title}</h3>
+    <p class="text-[14.5px] leading-relaxed text-ink-muted">{description}</p>
+    <span class="gx-mono mt-auto pt-1.5 text-xs font-bold tracking-[0.14em] text-ink">READ ▸</span>
+  </article>
+</a>

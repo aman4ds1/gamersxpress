@@ -1,72 +1,86 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
+import ArticleCard from '../components/ArticleCard.astro';
 import { getCollection } from 'astro:content';
-import { CATEGORY_LABELS } from '../data/categories';
+import { CATEGORY_COLORS, CATEGORY_LABELS } from '../data/categories';
+import { entitySlug } from '../data/entities';
 
-const latest = (await getCollection('articles'))
-  .sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf())
-  .slice(0, 10);
+const all = (await getCollection('articles')).sort(
+  (a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
+);
+const top = all[0];
+// With one article the grid would be empty, so it shows that article too.
+const latest = all.length > 1 ? all.slice(1, 13) : all;
+
+const entityCounts = new Map<string, number>();
+for (const article of all) {
+  for (const entity of article.data.entities) {
+    if (entitySlug(entity)) entityCounts.set(entity, (entityCounts.get(entity) ?? 0) + 1);
+  }
+}
+const topics = [...entityCounts.entries()]
+  .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  .slice(0, 12)
+  .map(([entity]) => ({ entity, slug: entitySlug(entity) }));
 ---
 
 <BaseLayout title="GamersXpress — Gaming News, Hardware & Esports">
-  <section class="border-b border-line">
-    <div class="mx-auto max-w-6xl px-4 py-14 text-center">
-      <h1 class="text-3xl font-extrabold tracking-tight sm:text-4xl">
-        Gaming news that checks out
-      </h1>
-      <p class="mx-auto mt-4 max-w-2xl text-base text-ink-muted sm:text-lg">
-        PC, PlayStation, Xbox, Nintendo, hardware, and esports coverage with
-        sources you can verify.
-      </p>
-    </div>
-  </section>
-
-  <section class="mx-auto max-w-6xl px-4 py-10" aria-labelledby="latest-articles">
-    <h2 id="latest-articles" class="text-2xl font-bold tracking-tight">
-      Latest articles
-    </h2>
+  <div class="gx-wrap flex flex-col gap-16 pt-12 pb-24">
+    <h1 class="sr-only">GamersXpress: gaming news that checks out</h1>
     {
-      latest.length > 0 ? (
-        <ul class="mt-6 space-y-8">
-          {latest.map((article) => (
-            <li>
-              <article>
-                <p class="text-sm text-ink-subtle">
-                  <time datetime={article.data.pubDate.toISOString()}>
-                    {article.data.pubDate.toLocaleDateString('en-US', {
-                      year: 'numeric',
-                      month: 'long',
-                      day: 'numeric',
-                    })}
-                  </time>
-                  {' · '}
-                  <a
-                    href={`/category/${article.data.category}`}
-                    class="hover:text-ink-brand"
-                  >
-                    {CATEGORY_LABELS[article.data.category]}
-                  </a>
-                </p>
-                <h3 class="mt-1 text-xl font-bold tracking-tight">
-                  <a
-                    href={`/news/${article.id}`}
-                    class="hover:text-accent"
-                  >
-                    {article.data.title}
-                  </a>
-                </h3>
-                <p class="mt-2 text-ink-muted">
-                  {article.data.description}
-                </p>
-              </article>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <div class="mt-6 rounded-sm border border-dashed border-line-strong p-10 text-center text-sm text-ink-subtle">
-          New articles are coming soon.
-        </div>
+      top && (
+        <section aria-labelledby="top-story" class="flex flex-col gap-4">
+          <div class="gx-mono flex items-center gap-3.5 text-xs tracking-[0.2em] text-ink-muted">
+            <span class="gx-grad font-bold">// TOP STORY</span>
+            <span class="h-px flex-1 bg-line" />
+            <time datetime={top.data.pubDate.toISOString()}>
+              {top.data.pubDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()}
+            </time>
+          </div>
+          <a href={`/news/${top.id}`} class="gx-lined gx-hero">
+            <div class="gx-card">
+              <span class="gx-tick gx-tl" aria-hidden="true" /><span class="gx-tick gx-br" aria-hidden="true" />
+              <span class="gx-chip" style={`--chip:${CATEGORY_COLORS[top.data.category]}`}>{CATEGORY_LABELS[top.data.category]}</span>
+              <h2 id="top-story" class="gx-display max-w-[860px] text-[clamp(30px,4.4vw,56px)] leading-[1.05] font-bold text-ink">{top.data.title}</h2>
+              <p class="max-w-[660px] text-[17px] leading-relaxed text-ink-muted">{top.data.description}</p>
+              <span class="gx-cta gx-gradbar mt-2">READ STORY ▸</span>
+            </div>
+          </a>
+        </section>
       )
     }
-  </section>
+
+    <section aria-labelledby="latest-heading" class="flex flex-col gap-6">
+      <div class="flex flex-wrap items-end justify-between gap-4 border-b border-line pb-4">
+        <div class="flex flex-col gap-2">
+          <span class="gx-mono gx-grad text-xs font-bold tracking-[0.2em]">// LATEST DROPS</span>
+          <h2 id="latest-heading" class="gx-display text-[34px] font-bold text-ink">Latest stories</h2>
+          <span class="gx-gradbar h-[3px] w-[72px] rounded-sm" aria-hidden="true" />
+        </div>
+        <span class="gx-mono text-xs tracking-wider text-ink-muted">Every story links its sources</span>
+      </div>
+      {
+        latest.length > 0 ? (
+          <div class="gx-cards">{latest.map((article) => <ArticleCard article={article} />)}</div>
+        ) : (
+          <p class="text-ink-muted">New articles are coming soon.</p>
+        )
+      }
+    </section>
+
+    {
+      topics.length > 0 && (
+        <section aria-labelledby="topics-heading" class="flex flex-col gap-4">
+          <h2 id="topics-heading" class="gx-mono gx-grad text-xs font-bold tracking-[0.2em]">// TOPICS</h2>
+          <ul class="flex flex-wrap gap-2">
+            {topics.map(({ entity, slug }) => (
+              <li>
+                <a href={`/topic/${slug}`} class="gx-topic">{entity}</a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )
+    }
+  </div>
 </BaseLayout>
