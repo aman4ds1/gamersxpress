@@ -41,6 +41,23 @@ body { font-family: var(--font-sans); }
 .gx-blink { animation: gx-blink 1s steps(1) infinite; }
 .gx-footer { position: relative; border-top: 1px solid var(--line); background: var(--bar); backdrop-filter: blur(12px); }
 
+/* theme toggle: moon in light mode, sun in dark mode; they spin and swap */
+.gx-theme { position: relative; width: 44px; padding: 0; }
+.gx-theme svg { position: absolute; transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease; }
+.gx-theme:hover svg { color: var(--gold); }
+.gx-moon { opacity: 1; transform: rotate(0) scale(1); }
+.gx-sun { opacity: 0; transform: rotate(-120deg) scale(0.4); }
+:root[data-theme='dark'] .gx-moon { opacity: 0; transform: rotate(120deg) scale(0.4); }
+:root[data-theme='dark'] .gx-sun { opacity: 1; transform: rotate(0) scale(1); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .gx-moon { opacity: 0; transform: rotate(120deg) scale(0.4); }
+  :root:not([data-theme='light']) .gx-sun { opacity: 1; transform: rotate(0) scale(1); }
+}
+/* page switch: the circular wipe is drawn by the script; without it, colors fade */
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+body { transition: background-color 0.35s ease, color 0.35s ease; }
+.gx-switching body { transition: none; }
+
 /* labels */
 .gx-grad { background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3), var(--a1)); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: gx-flow 6s linear infinite; }
 .gx-gradbar { background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3), var(--a1)); background-size: 200% 100%; animation: gx-flow 6s linear infinite; }
@@ -70,4 +87,5 @@ body { font-family: var(--font-sans); }
   .gx-blob, .gx-gridlines, .gx-shape, .gx-grad, .gx-gradbar, .gx-px, .gx-blink, .gx-lined { animation: none; }
   .gx-shape { display: none; }
   .gx-lined:hover, .gx-lined:focus-visible { transform: none; }
+  .gx-theme svg, body { transition: none; }
 }
