@@ -137,3 +137,89 @@ def test_add_links_preserves_front_matter():
     index = link.build_index(base_articles())
     result = link.add_links(SELF, index, self_id="a0", now=NOW)
     assert result.article.startswith("---\ntitle: Roundup of the week\n---\n")
+
+
+# --- title keywords are proper nouns, not everyday headline words ---------------------------------
+
+
+def test_keywords_are_the_capitalized_words_after_the_first():
+    assert link._keywords("Dragon's Dogma 2 adds Delicious in Dungeon collaboration") == ["dogma", "delicious", "dungeon"]
+    assert link._keywords("Nintendo has no plans for another Nintendo Switch 2 price hike") == ["nintendo", "switch"]
+
+
+def test_everyday_headline_words_are_never_keywords():
+    words = link._keywords("Sony delays the update and adds a price hike after launches")
+    assert words == []
+
+
+def test_months_weekdays_numbers_and_the_first_word_are_never_keywords():
+    assert link._keywords("Path of Exile 2 launches on December 11, 2026") == ["exile"]
+    assert link._keywords("Valhalla update lands on Friday with Anticipated changes") == ["anticipated"]
+    assert link._keywords("") == [] and link._keywords(None) == []
+
+
+def test_repeated_proper_nouns_are_kept_once():
+    assert link._keywords("Nintendo news: Switch Online adds Switch classics") == ["switch", "online"]
+
+
+def test_a_common_word_in_a_new_article_does_not_link_to_an_unrelated_one():
+    # The bug: "adds" came from another article's headline and was linked in this body.
+    older = article("dd2", "Dragon's Dogma 2 adds Delicious in Dungeon collaboration", "gaming-news", "2026-10-01T12:00:00+00:00", ["Dragon's Dogma 2"])
+    index = link.build_index([older])
+    body = "---\ntitle: t\n---\n\n## What happened\n\nThe endgame adds over 25 new maps, and the update brings a collaboration with nobody.\n"
+    result = link.add_links(body, index, self_id="poe", now=NOW)
+    assert result.links == [] and "](/news/dd2)" not in result.article
+
+
+def test_a_real_name_from_the_headline_still_links():
+    older = article("dd2", "Dragon's Dogma 2 adds Delicious in Dungeon collaboration", "gaming-news", "2026-10-01T12:00:00+00:00", ["Dragon's Dogma 2"])
+    index = link.build_index([older])
+    body = "---\ntitle: t\n---\n\n## What happened\n\nFans of Delicious in Dungeon have another game to try this month.\n"
+    result = link.add_links(body, index, self_id="poe", now=NOW)
+    assert [item["id"] for item in result.links] == ["dd2"]
+
+
+# --- an article is a link target only for what its headline is about -----------------------------
+
+
+def test_about_needs_at_least_half_of_the_entitys_words_in_the_title():
+    assert link._about("Nintendo Switch 2", "Nintendo has no plans for another Nintendo Switch 2 price hike")
+    assert link._about("GeForce RTX 5090", "NVIDIA RTX 5090 review: the fastest GPU")
+    assert link._about("Valve", "Valve ships a new Steam update")
+    assert not link._about("PlayStation 5", "Dragon's Dogma 2 adds Delicious in Dungeon collaboration")
+    assert not link._about("Xbox Series X", "Xbox Game Pass price rises again")
+    assert not link._about("", "Anything") and not link._about("Valve", "")
+
+
+def test_a_platform_an_article_merely_lists_does_not_link_to_it():
+    older = article(
+        "dd2", "Dragon's Dogma 2 adds Delicious in Dungeon collaboration", "gaming-news",
+        "2026-10-01T12:00:00+00:00", ["PlayStation 5", "Xbox Series X", "Capcom"],
+    )
+    index = link.build_index([older])
+    body = "---\ntitle: t\n---\n\n## What happened\n\nThe game ships on PlayStation 5 and Xbox Series X, and Capcom has said nothing.\n"
+    assert link.add_links(body, index, self_id="poe", now=NOW).links == []
+
+
+def test_the_article_a_headline_is_about_still_links_on_that_entity():
+    older = article(
+        "sw2", "Nintendo has no plans for another Nintendo Switch 2 price hike", "nintendo",
+        "2026-10-01T12:00:00+00:00", ["Nintendo", "Nintendo Switch 2", "PlayStation 5"],
+    )
+    index = link.build_index([older])
+    body = "---\ntitle: t\n---\n\n## What happened\n\nThe Nintendo Switch 2 is the console to beat, and PlayStation 5 trails it.\n"
+    result = link.add_links(body, index, self_id="poe", now=NOW)
+    assert [item["id"] for item in result.links] == ["sw2"] and result.links[0]["term"] == "Nintendo Switch 2"
+    assert "[PlayStation 5]" not in result.article
+
+
+def test_related_articles_still_use_every_listed_entity():
+    # Linking is narrow, but "related articles" may rank on any shared entity.
+    older = article("dd2", "Dragon's Dogma 2 adds a collaboration", "gaming-news", "2026-10-01T12:00:00+00:00", ["PlayStation 5"])
+    newer = article("poe", "Path of Exile 2 launches in December", "gaming-news", "2026-11-05T12:00:00+00:00", ["PlayStation 5"])
+    index = link.build_index([older, newer])
+    assert [r["id"] for r in link.select_related(index, "poe", now=NOW + dt.timedelta(days=40))] == ["dd2"]
+
+
+def test_everyday_capitalized_stopwords_and_short_words_are_not_keywords():
+    assert link._keywords("Update on News With Many PS5 Pro Changes") == ["changes"]

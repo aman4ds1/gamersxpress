@@ -75,12 +75,34 @@ class LinkResult:
 # --- index -------------------------------------------------------------------
 
 
+#: Month and weekday names are capitalized in a title but are never a topic to link on.
+_CALENDAR = frozenset(
+    {
+        "january", "february", "march", "april", "june", "july", "august", "september",
+        "october", "november", "december", "monday", "tuesday", "wednesday", "thursday",
+        "friday", "saturday", "sunday",
+    }
+)
+
+
 def _keywords(title: str) -> list[str]:
+    """Proper nouns from a title: the words worth linking another article on.
+
+    Titles are written in sentence case, so a capitalized word after the first is
+    a proper noun ("Dogma", "Dungeon", "Switch") and a lowercase word is not.
+    Everyday words in a headline ("adds", "price", "launches", "collaboration")
+    used to be keywords too, which turned a word like "adds" in an unrelated
+    article into a link. The first word is skipped because every title capitalizes
+    it; names there are covered by the article's entities. Months, weekdays and
+    numbers are never keywords.
+    """
     seen: set[str] = set()
     out: list[str] = []
-    for word in _WORD_RE.findall(title or ""):
+    for position, word in enumerate(_WORD_RE.findall(title or "")):
         key = word.lower()
-        if len(key) < 4 or key in _STOPWORDS or key in seen:
+        if position == 0 or not word[0].isupper():
+            continue
+        if len(key) < 4 or key in _STOPWORDS or key in _CALENDAR or key in seen:
             continue
         seen.add(key)
         out.append(key)
@@ -226,13 +248,26 @@ def _in_spans(start: int, end: int, spans: list[tuple[int, int]]) -> bool:
     return any(start < span_end and end > span_start for span_start, span_end in spans)
 
 
+def _about(entity: str, title: str) -> bool:
+    """Whether an article's headline is about ``entity``: at least half its words are in the title.
+
+    An article lists every platform and product it mentions as an entity ("PlayStation 5",
+    "Xbox Series X"), but only the ones its headline names are what it is *about*. Linking the
+    phrase "PlayStation 5" in any article to a story that merely lists it sent readers to
+    unrelated pages.
+    """
+    wanted = [word.lower() for word in _WORD_RE.findall(entity or "")]
+    present = {word.lower() for word in _WORD_RE.findall(title or "")}
+    return bool(wanted) and 2 * sum(1 for word in wanted if word in present) >= len(wanted)
+
+
 def _candidates(index: dict, self_id: str, now: dt.datetime) -> list[tuple[str, dict]]:
     records = {record["id"]: record for record in index.get("articles") or []}
     pairs: list[tuple[str, dict]] = []
     for term in sorted(index.get("by_entity") or {}, key=len, reverse=True):
         for article_id in index["by_entity"][term]:
             record = records.get(article_id)
-            if record and _eligible(record, self_id, now):
+            if record and _eligible(record, self_id, now) and _about(term, record.get("title", "")):
                 pairs.append((term, record))
     for term in sorted(index.get("by_keyword") or {}, key=len, reverse=True):
         for article_id in index["by_keyword"][term]:
