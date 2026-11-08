@@ -1012,6 +1012,23 @@ def run(
             # those, the draft is verified again, and the gates run again. A failure
             # no sentence is behind (a thin section, a missing source) is not
             # repairable and rejects the draft as before.
+            # Thin sections first: fold each into a neighbour (no model call, nothing lost).
+            if (
+                not gate_result.passed and gate_repair
+                and any(str(failure).startswith("thin section:") for failure in gate_result.failures)
+            ):
+                folded_draft, folded_headings = gaterepair_stage.fold_draft(draft)
+                if folded_headings:
+                    folded_linked = link_fn(folded_draft, index, self_id=slug, now=now)
+                    folded_article = publish_stage.assemble_article(_body_of(folded_linked.article), front)
+                    with timings.stage("gates"):
+                        folded_result = run_gates(folded_article, verify_report)
+                    logger.info(
+                        "thin sections folded into their neighbours (%s): gates %s",
+                        "; ".join(folded_headings), "passed" if folded_result.passed else "still fail",
+                    )
+                    draft, article, gate_result = folded_draft, folded_article, folded_result
+
             if not gate_result.passed and gate_repair:
                 _draft_front, draft_body = gates_stage.parse_front_matter(draft)
                 requests, unfixable = gaterepair_stage.repair_requests(

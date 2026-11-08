@@ -93,3 +93,88 @@ def repair_requests(
         for sentence, reason in found:
             requests.setdefault(sentence, reason)
     return [{"clause": sentence, "reason": reason} for sentence, reason in requests.items()], unfixable
+
+
+# --- thin sections ------------------------------------------------------------------------------
+#
+# A thin section (under two sentences or 40 words) means the facts for it were thin, and padding
+# it would invite claims the sources do not make. The gates require no particular headings, only
+# that every heading earns its place, so a thin section is folded into a neighbour: nothing is
+# lost and no model call is needed.
+
+_H2_LINE_RE = re.compile(r"^\s{0,3}##\s+(.+?)\s*$")
+_FENCE_RE = re.compile(r"^\s*```")
+_FRONT_MATTER_RE = re.compile(r"\A(\s*---\n.*?\n---\n)(.*)\Z", re.DOTALL)
+
+
+def _is_thin(lines: list[str], min_sentences: int, min_words: int) -> bool:
+    text = "\n".join(lines)
+    return len(gates._sentences(text)) < min_sentences or gates._count_words(text) < min_words
+
+
+def fold_thin_sections(body: str, *, min_sentences: int = 2, min_words: int = 40) -> tuple[str, list[str]]:
+    """``(body, folded headings)``: thin ``##`` sections merged into a neighbour.
+
+    A thin section followed by another thin section keeps its heading and absorbs
+    it, so two short sections become one that clears the minimum. Otherwise it is
+    folded into the section before it (its heading dropped). A thin *first*
+    section loses its heading and becomes the introduction. The text of every
+    section is kept, in order.
+    """
+    preface: list[str] = []
+    sections: list[dict] = []
+    current: dict | None = None
+    in_fence = False
+    for line in (body or "").splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+        if not in_fence and _H2_LINE_RE.match(line):
+            current = {"head": line, "lines": []}
+            sections.append(current)
+            continue
+        (current["lines"] if current else preface).append(line)
+
+    def trim(lines: list[str]) -> list[str]:
+        start, end = 0, len(lines)
+        while start < end and not lines[start].strip():
+            start += 1
+        while end > start and not lines[end - 1].strip():
+            end -= 1
+        return lines[start:end]
+
+    def join(first: list[str], second: list[str]) -> list[str]:
+        first, second = trim(first), trim(second)
+        return [*first, "", *second] if first and second else [*first, *second]
+
+    folded: list[str] = []
+    while True:
+        index = next((i for i, sec in enumerate(sections) if _is_thin(sec["lines"], min_sentences, min_words)), None)
+        if index is None:
+            break
+        section = sections[index]
+        if index + 1 < len(sections) and _is_thin(sections[index + 1]["lines"], min_sentences, min_words):
+            absorbed = sections.pop(index + 1)
+            section["lines"] = join(section["lines"], absorbed["lines"])
+            folded.append(_H2_LINE_RE.match(absorbed["head"]).group(1))
+        elif index > 0:
+            sections.pop(index)
+            sections[index - 1]["lines"] = join(sections[index - 1]["lines"], section["lines"])
+            folded.append(_H2_LINE_RE.match(section["head"]).group(1))
+        else:
+            sections.pop(index)
+            preface = join(preface, section["lines"])
+            folded.append(_H2_LINE_RE.match(section["head"]).group(1))
+    if not folded:
+        return body, []
+    out: list[str] = trim(preface)
+    for sec in sections:
+        out += ["", sec["head"], "", *trim(sec["lines"])] if out else [sec["head"], "", *trim(sec["lines"])]
+    return "\n".join(out) + "\n", folded
+
+
+def fold_draft(draft: str, *, min_sentences: int = 2, min_words: int = 40) -> tuple[str, list[str]]:
+    """:func:`fold_thin_sections` on a draft with its front matter left untouched."""
+    match = _FRONT_MATTER_RE.match(draft or "")
+    head, body = (match.group(1), match.group(2)) if match else ("", draft or "")
+    folded_body, folded = fold_thin_sections(body, min_sentences=min_sentences, min_words=min_words)
+    return (head + folded_body if folded else draft), folded

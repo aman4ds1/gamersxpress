@@ -1817,3 +1817,70 @@ def test_a_clean_article_never_triggers_a_gate_repair(tmp_path):
     rig = GateRig()
     result = run_once(tmp_path, dry_run=True, scenario="pass", repair_fn=rig.repair)
     assert result.status == "completed" and rig.repairs == []
+
+
+# --- thin sections are folded before any model repair --------------------------------------------
+
+THIN = "thin section: Why gamers should care (needs at least 2 sentences and 40 words; has 2 and 26)"
+
+
+class ThinRig:
+    """Gates fail the first article on a thin section; the fold is faked to return a known draft."""
+
+    def __init__(self, monkeypatch, *, headings=("Why gamers should care",), second_passes=True):
+        self.articles, self.fold_calls = [], []
+        self.second_passes = second_passes
+        self.real = run_module.gates_stage.run_gates
+
+        def fold(draft, **kwargs):
+            self.fold_calls.append(draft)
+            return (draft + "\n<!-- folded -->\n", list(headings)) if headings else (draft, [])
+
+        monkeypatch.setattr(run_module.gaterepair_stage, "fold_draft", fold)
+
+    def gates(self, article, **kwargs):
+        self.articles.append(article)
+        if len(self.articles) == 1:
+            return gates_module.GateResult(passed=False, failures=[THIN])
+        return self.real(article, **kwargs) if self.second_passes else gates_module.GateResult(passed=False, failures=["still failing"])
+
+
+def test_a_thin_section_failure_folds_the_draft_and_runs_the_gates_again_without_a_model_repair(tmp_path, monkeypatch):
+    rig = ThinRig(monkeypatch)
+    repaired = []
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates,
+                      repair_fn=lambda *a, **k: repaired.append(1))
+    assert result.status == "completed" and repaired == []
+    assert len(rig.fold_calls) == 1 and len(rig.articles) == 2
+    assert "<!-- folded -->" not in rig.articles[0] and "<!-- folded -->" in rig.articles[1]
+
+
+def test_the_fold_is_not_tried_for_other_failures(tmp_path, monkeypatch):
+    rig = ThinRig(monkeypatch)
+    rig.gates = lambda article, **kw: (rig.articles.append(article), gates_module.GateResult(passed=False, failures=["body has 61 words (min 200)"]))[1]
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates)
+    assert result.status == "failed" and rig.fold_calls == []
+
+
+def test_when_nothing_could_be_folded_the_gates_are_not_run_again(tmp_path, monkeypatch):
+    rig = ThinRig(monkeypatch, headings=())
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, repair_fn=lambda *a, **k: None)
+    assert result.status == "failed" and len(rig.fold_calls) == 1 and len(rig.articles) == 1
+    assert result.report["failures"] == [THIN]
+
+
+def test_a_fold_that_still_fails_reports_the_new_failures(tmp_path, monkeypatch):
+    rig = ThinRig(monkeypatch, second_passes=False)
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, repair_fn=lambda *a, **k: None)
+    assert result.status == "failed" and result.report["failures"] == ["still failing"]
+    assert len(rig.articles) == 2
+
+
+def test_the_fold_follows_the_gate_repair_switch(tmp_path, monkeypatch):
+    config = yaml.safe_load((Path(run_module.__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8"))
+    config["safety"]["gate_repair"] = False
+    path = tmp_path / "config-off.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    rig = ThinRig(monkeypatch)
+    result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, config_path=path)
+    assert result.status == "failed" and rig.fold_calls == []

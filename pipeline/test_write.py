@@ -1041,3 +1041,9 @@ def test_the_repair_prompt_still_has_its_placeholders_and_numbered_rules():
         assert token in template
     numbers = [int(match) for match in re.findall(r"^(\d+)\. ", template, re.MULTILINE)]
     assert numbers == list(range(1, len(numbers) + 1))
+
+
+def test_the_writer_prompt_tells_the_model_to_fold_a_short_section_instead_of_writing_it():
+    template = Path(write_module.DEFAULT_PROMPT_PATH).read_text(encoding="utf-8")
+    assert "Every `##` section needs at least two sentences and 40 words" in template
+    assert "fold what you have into another section instead of writing a short one" in template
