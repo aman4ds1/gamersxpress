@@ -123,6 +123,14 @@ export function checkArticle(article) {
       if (typeof hero.src === 'string' && hero.src !== '' && !HERO_SRC.test(hero.src)) {
         issues.push(`hero.src must be a local /images/<name>.webp file, not ${hero.src}`);
       }
+      if (hero.title !== undefined && (typeof hero.title !== 'string' || hero.title.length > 200)) {
+        issues.push('hero.title must be a string of at most 200 characters');
+      }
+      for (const key of ['licenseUrl', 'sourceUrl']) {
+        if (hero[key] !== undefined && !(typeof hero[key] === 'string' && hero[key].startsWith('https://'))) {
+          issues.push(`hero.${key} must be an https link`);
+        }
+      }
     }
   }
 

@@ -1457,3 +1457,19 @@ images:
     enabled: true
     max_queries: 3
     timeout_seconds: 10
+  # Automatic Wikimedia Commons photos for hardware stories (pipeline/commons.py). Strict on
+  # purpose: the Commons category must be named exactly like the product in the headline and sit
+  # under a hardware category, the photo must name the product itself, and its license must be CC0,
+  # public domain, CC BY or CC BY-SA with a named author. Set share_alike to false to use only
+  # public domain, CC0 and CC BY photos.
+  commons:
+    enabled: true
+    categories:
+      - hardware
+      - tech
+    share_alike: true
+    min_width: 1200
+    max_files: 40
+    max_candidates: 5
+    max_queries: 3
+    timeout_seconds: 10

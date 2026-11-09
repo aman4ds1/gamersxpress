@@ -1934,9 +1934,9 @@ def sample_jpeg(width=1600, height=700):
 def image_step(*, license="Steam store", write=True, calls=None, result=True):
     """An image_fn that stages a real picture the way the Steam step does."""
 
-    def image_fn(*, title, entities, slug, public_dir):
+    def image_fn(*, title, entities, slug, public_dir, category=None):
         if calls is not None:
-            calls.append({"title": title, "entities": entities, "slug": slug, "public_dir": public_dir})
+            calls.append({"title": title, "entities": entities, "slug": slug, "public_dir": public_dir, "category": category})
         if not result:
             return None
         path = images_module.Path(public_dir) / "images" / f"{slug}.webp"
@@ -1967,7 +1967,7 @@ def test_the_image_step_is_told_the_headline_the_entities_the_slug_and_a_staging
     calls = []
     run_once(tmp_path, dry_run=True, scenario="pass", image_fn=image_step(calls=calls))
     assert len(calls) == 1 and calls[0]["slug"] == dryrun.SAMPLE_SLUG
-    assert calls[0]["title"] and isinstance(calls[0]["entities"], list)
+    assert calls[0]["title"] and isinstance(calls[0]["entities"], list) and calls[0]["category"]
     assert not calls[0]["public_dir"].exists()   # the staging folder is removed once the run is over
 
 
@@ -2005,6 +2005,44 @@ def test_a_dry_run_never_looks_up_a_picture_on_the_network(tmp_path, monkeypatch
     assert run_once(tmp_path, dry_run=True, scenario="pass").status == "completed"
 
 
-def test_the_default_image_step_is_the_steam_lookup_outside_a_dry_run():
-    assert run_module.default_image_fn(False) is run_module.steam_stage.find_hero
+def test_the_default_image_step_is_the_steam_then_commons_lookup_outside_a_dry_run():
+    assert run_module.default_image_fn(False) is run_module.find_any_hero
     assert run_module.default_image_fn(True) is run_module._no_image and run_module._no_image(title="x") is None
+
+
+# --- Steam first, then Commons ---------------------------------------------------------------------------------
+
+
+def stub_steps(monkeypatch, steam_result, commons_result):
+    seen = {"steam": [], "commons": []}
+
+    def steam_find(**kwargs):
+        seen["steam"].append(kwargs)
+        return steam_result
+
+    def commons_find(**kwargs):
+        seen["commons"].append(kwargs)
+        return commons_result
+
+    monkeypatch.setattr(run_module.steam_stage, "find_hero", steam_find)
+    monkeypatch.setattr(run_module.commons_stage, "find_hero", commons_find)
+    return seen
+
+
+def test_a_story_steam_has_art_for_never_asks_commons(monkeypatch):
+    seen = stub_steps(monkeypatch, {"hero": {"license": "Steam store"}}, {"hero": {"license": "CC0"}})
+    result = run_module.find_any_hero(title="t", entities=["e"], slug="s", public_dir="p", category="pc")
+    assert result["hero"]["license"] == "Steam store" and seen["commons"] == []
+    assert seen["steam"] == [{"title": "t", "entities": ["e"], "slug": "s", "public_dir": "p"}]
+
+
+def test_a_story_steam_has_nothing_for_gets_the_commons_photo_with_its_category(monkeypatch):
+    seen = stub_steps(monkeypatch, None, {"hero": {"license": "CC BY 4.0"}})
+    result = run_module.find_any_hero(title="t", entities=["e"], slug="s", public_dir="p", category="hardware")
+    assert result["hero"]["license"] == "CC BY 4.0"
+    assert seen["commons"] == [{"title": "t", "entities": ["e"], "slug": "s", "public_dir": "p", "category": "hardware"}]
+
+
+def test_when_neither_has_a_picture_there_is_none(monkeypatch):
+    stub_steps(monkeypatch, None, None)
+    assert run_module.find_any_hero(title="t", entities=[], slug="s", public_dir="p") is None

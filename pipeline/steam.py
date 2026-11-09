@@ -168,6 +168,8 @@ def match_game(items: list[dict], title: str, entities: list[str] | None = None)
         tokens = normalize(item.get("name"))
         if not tokens or not _contains(title_tokens, tokens):
             continue
+        if images_stage.continues_as_another_model(title_tokens, tokens):
+            continue  # "Alan Wake" in "Alan Wake 3 announced" is an earlier game, not the one in the news
         if len(tokens) == 1 and tokens not in names:
             continue
         if best is None or len(tokens) > best[0]:

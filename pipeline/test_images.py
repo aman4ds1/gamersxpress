@@ -288,3 +288,62 @@ def test_add_hero_without_a_source_link_leaves_that_field_out(tmp_path):
     hero = images.add_hero(make_article(tmp_path), tmp_path / "photo.jpg", alt="A person holding a console", credit="Me",
                            license="Own work", public_dir=tmp_path / "public")
     assert "sourceUrl" not in hero
+
+
+# --- title and license link (Creative Commons credits) ------------------------------------------------
+
+
+def test_a_license_link_must_point_at_creative_commons(tmp_path):
+    ok = hero_for(tmp_path, licenseUrl="https://creativecommons.org/licenses/by-sa/4.0/")
+    assert images.hero_failures(ok, tmp_path) == []
+    for bad in ("http://creativecommons.org/licenses/by/4.0/", "https://evil.example/by/4.0/", "creativecommons.org/x"):
+        assert any("licenseUrl" in f for f in images.hero_failures(hero_for(tmp_path, licenseUrl=bad), tmp_path)), bad
+
+
+def test_a_work_title_must_be_short_text(tmp_path):
+    assert images.hero_failures(hero_for(tmp_path, title="PlayStation 5 console"), tmp_path) == []
+    for bad in ("", "   ", "x" * 201, 5):
+        assert any("hero.title" in f for f in images.hero_failures(hero_for(tmp_path, title=bad), tmp_path)), repr(bad)
+
+
+def test_add_hero_can_record_a_title_and_a_license_link(tmp_path):
+    hero = images.add_hero(make_article(tmp_path), tmp_path / "photo.jpg", alt="A console on a table", credit="Jane Doe",
+                           license="CC BY-SA 4.0", title="Console photo", license_url="https://creativecommons.org/licenses/by-sa/4.0/",
+                           source_url="https://commons.wikimedia.org/wiki/File:Console.jpg", public_dir=tmp_path / "public")
+    assert hero["title"] == "Console photo" and hero["licenseUrl"].endswith("/by-sa/4.0/")
+    assert list(hero)[:6] == ["src", "alt", "credit", "license", "licenseUrl", "title"]
+
+
+def test_the_command_accepts_the_title_and_license_link(tmp_path, capsys):
+    path = make_article(tmp_path)
+    code = images.main(["add", "--article", str(path), "--file", str(tmp_path / "photo.jpg"), "--alt", "A console on a table",
+                        "--credit", "Jane Doe", "--license", "CC BY 4.0", "--title", "Console photo",
+                        "--license-url", "https://creativecommons.org/licenses/by/4.0/", "--public-dir", str(tmp_path / "public")])
+    assert code == 0 and front_of(path.read_text(encoding="utf-8"))["hero"]["title"] == "Console photo"
+
+
+# --- a name that is the start of a longer model name ----------------------------------------------------------
+
+TOKENS = ["steam", "deck", "2", "teased"]
+
+
+def test_a_name_followed_by_a_number_or_a_model_word_continues_as_another_model():
+    assert images.continues_as_another_model(TOKENS, ["steam", "deck"])
+    assert images.continues_as_another_model(["alan", "wake", "ii", "out"], ["alan", "wake"])
+    assert images.continues_as_another_model(["ps5", "pro", "price"], ["ps5"], images.HARDWARE_MODEL_WORDS)
+    assert images.continues_as_another_model(["geforce", "rtx", "5090", "ti"], ["geforce", "rtx", "5090"], images.HARDWARE_MODEL_WORDS)
+
+
+def test_a_name_followed_by_anything_else_or_nothing_does_not():
+    assert not images.continues_as_another_model(["steam", "deck", "stock", "runs", "out"], ["steam", "deck"])
+    assert not images.continues_as_another_model(["valve", "steam", "deck"], ["steam", "deck"])
+    assert not images.continues_as_another_model(["alan", "wake", "pro", "tips"], ["alan", "wake"])      # games: numerals only
+    assert not images.continues_as_another_model(TOKENS, ["steam", "deck", "2"])
+    # A number elsewhere in the headline is not a model number for the name.
+    assert not images.continues_as_another_model(["steam", "deck", "stock", "shipped", "2", "million"], ["steam", "deck"])
+    assert not images.continues_as_another_model([], ["a"]) and not images.continues_as_another_model(["a"], [])
+    assert not images.continues_as_another_model(["a"], ["a", "b"])
+
+
+def test_one_later_occurrence_followed_by_a_model_word_is_enough_to_refuse():
+    assert images.continues_as_another_model(["steam", "deck", "stock", "and", "steam", "deck", "2"], ["steam", "deck"])

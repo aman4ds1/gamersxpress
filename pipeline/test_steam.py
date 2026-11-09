@@ -107,7 +107,8 @@ def test_names_are_compared_without_case_apostrophes_trademarks_or_accents():
 def test_the_game_whose_name_is_in_the_headline_wins_and_the_longest_name_beats_a_prefix():
     items = [{"id": 1, "name": "Path of Exile"}, {"id": 2, "name": "Path of Exile 2"}, {"id": 3, "name": "Exile Tales"}]
     assert steam.match_game(items, TITLE, ENTITIES)["id"] == 2
-    assert steam.match_game(items[:1], TITLE, ENTITIES)["id"] == 1
+    # With the sequel missing from the results, its prefix is an earlier game, not the one in the news.
+    assert steam.match_game(items[:1], TITLE, ENTITIES) is None
 
 
 def test_a_game_whose_name_is_not_in_the_headline_is_not_matched():
@@ -119,7 +120,8 @@ def test_a_game_whose_name_is_not_in_the_headline_is_not_matched():
 def test_a_one_word_name_must_be_a_proper_name_the_headline_stands_on():
     control = [{"id": 1, "name": "Control"}]
     assert steam.match_game(control, "Remedy wants more control over Alan Wake 2 sales", ["Remedy"]) is None
-    assert steam.match_game(control, "Control 2 gets a release window", ["Control"])["id"] == 1
+    assert steam.match_game(control, "Control gets a release window", ["Control"])["id"] == 1
+    assert steam.match_game(control, "Control 2 gets a release window", ["Control"]) is None
 
 
 def test_the_apostrophe_a_headline_loses_does_not_stop_a_match():
@@ -382,3 +384,34 @@ def test_the_command_is_runnable_as_a_module():
     root = Path(steam.__file__).resolve().parent.parent
     result = subprocess.run([sys.executable, "-m", "pipeline.steam", "check", "--help"], cwd=root, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0 and "headline" in result.stdout
+
+
+# --- an earlier game is never used for a sequel's story --------------------------------------------------
+
+
+@pytest.mark.parametrize("title,name", [
+    ("Alan Wake 3 announced for 2027", "Alan Wake"),
+    ("Dragon's Dogma 2 adds a collaboration", "Dragon's Dogma"),
+    ("Final Fantasy VII Rebirth gets a PC date", "Final Fantasy"),
+    ("Hades II leaves early access", "Hades"),
+    ("Resident Evil 9 shows gameplay", "Resident Evil"),
+])
+def test_a_game_whose_name_is_only_the_start_of_a_longer_title_is_not_matched(title, name):
+    assert steam.match_game([{"id": 1, "name": name}], title, [name]) is None
+
+
+def test_the_sequel_itself_still_matches_and_so_does_the_game_when_it_is_the_subject():
+    assert steam.match_game([{"id": 1, "name": "Alan Wake"}, {"id": 2, "name": "Alan Wake 3"}], "Alan Wake 3 announced for 2027")["id"] == 2
+    assert steam.match_game([{"id": 1, "name": "Alan Wake"}], "Alan Wake gets a new update on Steam")["id"] == 1
+    assert steam.match_game([{"id": 1, "name": "Alan Wake"}], "Alan Wake: the remedy for fans", ["Alan Wake"])["id"] == 1
+
+
+def test_a_story_about_a_sequel_steam_does_not_have_gets_no_hero(tmp_path):
+    fake = Fake({
+        search_url("Alan Wake 3"): search_json((5, "Alan Wake")),
+        search_url("Alan Wake"): search_json((5, "Alan Wake")),
+        steam.DETAILS_URL.format(app_id=5): details_json(5, name="Alan Wake"),
+        steam.LIBRARY_HERO_URL.format(app_id=5): (200, "image/jpeg", jpg()),
+    })
+    assert find(fake, tmp_path, title="Alan Wake 3 announced for 2027", entities=["Alan Wake 3"]) is None
+    assert not any("appdetails" in url for url in fake.calls)

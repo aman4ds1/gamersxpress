@@ -28,6 +28,9 @@ const articles = defineCollection({
           alt: z.string().min(10),
           credit: z.string().min(2),
           license: z.string().min(2),
+          // For Creative Commons pictures: the work's title and a link to the license text.
+          title: z.string().max(200).optional(),
+          licenseUrl: z.url().optional(),
           sourceUrl: z.url().optional(),
           width: z.number().int().positive(),
           height: z.number().int().positive(),

@@ -71,6 +71,9 @@ calls and no keys.
 - **Strict matching.** The Steam app's name must appear in the headline as a whole phrase, it must
   be a game (not DLC, a demo, a soundtrack or a bundle), and it must not carry an adult-only
   sexual-content descriptor. A one-word game name must also be a proper name the headline stands on.
+- **Never an earlier game.** A name that is only the start of a longer title in the headline is
+  refused: "Alan Wake" is not used for "Alan Wake 3 announced", and "Dragon's Dogma" is not used for
+  "Dragon's Dogma 2" if the sequel is not on Steam.
 - **Best picture first.** The wide library art, then up to three screenshots, then the page
   backdrop; the first one that is at least 800 px wide is used.
 - **Never in the way.** If there is no match, no usable picture or a network problem, the article is
@@ -115,6 +118,55 @@ request contains `public/images/<slug>.webp`.
 If a story about a Steam game has no picture, run the command from step 1 with that article's
 headline and send me the output.
 
-## Planned
+## Automatic Wikimedia Commons photos (hardware stories)
 
-Automatic Wikimedia Commons images for hardware stories.
+When a story in the hardware or tech category names a product that has its own category on
+Wikimedia Commons (for example "PlayStation 5 Pro" or "Steam Deck"), a freely licensed photo from
+that category is attached as the hero. Steam is tried first, then Commons. The credit line is the one
+Creative Commons asks for: the photo's title, its author (linked to the Commons page) and the
+license (linked to the license text).
+
+It is deliberately strict, because a wrong picture is worse than none:
+
+- **The category must be named exactly like the product** in the headline and sit under a hardware
+  parent (consoles, controllers, graphics cards...). "Nintendo Switch 2" never finds the original
+  Switch's photos.
+- **Never an older model.** A name followed by a number or model word in the headline ("Steam Deck"
+  in "Steam Deck 2 teased", "PlayStation 5" in "PlayStation 5 Pro") is not looked up.
+- **The photo must name the product itself:** every word of the product name must be in the photo's
+  file title or description.
+- **Licenses:** public domain, CC0, CC BY and CC BY-SA, with a named author (except public domain
+  and CC0). No NonCommercial or NoDerivatives licenses, no ported versions, nothing with a
+  personality-rights restriction.
+- **Plain photos only:** at least 1200 px wide, and not a logo, diagram, render, toy, cosplay, poster
+  or box shot.
+- **Safe fetching:** only Wikimedia's own https hosts, no redirects, nothing over 8 MB.
+- **Never in the way:** no match, no suitable photo or a network problem means no picture. A dry run
+  never contacts Wikimedia.
+
+Settings are in `pipeline/config.yaml` under `images.commons`: `enabled`, `categories` (which article
+categories may get a photo), and `share_alike` (set it to `false` to use only public domain, CC0 and
+CC BY photos).
+
+### Check that the Commons photos work
+
+```powershell
+python -m pipeline.commons check "PlayStation 5 Pro price rises in Europe" --entity "PlayStation 5 Pro"
+```
+
+It prints every step (which category it looked for, how many photos it found, why each unsuitable
+one was skipped) and ends with `RESULT: working`, `RESULT: no photo for this headline` or
+`RESULT: Wikimedia Commons could not be reached` (exit codes 0, 1 and 2). Try a console or
+graphics-card headline that should find photos and one about a game that should not. Pass
+`--category` to test another category.
+
+Not every product has a Commons category with good photos, so many hardware stories will get no
+picture. That is intended. You can always add one by hand (see above), including the new `--title`
+and `--license-url` flags for Creative Commons credits:
+
+```powershell
+python -m pipeline.images add --article src\content\articles\<slug>.md --file photo.jpg `
+  --alt "A PlayStation 5 Pro console" --credit "Jane Doe" --license "CC BY-SA 4.0" `
+  --title "PlayStation 5 Pro console" --license-url https://creativecommons.org/licenses/by-sa/4.0/ `
+  --source-url https://commons.wikimedia.org/wiki/File:Example.jpg
+```

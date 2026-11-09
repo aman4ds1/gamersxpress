@@ -36,6 +36,9 @@ CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 #: Where a hero file may live, relative to the site root; also the shape of ``hero.src``.
 SRC_RE = re.compile(r"^/images/[a-z0-9][a-z0-9-]*\.webp$")
 MIN_ALT_CHARS = 10
+MAX_TITLE_CHARS = 200
+#: The only place a ``licenseUrl`` may point: the Creative Commons license texts.
+LICENSE_URL_PREFIX = "https://creativecommons.org/"
 
 DEFAULTS: dict[str, Any] = {
     "allowed_licenses": [
@@ -47,6 +50,34 @@ DEFAULTS: dict[str, Any] = {
     "max_bytes": 400_000,
     "quality": 82,
 }
+
+
+#: Roman numerals that follow a game's name as a sequel number.
+ROMAN_NUMERALS = frozenset({"ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"})
+#: Words that follow a hardware product's name to make it a different model.
+HARDWARE_MODEL_WORDS = frozenset({
+    "pro", "slim", "oled", "lite", "mini", "max", "ultra", "plus", "super", "xl", "digital", "edition", "ti", "xt", "s", "x",
+}) | ROMAN_NUMERALS
+
+
+def continues_as_another_model(title_tokens: list[str], needle: list[str], words: frozenset[str] = ROMAN_NUMERALS) -> bool:
+    """Whether ``needle`` appears in the headline immediately followed by a number or a model word.
+
+    "Steam Deck" in "Steam Deck 2 teased" is the older sibling of what the headline is about, and
+    "Alan Wake" in "Alan Wake 3 announced" is an earlier game. A picture of that product would
+    mislead, so a name that is the beginning of a longer model name is not used. ``words`` are the
+    non-number words that count as a model suffix (roman numerals for games, plus Pro/Slim/OLED...
+    for hardware); any digit-only token always counts.
+    """
+    if not needle or len(needle) > len(title_tokens):
+        return False
+    for index in range(len(title_tokens) - len(needle) + 1):
+        if title_tokens[index : index + len(needle)] != needle:
+            continue
+        following = title_tokens[index + len(needle)] if index + len(needle) < len(title_tokens) else None
+        if following is not None and (following.isdigit() or following in words):
+            return True
+    return False
 
 
 class ImageError(ValueError):
@@ -151,6 +182,12 @@ def hero_failures(hero: Any, public_dir: str | Path | None = None, settings: dic
     source_url = hero.get("sourceUrl")
     if source_url and not str(source_url).startswith("https://"):
         failures.append("hero.sourceUrl must be an https link")
+    license_url = hero.get("licenseUrl")
+    if license_url and not str(license_url).startswith(LICENSE_URL_PREFIX):
+        failures.append(f"hero.licenseUrl must be a link to {LICENSE_URL_PREFIX}")
+    work_title = hero.get("title")
+    if work_title is not None and (not isinstance(work_title, str) or not work_title.strip() or len(work_title) > MAX_TITLE_CHARS):
+        failures.append(f"hero.title must be a short text (at most {MAX_TITLE_CHARS} characters)")
     if src and SRC_RE.match(src):
         path = Path(public_dir or PUBLIC_DIR) / src.lstrip("/")
         if not path.is_file():
@@ -180,6 +217,8 @@ def add_hero(
     credit: str,
     license: str,
     source_url: str | None = None,
+    title: str | None = None,
+    license_url: str | None = None,
     public_dir: str | Path | None = None,
     settings: dict | None = None,
 ) -> dict[str, Any]:
@@ -194,6 +233,10 @@ def add_hero(
     root = Path(public_dir or PUBLIC_DIR)
     info = process_image(file, root / "images" / f"{slug}.webp", settings=cfg)
     hero: dict[str, Any] = {"src": f"/images/{slug}.webp", "alt": alt.strip(), "credit": credit.strip(), "license": license.strip()}
+    if license_url:
+        hero["licenseUrl"] = license_url.strip()
+    if title:
+        hero["title"] = title.strip()
     if source_url:
         hero["sourceUrl"] = source_url.strip()
     hero.update(width=info["width"], height=info["height"])
@@ -215,12 +258,14 @@ def main(argv: list[str] | None = None) -> int:
     add.add_argument("--credit", required=True, help="who to credit, e.g. 'Nintendo' or 'Jane Doe'")
     add.add_argument("--license", required=True, help="one of the allowed licenses in config.yaml")
     add.add_argument("--source-url", default=None, help="where the picture came from (https)")
+    add.add_argument("--title", default=None, help="the work's title, for Creative Commons credits")
+    add.add_argument("--license-url", default=None, help="link to the Creative Commons license text")
     add.add_argument("--public-dir", default=None, help="the site's public folder (default: ./public)")
     args = parser.parse_args(argv)
     try:
         hero = add_hero(
             args.article, args.file, alt=args.alt, credit=args.credit, license=args.license,
-            source_url=args.source_url, public_dir=args.public_dir,
+            source_url=args.source_url, title=args.title, license_url=args.license_url, public_dir=args.public_dir,
         )
     except (ImageError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)

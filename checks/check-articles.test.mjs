@@ -186,3 +186,10 @@ test('a hero that is not an object is refused', () => {
   const result = checkArticle(parseArticle(raw, 'sample-article'));
   assert.match(result.issues.join(' '), /hero must be an object/);
 });
+
+test('hero title and links are checked when present', () => {
+  assert.deepEqual(withHero(GOOD_HERO + '\n  title: A photo of a console\n  licenseUrl: https://creativecommons.org/licenses/by/4.0/\n  sourceUrl: https://commons.wikimedia.org/wiki/File:X.jpg').issues, []);
+  assert.match(withHero(GOOD_HERO + '\n  licenseUrl: http://creativecommons.org/licenses/by/4.0/').issues.join(' '), /hero\.licenseUrl must be an https link/);
+  assert.match(withHero(GOOD_HERO + '\n  sourceUrl: not-a-link').issues.join(' '), /hero\.sourceUrl must be an https link/);
+  assert.match(withHero(GOOD_HERO + '\n  title: ' + 'x'.repeat(201)).issues.join(' '), /hero\.title must be a string/);
+});

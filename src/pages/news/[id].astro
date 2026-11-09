@@ -93,6 +93,7 @@ const topicLinks = article.data.entities
             />
             <figcaption class="gx-mono mt-2 text-[11px] tracking-wider text-ink-muted">
               Image:{' '}
+              {hero.title && <>“{hero.title}” by{' '}</>}
               {
                 hero.sourceUrl ? (
                   <a href={hero.sourceUrl} target="_blank" rel="noopener noreferrer" class="underline underline-offset-2 hover:text-ink">
@@ -103,7 +104,15 @@ const topicLinks = article.data.entities
                 )
               }
               {' · '}
-              {hero.license}
+              {
+                hero.licenseUrl ? (
+                  <a href={hero.licenseUrl} target="_blank" rel="noopener noreferrer" class="underline underline-offset-2 hover:text-ink">
+                    {hero.license}
+                  </a>
+                ) : (
+                  hero.license
+                )
+              }
             </figcaption>
           </figure>
         )

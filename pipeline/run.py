@@ -60,6 +60,7 @@ if str(_PIPELINE_DIR) not in sys.path:
 
 import cluster
 import cover as cover_stage
+import commons as commons_stage
 import steam as steam_stage
 import dryrun as dryrun_stage
 import facts as facts_stage
@@ -415,9 +416,22 @@ def _no_image(**_kwargs: Any) -> None:
     return None
 
 
+def find_any_hero(
+    *, title: str, entities: list[str], slug: str, public_dir: Path, category: str | None = None,
+) -> dict | None:
+    """A picture for the story: Steam key art when it is about a PC game, else a Wikimedia Commons
+    photo when it is about a hardware product. Each step is strict and returns None when unsure."""
+    hero = steam_stage.find_hero(title=title, entities=entities, slug=slug, public_dir=public_dir)
+    if hero is None:
+        hero = commons_stage.find_hero(
+            title=title, entities=entities, slug=slug, public_dir=public_dir, category=category,
+        )
+    return hero
+
+
 def default_image_fn(dry_run: bool) -> Callable[..., dict | None]:
-    """The Steam art lookup, except in a dry run, which never touches the network."""
-    return _no_image if dry_run else steam_stage.find_hero
+    """The picture lookup, except in a dry run, which never touches the network."""
+    return _no_image if dry_run else find_any_hero
 
 
 def _article_records(articles_dir: Path) -> list[dict]:
@@ -1024,7 +1038,7 @@ def run(
                     with timings.stage("image"):
                         hero = image_fn(
                             title=seo["title"], entities=list(seo.get("entities") or []), slug=slug,
-                            public_dir=cover_staging / "public",
+                            public_dir=cover_staging / "public", category=seo.get("category"),
                         )
                 except Exception:
                     logger.exception("image lookup failed: the article goes without a picture")
