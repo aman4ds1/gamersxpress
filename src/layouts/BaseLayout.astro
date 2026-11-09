@@ -47,12 +47,9 @@ const {
         if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
       } catch (e) {}
     </script>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Press+Start+2P&display=swap"
-    />
+    <!-- Fonts are served from this site (see public/fonts), never from a font service. -->
+    <link rel="preload" href="/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/chakra-petch-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin />
     <SEO
       title={title}
       description={description}
