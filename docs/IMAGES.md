@@ -115,6 +115,9 @@ request contains `public/images/<slug>.webp`.
 **3. Look at the live page.** An article with a hero shows the picture under its headline with
 "Image: <developer> · Steam store".
 
+On a Windows console that cannot show some characters (a Korean letter in a game or file name, for
+example), the command shows `?` in their place and carries on.
+
 If a story about a Steam game has no picture, run the command from step 1 with that article's
 headline and send me the output.
 

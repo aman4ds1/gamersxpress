@@ -347,3 +347,106 @@ def test_a_name_followed_by_anything_else_or_nothing_does_not():
 
 def test_one_later_occurrence_followed_by_a_model_word_is_enough_to_refuse():
     assert images.continues_as_another_model(["steam", "deck", "stock", "and", "steam", "deck", "2"], ["steam", "deck"])
+
+
+# --- a console that cannot show a character -------------------------------------------------------------------------
+
+import sys as _sys  # noqa: E402
+
+HANGUL = "\ud55c\uad6d\uc5b4"   # "Korean": not in the Japanese Windows code page cp932
+
+
+def cp932_console():
+    buffer = io.BytesIO()
+    return io.TextIOWrapper(buffer, encoding="cp932", errors="strict", write_through=True, newline=""), buffer
+
+
+def test_the_test_console_really_cannot_show_the_character():
+    console, _buffer = cp932_console()
+    with pytest.raises(UnicodeEncodeError):
+        print(HANGUL, file=console)
+
+
+def test_safe_print_shows_a_question_mark_for_what_the_console_cannot_encode():
+    console, buffer = cp932_console()
+    images.safe_print(f"photo {HANGUL} of the console", file=console)
+    assert buffer.getvalue().decode("cp932") == "photo ??? of the console\n"
+
+
+def test_safe_print_leaves_a_message_the_console_can_show_exactly_as_it_is():
+    console, buffer = cp932_console()
+    images.safe_print("plain text \u65e5\u672c", file=console)             # Japanese is fine in cp932
+    assert buffer.getvalue().decode("cp932") == "plain text \u65e5\u672c\n"
+    out = io.StringIO()
+    images.safe_print(f"unicode {HANGUL}", file=out)
+    assert out.getvalue() == f"unicode {HANGUL}\n"
+
+
+def test_safe_print_uses_ascii_when_the_stream_does_not_say_what_it_encodes():
+    class Picky:
+        encoding = None
+
+        def __init__(self):
+            self.text = ""
+
+        def write(self, data):
+            data.encode("ascii")
+            self.text += data
+
+        def flush(self):
+            pass
+
+    stream = Picky()
+    images.safe_print(f"a {HANGUL} b", file=stream)
+    assert stream.text == "a ??? b\n"
+
+
+def test_safe_print_prints_to_stdout_by_default_and_accepts_any_object(capsys):
+    images.safe_print()
+    images.safe_print(42)
+    assert capsys.readouterr().out == "\n42\n"
+
+
+def test_a_failing_trace_callback_never_raises_and_is_logged_quietly():
+    seen, logged = [], []
+
+    class Log:
+        def debug(self, message, **kwargs):
+            logged.append((message, kwargs.get("exc_info")))
+
+    def broken(message):
+        seen.append(message)
+        raise UnicodeEncodeError("cp932", HANGUL, 0, 1, "illegal multibyte sequence")
+
+    say = images.guarded_trace(broken, Log())
+    say("a step")
+    say("another step")
+    assert seen == ["a step", "another step"] and len(logged) == 2 and logged[0][1] is True
+    images.guarded_trace(broken)("no logger given")        # also fine without a logger
+
+
+def test_a_working_trace_callback_receives_every_message_unchanged():
+    lines = []
+    say = images.guarded_trace(lines.append)
+    say("one")
+    say("two")
+    assert lines == ["one", "two"]
+
+
+def test_the_add_command_reports_an_error_naming_a_korean_file_on_a_legacy_console(tmp_path, monkeypatch):
+    console, buffer = cp932_console()
+    monkeypatch.setattr(_sys, "stderr", console)
+    article = make_article(tmp_path)
+    code = images.main(["add", "--article", str(article), "--file", str(tmp_path / f"{HANGUL}.jpg"), "--alt", "A person holding a console",
+                        "--credit", "x", "--license", "Press kit", "--public-dir", str(tmp_path / "public")])
+    assert code == 1 and "error:" in buffer.getvalue().decode("cp932") and "?" in buffer.getvalue().decode("cp932")
+
+
+def test_safe_print_writes_to_a_stream_even_when_that_stream_object_is_falsy():
+    class Falsy(io.StringIO):
+        def __bool__(self):
+            return False
+
+    stream = Falsy()
+    images.safe_print("hello", file=stream)
+    assert stream.getvalue() == "hello\n"

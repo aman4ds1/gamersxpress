@@ -415,3 +415,44 @@ def test_a_story_about_a_sequel_steam_does_not_have_gets_no_hero(tmp_path):
     })
     assert find(fake, tmp_path, title="Alan Wake 3 announced for 2027", entities=["Alan Wake 3"]) is None
     assert not any("appdetails" in url for url in fake.calls)
+
+
+# --- a Windows console that cannot show a character in a game name ---------------------------------------------------------
+
+import sys as _sys  # noqa: E402
+
+HANGUL = "\ud55c\uad6d\uc5b4"
+
+
+def test_the_steam_check_command_finishes_on_a_legacy_console_when_a_game_name_has_unencodable_characters(tmp_path, monkeypatch):
+    buffer = io.BytesIO()
+    monkeypatch.setattr(_sys, "stdout", io.TextIOWrapper(buffer, encoding="cp932", errors="strict", write_through=True))
+    name = f"Path of Exile 2 {HANGUL}"
+    fake = Fake({
+        search_url("Path of Exile 2"): search_json((APP, name)),
+        steam.DETAILS_URL.format(app_id=APP): details_json(name=name),
+        HERO: (200, "image/jpeg", jpg()),
+    })
+    code = steam.main(["check", f"Path of Exile 2 {HANGUL} launches", "--entity", "Path of Exile 2", "--out", str(tmp_path / "out")], fetch=fake)
+    output = buffer.getvalue().decode("cp932")
+    assert code == 0 and output.rstrip().endswith("RESULT: working") and "Path of Exile 2 ???" in output
+
+
+def test_a_failing_trace_does_not_turn_a_found_steam_picture_into_none(tmp_path):
+    def broken(message):
+        raise UnicodeEncodeError("cp932", HANGUL, 0, 1, "illegal multibyte sequence")
+
+    result = steam.find_hero(title=TITLE, entities=ENTITIES, slug="poe-2", public_dir=tmp_path, fetch=happy(), trace=broken)
+    assert result is not None and images.hero_failures(result["hero"], tmp_path) == []
+
+    down = Fake({search_url("Path of Exile 2"): steam.SteamError("could not reach Steam")})
+    assert steam.find_hero(title=TITLE, entities=ENTITIES, slug="x", public_dir=tmp_path, fetch=down, trace=broken) is None
+
+
+def test_the_saved_path_line_survives_a_folder_name_the_console_cannot_show(tmp_path, monkeypatch):
+    buffer = io.BytesIO()
+    monkeypatch.setattr(_sys, "stdout", io.TextIOWrapper(buffer, encoding="cp932", errors="strict", write_through=True))
+    out = tmp_path / f"out {HANGUL}"
+    code = steam.main(["check", TITLE, "--entity", "Path of Exile 2", "--out", str(out)], fetch=happy())
+    output = buffer.getvalue().decode("cp932")
+    assert code == 0 and "saved: " in output and "out ???" in output

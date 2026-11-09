@@ -249,7 +249,7 @@ def find_hero(
     returned ``hero`` is the front-matter block for the article. Every step is reported through
     ``trace`` (the pipeline log by default; the ``check`` command prints it).
     """
-    say = trace or logger.info
+    say = images_stage.guarded_trace(trace or logger.info, logger)
     cfg = settings or load_steam_config()
     if not cfg["enabled"]:
         return None
@@ -303,7 +303,7 @@ def find_hero(
             return {"hero": hero, "path": destination, "app_id": game["id"], "name": name}
         say(f"steam: no usable picture for {game['name']} ({game['id']})")
     except SteamError as error:
-        (trace or logger.warning)(f"steam: {error}")
+        images_stage.guarded_trace(trace or logger.warning, logger)(f"steam: {error}")
     except Exception:  # an image must never stop a story from publishing
         logger.exception("steam: unexpected error")
     return None
@@ -333,7 +333,7 @@ def main(argv: list[str] | None = None, *, fetch: Fetch | None = None) -> int:
 
     def trace(message: str) -> None:
         lines.append(message)
-        print(message)
+        images_stage.safe_print(message)
 
     out = Path(args.out) if args.out else Path(tempfile.mkdtemp(prefix="gx-steam-check-"))
     settings = {**load_steam_config(), "enabled": True}
@@ -341,15 +341,15 @@ def main(argv: list[str] | None = None, *, fetch: Fetch | None = None) -> int:
                        fetch=fetch, settings=settings, trace=trace)
     if result is None:
         unreachable = any("could not reach Steam" in line for line in lines)
-        print("\nRESULT: Steam could not be reached" if unreachable else "\nRESULT: no picture for this headline")
+        images_stage.safe_print("\nRESULT: Steam could not be reached" if unreachable else "\nRESULT: no picture for this headline")
         return 2 if unreachable else 1
     problems = images_stage.hero_failures(result["hero"], out)
-    print(f"\nhero: {json.dumps(result['hero'], indent=2)}")
-    print(f"saved: {result['path']}")
+    images_stage.safe_print(f"\nhero: {json.dumps(result['hero'], indent=2)}")
+    images_stage.safe_print(f"saved: {result['path']}")
     if problems:
-        print("hero check FAILED: " + "; ".join(problems))
+        images_stage.safe_print("hero check FAILED: " + "; ".join(problems))
         return 1
-    print("hero check: passed\nRESULT: working")
+    images_stage.safe_print("hero check: passed\nRESULT: working")
     return 0
 
 

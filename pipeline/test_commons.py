@@ -800,3 +800,65 @@ def test_the_trusted_list_and_the_subcategory_limit_can_be_set_in_a_config_file(
     path.write_text("images:\n  commons:\n    trusted_products: nope\n    max_subcategories: 0\n", encoding="utf-8")
     config = commons.load_commons_config(path)
     assert config["trusted_products"] == commons.DEFAULTS["trusted_products"] and config["max_subcategories"] == 3
+
+
+# --- a Windows console that cannot show a character in a file name ------------------------------------------------------
+
+import sys as _sys  # noqa: E402
+
+HANGUL = "\ud55c\uad6d\uc5b4"
+
+
+def cp932_console():
+    buffer = io.BytesIO()
+    return io.TextIOWrapper(buffer, encoding="cp932", errors="strict", write_through=True), buffer
+
+
+def korean_file_fake():
+    files = [file_page(f"PlayStation 5 Pro {HANGUL}.jpg", description="The PlayStation 5 Pro console")]
+    return Fake({f"Category:{PHRASE}": cat_page()}, {f"Category:{PHRASE}": files},
+                {files[0]["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg())})
+
+
+def test_the_check_command_finishes_on_a_legacy_console_when_a_file_name_has_unencodable_characters(tmp_path, monkeypatch):
+    console, buffer = cp932_console()
+    monkeypatch.setattr(_sys, "stdout", console)
+    code = commons.main(["check", TITLE, "--entity", PHRASE, "--out", str(tmp_path / "out")], fetch=korean_file_fake())
+    output = buffer.getvalue().decode("cp932")
+    assert code == 0 and output.rstrip().endswith("RESULT: working")
+    assert "PlayStation 5 Pro ???" in output and (tmp_path / "out" / "images" / "commons-check.webp").is_file()
+
+
+def test_a_failing_trace_does_not_turn_a_found_photo_into_no_photo(tmp_path):
+    def broken(message):
+        raise UnicodeEncodeError("cp932", HANGUL, 0, 1, "illegal multibyte sequence")
+
+    result = commons.find_hero(title=TITLE, entities=[PHRASE], slug="ps5-pro", public_dir=tmp_path, category="hardware",
+                               fetch=korean_file_fake(), trace=broken)
+    assert result is not None and result["hero"]["title"] == f"PlayStation 5 Pro {HANGUL}"
+    assert images.hero_failures(result["hero"], tmp_path) == []
+
+
+def test_a_failing_trace_does_not_break_the_network_error_path_either(tmp_path):
+    def broken(message):
+        raise RuntimeError("console gone")
+
+    down = Fake(categories={f"Category:{PHRASE}": commons.CommonsError("could not reach Wikimedia Commons: no route")})
+    assert commons.find_hero(title=TITLE, entities=[PHRASE], slug="x", public_dir=tmp_path, category="hardware", fetch=down, trace=broken) is None
+
+
+def test_the_pipeline_log_path_handles_the_same_file_name(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="gamersxpress.pipeline.commons"):
+        result = commons.find_hero(title=TITLE, entities=[PHRASE], slug="ps5-pro", public_dir=tmp_path, category="hardware", fetch=korean_file_fake())
+    assert result is not None and any(HANGUL in message for message in caplog.messages)
+
+
+def test_the_saved_path_line_survives_a_folder_name_the_console_cannot_show(tmp_path, monkeypatch):
+    console, buffer = cp932_console()
+    monkeypatch.setattr(_sys, "stdout", console)
+    out = tmp_path / f"out {HANGUL}"
+    code = commons.main(["check", TITLE, "--entity", PHRASE, "--out", str(out)], fetch=korean_file_fake())
+    output = buffer.getvalue().decode("cp932")
+    assert code == 0 and "saved: " in output and "out ???" in output and (out / "images" / "commons-check.webp").is_file()

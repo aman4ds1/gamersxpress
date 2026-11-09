@@ -442,7 +442,7 @@ def find_hero(
     trace: Callable[[str], None] | None = None,
 ) -> dict | None:
     """Look for a freely licensed photo of the product in the headline; return ``{"hero", "path", ...}`` or None."""
-    say = trace or logger.info
+    say = images_stage.guarded_trace(trace or logger.info, logger)
     cfg = settings or load_commons_config()
     if not cfg["enabled"]:
         return None
@@ -477,7 +477,7 @@ def find_hero(
                     return hero
         say(f"commons: no usable photo for {title!r}")
     except CommonsError as error:
-        (trace or logger.warning)(f"commons: {error}")
+        images_stage.guarded_trace(trace or logger.warning, logger)(f"commons: {error}")
     except Exception:  # an image must never stop a story from publishing
         logger.exception("commons: unexpected error")
     return None
@@ -554,7 +554,7 @@ def main(argv: list[str] | None = None, *, fetch: Fetch | None = None) -> int:
 
     def trace(message: str) -> None:
         lines.append(message)
-        print(message)
+        images_stage.safe_print(message)
 
     out = Path(args.out) if args.out else Path(tempfile.mkdtemp(prefix="gx-commons-check-"))
     settings = {**load_commons_config(), "enabled": True}
@@ -562,15 +562,15 @@ def main(argv: list[str] | None = None, *, fetch: Fetch | None = None) -> int:
                        fetch=fetch, settings=settings, trace=trace)
     if result is None:
         unreachable = any("could not reach Wikimedia" in line for line in lines)
-        print("\nRESULT: Wikimedia Commons could not be reached" if unreachable else "\nRESULT: no photo for this headline")
+        images_stage.safe_print("\nRESULT: Wikimedia Commons could not be reached" if unreachable else "\nRESULT: no photo for this headline")
         return 2 if unreachable else 1
     problems = images_stage.hero_failures(result["hero"], out)
-    print(f"\nhero: {json.dumps(result['hero'], indent=2)}")
-    print(f"saved: {result['path']}")
+    images_stage.safe_print(f"\nhero: {json.dumps(result['hero'], indent=2)}")
+    images_stage.safe_print(f"saved: {result['path']}")
     if problems:
-        print("hero check FAILED: " + "; ".join(problems))
+        images_stage.safe_print("hero check FAILED: " + "; ".join(problems))
         return 1
-    print("hero check: passed\nRESULT: working")
+    images_stage.safe_print("hero check: passed\nRESULT: working")
     return 0
 
 

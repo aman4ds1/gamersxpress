@@ -80,6 +80,35 @@ def continues_as_another_model(title_tokens: list[str], needle: list[str], words
     return False
 
 
+def safe_print(text: object = "", *, file: Any = None) -> None:
+    """``print`` that never fails on a console that cannot show a character.
+
+    A Windows console in a legacy code page (cp932, cp1252...) raises ``UnicodeEncodeError`` on a
+    character it has no glyph for, such as a Korean letter in a Wikimedia file name. The message is
+    shown with ``?`` in place of what the console cannot encode.
+    """
+    stream = file if file is not None else sys.stdout
+    message = str(text)
+    try:
+        print(message, file=stream)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, "encoding", None) or "ascii"
+        print(message.encode(encoding, "replace").decode(encoding), file=stream)
+
+
+def guarded_trace(callback: Any, log: Any = None) -> Any:
+    """Wrap a trace callback so that a failure while reporting a step can never stop the step itself."""
+
+    def say(message: str) -> None:
+        try:
+            callback(message)
+        except Exception:
+            if log is not None:
+                log.debug("trace output failed", exc_info=True)
+
+    return say
+
+
 class ImageError(ValueError):
     """An image that cannot be used, with the reason."""
 
@@ -268,9 +297,9 @@ def main(argv: list[str] | None = None) -> int:
             source_url=args.source_url, title=args.title, license_url=args.license_url, public_dir=args.public_dir,
         )
     except (ImageError, OSError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        safe_print(f"error: {error}", file=sys.stderr)
         return 1
-    print(f"added {hero['src']} ({hero['width']}x{hero['height']}) to {args.article}")
+    safe_print(f"added {hero['src']} ({hero['width']}x{hero['height']}) to {args.article}")
     return 0
 
 
