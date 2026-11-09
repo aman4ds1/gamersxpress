@@ -87,7 +87,20 @@ EXCLUDED_TITLE_WORDS = frozenset({
     "logo", "icon", "diagram", "schematic", "map", "screenshot", "render", "concept", "cosplay", "cosplayer",
     "figure", "figurine", "statue", "toy", "lego", "painting", "poster", "box", "packaging", "advert",
     "advertisement", "unboxing", "drawing", "sketch", "illustration", "collage", "montage",
+    # a picture of two or more things is not a picture of the product
+    "comparison", "compare", "compared", "comparing", "versus", "vs", "alongside", "beside", "together", "size", "sizes",
 })
+#: Another maker's or platform's name that comes straight after one of the joining words below means the
+#: picture shows more than the product ("Steam Deck and ASUS Vivobook", "Steam Deck with Nintendo
+#: Switch"). A brand anywhere else is fine, because a title often names the product's own maker ("ASUS
+#: ROG Ally", "Nvidia GeForce RTX 4090 with cooler"); a word that is part of the product's name never counts.
+OTHER_PRODUCT_WORDS = frozenset({
+    "asus", "dell", "hp", "lenovo", "acer", "msi", "razer", "alienware", "apple", "macbook", "iphone", "ipad", "samsung",
+    "google", "pixel", "logitech", "corsair", "nvidia", "geforce", "amd", "radeon", "intel", "playstation", "xbox",
+    "nintendo", "switch", "steam", "valve", "meta", "quest", "oculus", "sega", "atari", "commodore", "gameboy", "kindle",
+})
+JOINING_WORDS = frozenset({"and", "with", "next", "to", "plus", "or", "versus"})
+
 
 DEFAULTS: dict[str, Any] = {
     "enabled": True,
@@ -267,6 +280,24 @@ def says_product(info: dict, phrase: str) -> bool:
     return bool(wanted) and wanted <= have
 
 
+_ARTICLES = frozenset({"a", "an", "the", "some", "another", "one", "its"})
+
+
+def _other_products_joined(title_tokens: list[str], own: set[str]) -> list[str]:
+    """Other makers' names in a title that sit right next to a joining word ("and ASUS", "next to an Xbox", "Xbox and")."""
+    found: set[str] = set()
+    for index, token in enumerate(title_tokens):
+        if token not in OTHER_PRODUCT_WORDS or token in own:
+            continue
+        before = index - 1
+        while before >= 0 and title_tokens[before] in _ARTICLES:
+            before -= 1
+        after = index + 1
+        if (before >= 0 and title_tokens[before] in JOINING_WORDS) or (after < len(title_tokens) and title_tokens[after] in JOINING_WORDS):
+            found.add(token)
+    return sorted(found)
+
+
 def unusable_reason(info: dict, phrase: str, config: dict) -> str | None:
     """Why a photo must not be used, or None when it may be."""
     if info.get("mime") not in MIME_TYPES:
@@ -275,6 +306,9 @@ def unusable_reason(info: dict, phrase: str, config: dict) -> str | None:
         return f"only {info.get('width')} px wide (min {config['min_width']})"
     if not info.get("thumb_url"):
         return "no picture link"
+    shape = images_stage.aspect_problem(info.get("width") or 0, info.get("height") or 0)
+    if shape:
+        return f"wrong shape for a hero: {shape}"
     licence = license_info(info.get("license"), config)
     if licence is None:
         return f"license {info.get('license')!r} is not allowed"
@@ -287,6 +321,9 @@ def unusable_reason(info: dict, phrase: str, config: dict) -> str | None:
         return f"not a plain product photo ({', '.join(sorted(bad))})"
     if not says_product(info, phrase):
         return f"its title and description do not name {phrase!r}"
+    others = _other_products_joined(normalize(info.get("title")), set(normalize(phrase)))
+    if others:
+        return f"its title names another product ({', '.join(others)})"
     text = normalize(info.get("title")) + normalize(info.get("description"))
     if images_stage.continues_as_another_model(text, normalize(phrase), images_stage.HARDWARE_MODEL_WORDS):
         return f"its text names a different model than {phrase!r}"
@@ -294,11 +331,14 @@ def unusable_reason(info: dict, phrase: str, config: dict) -> str | None:
 
 
 def rank(info: dict, phrase: str) -> tuple:
-    """Sort key, best first: product named in the title, landscape, then width."""
+    """Sort key, best first: product named in the title (a title that starts with it first), a photo
+    in ordinary landscape proportions, then width."""
     width, height = info.get("width") or 1, info.get("height") or 1
     landscape = 1.3 <= width / height <= 2.4
-    named_in_title = set(normalize(phrase)) <= set(normalize(info.get("title")))
-    return (0 if named_in_title else 1, 0 if landscape else 1, -width, info.get("title", ""))
+    wanted, title = normalize(phrase), normalize(info.get("title"))
+    named_in_title = set(wanted) <= set(title)
+    starts_with_product = title[: len(wanted)] == wanted
+    return (0 if named_in_title else 1, 0 if starts_with_product else 1, 0 if landscape else 1, -width, info.get("title", ""))
 
 
 # --- talking to Commons ----------------------------------------------------------------------------

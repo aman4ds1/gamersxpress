@@ -79,7 +79,7 @@ class Fake:
 
 def good_files():
     best = file_page("PlayStation 5 Pro console.jpg")
-    return [best, file_page("Some other photo.jpg", description="A PlayStation 5 Pro in a living room", width=3000, height=3000)]
+    return [best, file_page("Some other photo.jpg", description="A PlayStation 5 Pro in a living room", width=3000, height=2000)]
 
 
 def happy():
@@ -862,3 +862,95 @@ def test_the_saved_path_line_survives_a_folder_name_the_console_cannot_show(tmp_
     code = commons.main(["check", TITLE, "--entity", PHRASE, "--out", str(out)], fetch=korean_file_fake())
     output = buffer.getvalue().decode("cp932")
     assert code == 0 and "saved: " in output and "out ???" in output and (out / "images" / "commons-check.webp").is_file()
+
+
+# --- the two live photos that should not have been chosen ------------------------------------------------------------------
+
+
+def test_a_portrait_photo_is_refused_before_it_is_downloaded():
+    assert "wrong shape for a hero" in commons.unusable_reason(photo(width=1536, height=2160), PHRASE, commons.DEFAULTS)
+    assert "wrong shape for a hero" in commons.unusable_reason(photo(width=5000, height=1200), PHRASE, commons.DEFAULTS)
+    assert "wrong shape for a hero" in commons.unusable_reason(photo(width=None, height=None, mime="image/jpeg"), PHRASE, {**commons.DEFAULTS, "min_width": 0})
+    assert commons.unusable_reason(photo(width=1600, height=1000), PHRASE, commons.DEFAULTS) is None
+
+
+@pytest.mark.parametrize("title", [
+    "Comparison of Steam Deck and ASUS Vivobook S15", "Steam Deck compared", "Steam Deck vs Switch", "Steam Deck versus Switch",
+    "Steam Deck size", "Steam Deck sizes", "Steam Deck beside a laptop", "Steam Deck alongside a dock", "Steam Deck together",
+])
+def test_a_comparison_or_group_photo_is_not_a_photo_of_the_product(title):
+    assert commons.unusable_reason(photo(title=title, description=""), DECK, commons.DEFAULTS) is not None
+
+
+@pytest.mark.parametrize("title,phrase,refused", [
+    ("Steam Deck and ASUS Vivobook S15", "Steam Deck", True),
+    ("Steam Deck with Nintendo Switch", "Steam Deck", True),
+    ("Steam Deck next to an Xbox controller", "Steam Deck", True),
+    ("Steam Deck and the ASUS laptop", "Steam Deck", True),
+    ("An Xbox and Steam Deck", "Steam Deck", True),
+    ("Legion Go and Switch OLED", "Legion Go", True),
+    ("ASUS ROG Ally with controller", "ROG Ally", False),
+    ("ASUS ROG Ally front", "ROG Ally", False),
+    ("Nvidia GeForce RTX 4090 with cooler", "GeForce RTX 4090", False),
+    ("Valve Steam Deck front view", "Steam Deck", False),
+    ("Lenovo Legion Go in hand", "Legion Go", False),
+    ("PlayStation 5 Pro no disc drive", "PlayStation 5 Pro", False),
+    ("Steam Deck and dock", "Steam Deck", False),
+    ("Meta Quest 3 and controllers", "Meta Quest 3", False),
+    ("Controllers and Meta Quest 3", "Meta Quest 3", False),       # the product's own brand beside a joining word
+    ("Steam Deck on AMD hardware", "Steam Deck", False),            # "on" and "in" do not join two products
+    ("Steam Deck in Nvidia colours", "Steam Deck", False),
+])
+def test_another_product_next_to_a_joining_word_is_refused_but_the_products_own_maker_is_not(title, phrase, refused):
+    reason = commons.unusable_reason(photo(title=title, description=""), phrase, commons.DEFAULTS)
+    assert (reason is not None and "another product" in reason) is refused
+    if not refused:
+        assert reason is None
+
+
+def test_a_brand_that_is_part_of_the_product_name_never_counts_as_another_product():
+    assert commons._other_products_joined(["valve", "index", "and", "dock"], {"valve", "index"}) == []
+    assert commons._other_products_joined(["steam", "deck", "and", "asus"], {"steam", "deck"}) == ["asus"]
+    assert commons._other_products_joined([], {"x"}) == [] and commons._other_products_joined(["and", "asus"], set()) == ["asus"]
+
+
+def test_a_title_that_starts_with_the_product_is_preferred():
+    first = photo(title="PlayStation 5 Pro front", width=2000, height=1200)
+    inside = photo(title="Console, the PlayStation 5 Pro, front", width=4000, height=2400)
+    assert sorted([inside, first], key=lambda item: commons.rank(item, PHRASE)) == [first, inside]
+
+
+def test_the_portrait_playstation_5_pro_photo_is_skipped_for_a_landscape_one(tmp_path):
+    portrait = file_page("PlayStation 5 Pro no disc drive.jpg", width=1536, height=2160)
+    landscape = file_page("PlayStation 5 Pro console.jpg", width=3000, height=1800)
+    fake = Fake({f"Category:{PHRASE}": cat_page()}, {f"Category:{PHRASE}": [portrait, landscape]},
+                {f["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg()) for f in (portrait, landscape)})
+    result, lines = traced(fake, tmp_path)
+    assert result["file"] == "File:PlayStation 5 Pro console.jpg"
+    assert any("skipped 'PlayStation 5 Pro no disc drive'" in line and "wrong shape for a hero" in line for line in lines)
+    assert portrait["imageinfo"][0]["thumburl"] not in fake.calls
+
+
+def test_only_a_portrait_photo_means_no_hero(tmp_path):
+    portrait = file_page("PlayStation 5 Pro no disc drive.jpg", width=1536, height=2160)
+    fake = Fake({f"Category:{PHRASE}": cat_page()}, {f"Category:{PHRASE}": [portrait]})
+    assert find(fake, tmp_path) is None and not (tmp_path / "images").exists()
+
+
+def test_the_steam_deck_comparison_photo_is_skipped_for_a_clean_one(tmp_path):
+    comparison = file_page("Comparison of Steam Deck and ASUS Vivobook S15.jpg", description="Steam Deck next to a laptop", width=1600, height=919)
+    clean = file_page("Steam Deck front view.jpg", description="The Steam Deck", width=3000, height=1800)
+    fake = Fake({f"Category:{DECK}": cat_page(DECK, parents=["Category:Handheld game consoles"])}, {f"Category:{DECK}": [comparison, clean]},
+                {f["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg()) for f in (comparison, clean)})
+    result, lines = traced(fake, tmp_path, title="Steam Deck stock runs out", entities=[DECK])
+    assert result["file"] == "File:Steam Deck front view.jpg"
+    assert any("skipped 'Comparison of Steam Deck and ASUS Vivobook S15'" in line for line in lines)
+    assert comparison["imageinfo"][0]["thumburl"] not in fake.calls
+
+
+def test_a_photo_that_passes_the_listing_but_is_the_wrong_shape_once_downloaded_is_skipped(tmp_path):
+    listed_ok = file_page("PlayStation 5 Pro console.jpg", width=3000, height=1800)
+    fake = Fake({f"Category:{PHRASE}": cat_page()}, {f"Category:{PHRASE}": [listed_ok]},
+                {listed_ok["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg(1000, 1500))})
+    result, lines = traced(fake, tmp_path)
+    assert result is None and any("that picture is unusable" in line and "not a landscape" in line for line in lines)

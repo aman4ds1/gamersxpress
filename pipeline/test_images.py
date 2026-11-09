@@ -275,13 +275,13 @@ def test_the_command_reports_a_problem_with_a_message_and_a_failing_exit_code(tm
 
 
 def test_a_photo_the_camera_stored_sideways_is_turned_upright(tmp_path):
-    image = Image.new("RGB", (1200, 800), (10, 120, 10))
+    image = Image.new("RGB", (800, 1200), (10, 120, 10))   # stored upright-in-the-wrong-direction
     exif = Image.Exif()
     exif[0x0112] = 6  # "rotate 90 degrees clockwise to display"
     buffer = io.BytesIO()
     image.save(buffer, "JPEG", exif=exif)
     info = images.process_image(buffer.getvalue(), tmp_path / "a.webp")
-    assert (info["width"], info["height"]) == (800, 1200)
+    assert (info["width"], info["height"]) == (1200, 800)   # shown landscape, so it is accepted
 
 
 def test_add_hero_without_a_source_link_leaves_that_field_out(tmp_path):
@@ -450,3 +450,65 @@ def test_safe_print_writes_to_a_stream_even_when_that_stream_object_is_falsy():
     stream = Falsy()
     images.safe_print("hello", file=stream)
     assert stream.getvalue() == "hello\n"
+
+
+# --- a hero must be landscape -----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("width,height,fragment", [
+    (1200, 1000, None), (1600, 900, None), (1920, 620, None), (3500, 1000, None),
+    (1199, 1000, "not a landscape picture"), (1536, 2160, "not a landscape picture"), (1000, 1000, "not a landscape picture"),
+    (3501, 1000, "too panoramic"), (4000, 500, "too panoramic"), (0, 500, "no size"), (500, 0, "no size"),
+])
+def test_only_landscape_proportions_are_accepted_for_a_hero(width, height, fragment):
+    problem = images.aspect_problem(width, height)
+    assert (problem is None) if fragment is None else (fragment in problem)
+
+
+def test_the_limits_come_from_the_settings():
+    settings = {**images.DEFAULTS, "min_aspect": 1.5, "max_aspect": 2.0}
+    assert images.aspect_problem(1400, 1000, settings) and images.aspect_problem(1500, 1000, settings) is None
+    assert images.aspect_problem(2000, 1000, settings) is None and images.aspect_problem(2001, 1000, settings)
+
+
+def test_a_portrait_or_ultra_wide_picture_is_refused_when_processed_and_no_file_is_written(tmp_path):
+    with pytest.raises(images.ImageError, match="not a landscape picture"):
+        images.process_image(picture(1000, 1500), tmp_path / "a.webp")
+    with pytest.raises(images.ImageError, match="too panoramic"):
+        images.process_image(picture(3000, 500), tmp_path / "b.webp")
+    assert not (tmp_path / "a.webp").exists() and not (tmp_path / "b.webp").exists()
+
+
+def test_the_edge_of_the_allowed_shape_is_accepted_when_processed(tmp_path):
+    assert images.process_image(picture(1200, 1000), tmp_path / "a.webp")["width"] == 1200
+    with pytest.raises(images.ImageError, match="not a landscape"):
+        images.process_image(picture(1199, 1000), tmp_path / "b.webp")
+
+
+def test_the_aspect_limits_can_be_set_in_a_config_file(tmp_path):
+    path = tmp_path / "c.yaml"
+    path.write_text("images:\n  min_aspect: 1.5\n  max_aspect: 2\n", encoding="utf-8")
+    config = images.load_image_config(path)
+    assert config["min_aspect"] == 1.5 and config["max_aspect"] == 2.0 and isinstance(config["max_aspect"], float)
+    path.write_text("images:\n  min_aspect: true\n  max_aspect: -1\n", encoding="utf-8")
+    config = images.load_image_config(path)
+    assert config["min_aspect"] == images.DEFAULTS["min_aspect"] and config["max_aspect"] == images.DEFAULTS["max_aspect"]
+    assert images.DEFAULTS["min_aspect"] == 1.2 and images.DEFAULTS["max_aspect"] == 3.5
+
+
+def test_the_publish_check_refuses_a_hero_file_that_is_not_landscape(tmp_path):
+    folder = tmp_path / "images"
+    folder.mkdir()
+    Image.new("RGB", (900, 1200), (1, 2, 3)).save(folder / "tall.webp", "WEBP")       # bypasses the processor on purpose
+    hero = {"src": "/images/tall.webp", "alt": "A tall picture of a console", "credit": "Me", "license": "Own work", "width": 900, "height": 1200}
+    assert any("hero image:" in f and "not a landscape picture" in f for f in images.hero_failures(hero, tmp_path))
+    Image.new("RGB", (1200, 800), (1, 2, 3)).save(folder / "wide.webp", "WEBP")
+    assert images.hero_failures({**hero, "src": "/images/wide.webp", "width": 1200, "height": 800}, tmp_path) == []
+
+
+def test_add_hero_refuses_a_portrait_photo_and_changes_nothing(tmp_path):
+    path = make_article(tmp_path)
+    (tmp_path / "tall.jpg").write_bytes(picture(1500, 2100))
+    with pytest.raises(images.ImageError, match="not a landscape picture"):
+        images.add_hero(path, tmp_path / "tall.jpg", alt="A tall picture of a console", credit="Me", license="Own work", public_dir=tmp_path / "public")
+    assert path.read_text(encoding="utf-8") == ARTICLE and not (tmp_path / "public" / "images").exists()

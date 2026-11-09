@@ -15,6 +15,11 @@ for sharing. Nothing about publishing depends on an image.
   `Steam store`, `Own work`, `Licensed`.
 - **Never use a picture from another news outlet.** It is copyrighted, can bring a takedown notice
   and can get an AdSense application refused.
+- The picture must be **landscape**: its width must be between 1.2 and 3.5 times its height
+  (`min_aspect` and `max_aspect` in `pipeline/config.yaml`). A hero is shown full width at its own
+  proportions, so a tall portrait photo would push the article a screen down. Portrait, square and
+  ultra-panoramic pictures are refused by the add command, by the automatic steps and by the publish
+  check.
 - The picture must be at least 800 px wide. It is resized to at most 1600 px and compressed to
   under 400 KB.
 
@@ -149,8 +154,13 @@ It is deliberately strict, because a wrong picture is worse than none:
 - **Licenses:** public domain, CC0, CC BY and CC BY-SA, with a named author (except public domain
   and CC0). No NonCommercial or NoDerivatives licenses, no ported versions, nothing with a
   personality-rights restriction.
-- **Plain photos only:** at least 1200 px wide, and not a logo, diagram, render, toy, cosplay, poster
-  or box shot.
+- **Plain photos only:** at least 1200 px wide and landscape, and not a logo, diagram, render, toy,
+  cosplay, poster or box shot.
+- **One product per photo.** A title with "comparison", "compared", "vs", "versus", "size", "beside",
+  "alongside" or "together" is refused, and so is one that joins another maker's or platform's name to
+  the product ("Steam Deck and ASUS Vivobook", "Steam Deck next to an Xbox controller"). The product's
+  own maker in the title ("ASUS ROG Ally", "Nvidia GeForce RTX 4090") is fine. When several photos
+  qualify, one whose title starts with the product's name is preferred.
 - **Safe fetching:** only Wikimedia's own https hosts, no redirects, nothing over 8 MB.
 - **Never in the way:** no match, no suitable photo or a network problem means no picture. A dry run
   never contacts Wikimedia.

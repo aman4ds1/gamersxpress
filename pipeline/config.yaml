@@ -1448,6 +1448,9 @@ images:
     - Licensed
   min_width: 800
   max_width: 1600
+  # A hero is shown full width, so it must be landscape: width / height between these.
+  min_aspect: 1.2
+  max_aspect: 3.5
   max_bytes: 400000
   quality: 82
   # Automatic key art from Steam for PC game stories (pipeline/steam.py). The picture is the

@@ -47,6 +47,10 @@ DEFAULTS: dict[str, Any] = {
     ],
     "min_width": 800,
     "max_width": 1600,
+    # A hero is shown full width at its own proportions, so a tall picture would push the article
+    # a screen down: it must be landscape (width / height between these two).
+    "min_aspect": 1.2,
+    "max_aspect": 3.5,
     "max_bytes": 400_000,
     "quality": 82,
 }
@@ -128,7 +132,22 @@ def load_image_config(path: str | Path | None = None) -> dict[str, Any]:
                 settings[key] = [str(item) for item in value]
             elif isinstance(default, int) and isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 settings[key] = value
+            elif isinstance(default, float) and isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                settings[key] = float(value)
     return settings
+
+
+def aspect_problem(width: int, height: int, settings: dict | None = None) -> str | None:
+    """Why a picture of this size is the wrong shape for a hero, or None when it is fine."""
+    cfg = settings or load_image_config()
+    if not width or not height:
+        return "the picture has no size"
+    ratio = width / height
+    if ratio < cfg["min_aspect"]:
+        return f"{width}x{height} is not a landscape picture (width must be at least {cfg['min_aspect']} times the height)"
+    if ratio > cfg["max_aspect"]:
+        return f"{width}x{height} is too panoramic (width must be at most {cfg['max_aspect']} times the height)"
+    return None
 
 
 def process_image(source: bytes | str | Path, dest: str | Path, *, settings: dict | None = None) -> dict[str, int]:
@@ -136,7 +155,8 @@ def process_image(source: bytes | str | Path, dest: str | Path, *, settings: dic
 
     The picture is rotated as its camera data says, then that data (location, device) is dropped,
     scaled down to ``max_width`` if wider, and encoded at the best quality that fits ``max_bytes``.
-    A picture narrower than ``min_width`` is refused: it would be blurry at the top of a page.
+    A picture narrower than ``min_width`` is refused: it would be blurry at the top of a page. So is one
+    that is not landscape (or is absurdly panoramic): shown full width it would break the page.
     """
     cfg = settings or load_image_config()
     data = source if isinstance(source, bytes) else Path(source).read_bytes()
@@ -148,6 +168,9 @@ def process_image(source: bytes | str | Path, dest: str | Path, *, settings: dic
     image = ImageOps.exif_transpose(image)
     if image.width < cfg["min_width"]:
         raise ImageError(f"image is {image.width}px wide (min {cfg['min_width']})")
+    shape = aspect_problem(image.width, image.height, cfg)
+    if shape:
+        raise ImageError(shape)
     if image.width > cfg["max_width"]:
         height = round(image.height * cfg["max_width"] / image.width)
         image = image.resize((cfg["max_width"], height), Image.LANCZOS)
@@ -233,6 +256,9 @@ def hero_failures(hero: Any, public_dir: str | Path | None = None, settings: dic
             else:
                 if width < cfg["min_width"]:
                     failures.append(f"hero image is {width}px wide (min {cfg['min_width']})")
+                shape = aspect_problem(width, height, cfg)
+                if shape:
+                    failures.append(f"hero image: {shape}")
                 if (hero.get("width"), hero.get("height")) != (width, height):
                     failures.append(f"hero width and height must match the file ({width}x{height})")
     return failures

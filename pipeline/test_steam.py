@@ -456,3 +456,26 @@ def test_the_saved_path_line_survives_a_folder_name_the_console_cannot_show(tmp_
     code = steam.main(["check", TITLE, "--entity", "Path of Exile 2", "--out", str(out)], fetch=happy())
     output = buffer.getvalue().decode("cp932")
     assert code == 0 and "saved: " in output and "out ???" in output
+
+
+# --- a Steam picture must be landscape too ---------------------------------------------------------------------------------
+
+
+def test_a_portrait_picture_is_skipped_for_the_next_candidate(tmp_path):
+    fake = happy()
+    fake.routes[HERO] = (200, "image/jpeg", jpg(1000, 1500))
+    result = find(fake, tmp_path)
+    assert result["hero"]["height"] == 900 and SHOT in fake.calls
+
+
+def test_when_every_picture_is_portrait_there_is_no_hero_and_the_trace_says_why(tmp_path):
+    fake = happy()
+    fake.routes[HERO] = (200, "image/jpeg", jpg(1000, 1500))
+    fake.routes[SHOT] = (200, "image/jpeg", jpg(1080, 1920))
+    lines = []
+    assert steam.find_hero(title=TITLE, entities=ENTITIES, slug="p", public_dir=tmp_path, fetch=fake, trace=lines.append) is None
+    assert any("that picture is unusable" in line and "not a landscape" in line for line in lines) and not (tmp_path / "images").exists()
+
+
+def test_the_wide_steam_library_art_is_inside_the_allowed_shape(tmp_path):
+    assert images.aspect_problem(1920, 620) is None      # about 3.1 : 1
