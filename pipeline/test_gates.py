@@ -713,6 +713,7 @@ def test_draft_quality_gate_switches_and_limits_come_from_config():
         "check_opener_variety",
         "check_outlet_names",
         "check_entity_mentions",
+        "check_hero",
     ):
         assert config[key] is True, key
 
@@ -1362,3 +1363,52 @@ def test_near_duplicate_sentences_returns_each_later_restatement_once():
 
 def test_near_duplicate_sentences_finds_nothing_in_distinct_text():
     assert gates.near_duplicate_sentences("One thing happened. A very different thing followed later.", 0.7) == []
+
+
+# --- the hero image gate ----------------------------------------------------------------------------
+
+
+def hero_setup(tmp_path, **hero_overrides):
+    import io
+    from PIL import Image
+
+    folder = tmp_path / "public" / "images"
+    folder.mkdir(parents=True)
+    buffer = io.BytesIO()
+    Image.new("RGB", (1000, 560), (30, 60, 120)).save(buffer, "WEBP")
+    (folder / "nvidia-rtx-5090.webp").write_bytes(buffer.getvalue())
+    hero = {"src": "/images/nvidia-rtx-5090.webp", "alt": "A graphics card on a desk", "credit": "NVIDIA",
+            "license": "Press kit", "width": 1000, "height": 560}
+    hero.update(hero_overrides)
+    return hero, tmp_path / "public"
+
+
+def test_an_article_without_a_hero_passes_the_hero_gate():
+    result = run(clean_article(), facts=make_facts())
+    assert result.checks["hero"]["failures"] == []
+
+
+def test_a_complete_hero_passes_the_gate(tmp_path):
+    hero, public = hero_setup(tmp_path)
+    result = run(clean_article(front_overrides={"hero": hero}), facts=make_facts(), public_dir=public)
+    assert result.checks["hero"]["failures"] == []
+
+
+def test_a_hero_with_a_license_that_is_not_allowed_fails_the_article(tmp_path):
+    hero, public = hero_setup(tmp_path, license="Getty Images")
+    result = run(clean_article(front_overrides={"hero": hero}), facts=make_facts(), public_dir=public)
+    assert not result.passed
+    assert any("not an allowed license" in failure for failure in result.failures)
+
+
+def test_a_hero_whose_file_is_missing_fails_the_article(tmp_path):
+    hero, public = hero_setup(tmp_path, src="/images/ghost.webp")
+    result = run(clean_article(front_overrides={"hero": hero}), facts=make_facts(), public_dir=public)
+    assert any("does not exist" in failure for failure in result.failures)
+
+
+def test_the_hero_gate_can_be_switched_off(tmp_path):
+    hero, public = hero_setup(tmp_path, license="Getty Images")
+    result = run(clean_article(front_overrides={"hero": hero}), facts=make_facts(), public_dir=public,
+                 config=config_without("check_hero"))
+    assert result.checks["hero"]["failures"] == []

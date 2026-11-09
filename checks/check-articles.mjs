@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 
 const ARTICLES_DIR = fileURLToPath(new URL('../src/content/articles', import.meta.url));
+const HERO_SRC = /^\/images\/[a-z0-9][a-z0-9-]*\.webp$/;
 const CONFIG_PATH = fileURLToPath(new URL('../pipeline/config.yaml', import.meta.url));
 
 // Fallbacks used only when pipeline/config.yaml is unreadable. config.yaml is
@@ -109,6 +110,20 @@ export function checkArticle(article) {
   if (typeof frontmatter.image === 'string' && frontmatter.image.trim() !== '') {
     const imageAlt = typeof frontmatter.imageAlt === 'string' ? frontmatter.imageAlt.trim() : '';
     if (imageAlt === '') issues.push('image is set without imageAlt');
+  }
+
+  if (frontmatter.hero !== undefined && frontmatter.hero !== null) {
+    const hero = frontmatter.hero;
+    if (typeof hero !== 'object' || Array.isArray(hero)) {
+      issues.push('hero must be an object with src, alt, credit and license');
+    } else {
+      for (const key of ['src', 'alt', 'credit', 'license']) {
+        if (typeof hero[key] !== 'string' || hero[key].trim() === '') issues.push(`hero.${key} is missing`);
+      }
+      if (typeof hero.src === 'string' && hero.src !== '' && !HERO_SRC.test(hero.src)) {
+        issues.push(`hero.src must be a local /images/<name>.webp file, not ${hero.src}`);
+      }
+    }
   }
 
   const words = countWords(body);

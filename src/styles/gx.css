@@ -58,6 +58,10 @@ body { font-family: var(--font-sans); }
 body { transition: background-color 0.35s ease, color 0.35s ease; }
 .gx-switching body { transition: none; }
 
+/* pictures: a thumbnail on a card, a wide banner on the top story */
+.gx-thumb { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); }
+.gx-thumb-wide { aspect-ratio: 21 / 9; border-radius: 12px; }
+
 /* labels */
 .gx-grad { background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3), var(--a1)); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: gx-flow 6s linear infinite; }
 .gx-gradbar { background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3), var(--a1)); background-size: 200% 100%; animation: gx-flow 6s linear infinite; }

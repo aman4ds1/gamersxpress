@@ -21,7 +21,7 @@ interface Props {
 
 const { article } = Astro.props;
 const { Content } = await render(article);
-const { title, description, pubDate, updatedDate, category, sources, image, imageAlt } =
+const { title, description, pubDate, updatedDate, category, sources, image, imageAlt, hero } =
   article.data;
 const categoryLabel = CATEGORY_LABELS[category];
 const topicLinks = article.data.entities
@@ -32,8 +32,8 @@ const topicLinks = article.data.entities
 <BaseLayout
   title={`${title} | GamersXpress`}
   description={description}
-  image={image}
-  imageAlt={imageAlt}
+  image={hero?.src ?? image}
+  imageAlt={hero?.alt ?? imageAlt}
   type="article"
   datePublished={pubDate}
   dateModified={updatedDate}
@@ -78,6 +78,36 @@ const topicLinks = article.data.entities
         }
       </header>
       <span class="gx-gradbar mt-8 block h-[3px] w-[72px] rounded-sm" aria-hidden="true"></span>
+
+      {
+        hero && (
+          <figure class="mt-8">
+            <img
+              src={hero.src}
+              alt={hero.alt}
+              width={hero.width}
+              height={hero.height}
+              fetchpriority="high"
+              decoding="async"
+              class="h-auto w-full rounded-xl border border-line"
+            />
+            <figcaption class="gx-mono mt-2 text-[11px] tracking-wider text-ink-muted">
+              Image:{' '}
+              {
+                hero.sourceUrl ? (
+                  <a href={hero.sourceUrl} target="_blank" rel="noopener noreferrer" class="underline underline-offset-2 hover:text-ink">
+                    {hero.credit}
+                  </a>
+                ) : (
+                  hero.credit
+                )
+              }
+              {' · '}
+              {hero.license}
+            </figcaption>
+          </figure>
+        )
+      }
 
       <AdSlot name="article-top" width={728} height={90} variant="article-top" />
 

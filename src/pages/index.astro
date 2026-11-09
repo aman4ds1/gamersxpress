@@ -40,6 +40,19 @@ const topics = [...entityCounts.entries()]
           <a href={`/news/${top.id}`} class="gx-lined gx-hero">
             <div class="gx-card">
               <span class="gx-tick gx-tl" aria-hidden="true" /><span class="gx-tick gx-br" aria-hidden="true" />
+              {
+                top.data.hero && (
+                  <img
+                    src={top.data.hero.src}
+                    alt=""
+                    width={top.data.hero.width}
+                    height={top.data.hero.height}
+                    fetchpriority="high"
+                    decoding="async"
+                    class="gx-thumb gx-thumb-wide"
+                  />
+                )
+              }
               <span class="gx-chip" style={`--chip:${CATEGORY_COLORS[top.data.category]}`}>{CATEGORY_LABELS[top.data.category]}</span>
               <h2 id="top-story" class="gx-display max-w-[860px] text-[clamp(30px,4.4vw,56px)] leading-[1.05] font-bold text-ink">{top.data.title}</h2>
               <p class="max-w-[660px] text-[17px] leading-relaxed text-ink-muted">{top.data.description}</p>

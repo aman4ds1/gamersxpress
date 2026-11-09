@@ -56,6 +56,7 @@ from typing import Any, Callable, Iterable
 
 import yaml
 
+import images as images_stage
 from cluster import load_known_names, similarity, story_phrases
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -139,6 +140,7 @@ DEFAULT_GATES: dict[str, Any] = {
     "max_same_opener": 3,
     "check_outlet_names": True,
     "check_entity_mentions": True,
+    "check_hero": True,
 }
 
 # Reader-text rules shared with the SEO stage (``pipeline/seo.py``). config.yaml
@@ -371,6 +373,7 @@ def load_gates_config(path: str | Path | None = None) -> dict:
         "check_opener_variety",
         "check_outlet_names",
         "check_entity_mentions",
+        "check_hero",
     ):
         value = section.get(key, DEFAULT_GATES[key])
         config[key] = value if isinstance(value, bool) else DEFAULT_GATES[key]
@@ -1294,6 +1297,7 @@ def run_gates(
     config: dict | None = None,
     articles_dir: str | Path | None = None,
     page_template: str | Path | None = None,
+    public_dir: str | Path | None = None,
     now: dt.datetime | None = None,
     link_checker: Callable[[str], int | str] | None = None,
     site_checks: Callable[[str, str], tuple[bool, str]] | None = None,
@@ -1554,6 +1558,12 @@ def run_gates(
             title, front.get("entities") or [], body, facts,
         )
     record("entity_mentions", mention_failures)
+
+    # 5n. a hero image, when the article has one: our own file, described, credited and licensed
+    hero_problems: list[str] = []
+    if config.get("check_hero", DEFAULT_GATES["check_hero"]):
+        hero_problems = images_stage.hero_failures(front.get("hero"), public_dir)
+    record("hero", hero_problems)
 
     # 6. duplicates and near-duplicates
     duplicate_failures: list[str] = []

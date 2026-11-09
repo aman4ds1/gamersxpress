@@ -20,6 +20,19 @@ const articles = defineCollection({
       verification: z.enum(['single-origin']).optional(),
       image: z.string().optional(),
       imageAlt: z.string().optional(),
+      // A real picture (photo or key art) shown on the page and the card, with its credit.
+      // The file is our own copy in public/images/; see pipeline/images.py.
+      hero: z
+        .object({
+          src: z.string().regex(/^\/images\/[a-z0-9][a-z0-9-]*\.webp$/),
+          alt: z.string().min(10),
+          credit: z.string().min(2),
+          license: z.string().min(2),
+          sourceUrl: z.url().optional(),
+          width: z.number().int().positive(),
+          height: z.number().int().positive(),
+        })
+        .optional(),
     })
     .refine((data) => !data.image || Boolean(data.imageAlt), {
       message: 'imageAlt is required when image is set',

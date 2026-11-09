@@ -147,3 +147,42 @@ test('missing frontmatter is reported', () => {
   const result = checkArticle(parseArticle('# no frontmatter here', 'broken'));
   assert.ok(result.issues.some((issue) => issue === 'missing frontmatter block'));
 });
+
+function withHero(hero) {
+  const raw = rawArticle().replace('sources:', `hero:\n${hero}\nsources:`);
+  return checkArticle(parseArticle(raw, 'sample-article'));
+}
+
+const GOOD_HERO = [
+  '  src: /images/sample-article.webp',
+  '  alt: A person holding a console in a living room',
+  '  credit: Nintendo',
+  '  license: Press kit',
+  '  width: 1200',
+  '  height: 700',
+].join('\n');
+
+test('a complete hero passes and no hero is fine', () => {
+  assert.deepEqual(withHero(GOOD_HERO).issues, []);
+  assert.deepEqual(check({}).issues, []);
+});
+
+test('each required hero field is needed', () => {
+  for (const key of ['src', 'alt', 'credit', 'license']) {
+    const without = GOOD_HERO.split('\n').filter((line) => !line.startsWith(`  ${key}:`)).join('\n');
+    assert.ok(withHero(without).issues.includes(`hero.${key} is missing`), key);
+  }
+});
+
+test('hero.src must be one of our own webp files', () => {
+  for (const src of ['https://other.example/x.webp', '/covers/x.webp', '/images/Sample.webp', '/images/sample.jpg']) {
+    const hero = GOOD_HERO.replace('/images/sample-article.webp', src);
+    assert.match(withHero(hero).issues.join(' '), /hero\.src must be a local/, src);
+  }
+});
+
+test('a hero that is not an object is refused', () => {
+  const raw = rawArticle().replace('sources:', 'hero: a photo\nsources:');
+  const result = checkArticle(parseArticle(raw, 'sample-article'));
+  assert.match(result.issues.join(' '), /hero must be an object/);
+});

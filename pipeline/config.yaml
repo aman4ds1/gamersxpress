@@ -1428,3 +1428,25 @@ sources:
     region: us
     categories: [gaming-news]
     fetch: false
+
+# Real images (pipeline/images.py). An article may carry a `hero` picture with a credit; it is
+# resized to our own WebP file and must come from one of these license kinds. A picture from
+# another outlet is never allowed. `min_width` keeps it sharp; `max_bytes` keeps pages fast.
+images:
+  allowed_licenses:
+    - Public domain
+    - CC0
+    - CC BY 4.0
+    - CC BY-SA 4.0
+    - CC BY 3.0
+    - CC BY-SA 3.0
+    - CC BY 2.0
+    - CC BY-SA 2.0
+    - Press kit
+    - Steam store
+    - Own work
+    - Licensed
+  min_width: 800
+  max_width: 1600
+  max_bytes: 400000
+  quality: 82
