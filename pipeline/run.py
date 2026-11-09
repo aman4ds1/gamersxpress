@@ -419,6 +419,11 @@ def _article_records(articles_dir: Path) -> list[dict]:
                 "category": str(front.get("category") or ""),
                 "pubDate": front.get("pubDate"),
                 "entities": [str(e) for e in front.get("entities") or []],
+                "sources": [
+                    str(source.get("url"))
+                    for source in front.get("sources") or []
+                    if isinstance(source, dict) and source.get("url")
+                ],
             }
         )
     return records
@@ -583,6 +588,10 @@ def run(
             cluster.save_pool(pool, now=now, path=paths.pool)
 
             seen = cluster.load_seen(paths.seen)
+            # Every article already on the site covers its sources, however it got there.
+            covered = cluster.mark_articles_covered(seen, _article_records(paths.articles_dir), now=now)
+            if covered:
+                logger.info("published articles added to the seen list: %s", ", ".join(covered))
             failed = cluster.load_failed(paths.failed)
             cluster_section = raw_config.get("cluster") or {}
             seen_cooldown = dt.timedelta(

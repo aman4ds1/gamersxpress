@@ -1438,6 +1438,27 @@ def mark_seen(
     entry["last_seen"] = now.isoformat()
 
 
+def mark_articles_covered(seen: dict, articles: Iterable[dict], *, now: dt.datetime | None = None) -> list[str]:
+    """Treat the source URLs of every published article as already covered.
+
+    The seen list only learns about stories the pipeline wrote itself. An article
+    published any other way (written by hand, a draft merged after edits) left its
+    story open, so the pipeline wrote it again under a new slug, over and over. Each
+    article's ``sources`` are added as a seen entry (member URLs only, so just rule (a)
+    of ``cluster_items`` applies: a source URL that was already covered is never covered
+    again). Articles whose URLs a seen entry already holds are skipped, so this is cheap
+    and safe to run on every run. Returns the ids of the articles added.
+    """
+    added: list[str] = []
+    for article in articles or []:
+        urls = [url for url in article.get("sources") or [] if url]
+        if not urls or _seen_url_overlap(seen, urls):
+            continue
+        mark_seen(seen, f"article:{article.get('id')}", member_urls=urls, now=now)
+        added.append(str(article.get("id")))
+    return added
+
+
 def _parse_time(value: Any) -> dt.datetime | None:
     if not value:
         return None

@@ -984,3 +984,42 @@ def test_headline_adjectives_are_not_story_entities():
     for word in ("Anticipated", "Upcoming", "Official", "Exclusive", "Latest", "Free"):
         assert cluster.is_stop_entity(word, stop=stop), word
     assert not cluster.is_stop_entity("Assassin's Creed Valhalla", stop=stop)
+
+
+# --- published articles cover their sources -------------------------------------------------------
+
+HAND = {"id": "hand-published", "entities": ["Nintendo Switch 2"], "sources": ["https://techpowerup.com/354516/x", "https://kitguru.net/a/b/"]}
+
+
+def test_an_article_on_the_site_marks_its_source_urls_as_seen():
+    seen = {"clusters": {}}
+    assert cluster.mark_articles_covered(seen, [HAND], now=NOW) == ["hand-published"]
+    entry = seen["clusters"]["article:hand-published"]
+    assert entry["member_urls"] == cluster._normalized_urls(HAND["sources"])
+    assert "primary_entities" not in entry and "story_type" not in entry
+
+
+def test_a_cluster_sharing_a_source_url_with_a_published_article_is_never_covered_again():
+    seen = {"clusters": {}}
+    cluster.mark_articles_covered(seen, [HAND], now=NOW)
+    assert cluster._seen_url_overlap(seen, ["https://kitguru.net/a/b/", "https://other.example/z"])
+    assert not cluster._seen_url_overlap(seen, ["https://other.example/z"])
+
+
+def test_marking_published_articles_is_idempotent_and_skips_urls_already_covered():
+    seen = {"clusters": {}}
+    cluster.mark_articles_covered(seen, [HAND], now=NOW)
+    before = json.dumps(seen, sort_keys=True)
+    assert cluster.mark_articles_covered(seen, [HAND], now=NOW + dt.timedelta(hours=5)) == []
+    assert json.dumps(seen, sort_keys=True) == before
+    # An article whose URLs a seen cluster of the pipeline already holds adds nothing.
+    mark = {"clusters": {}}
+    cluster.mark_seen(mark, "c1", member_urls=["https://kitguru.net/a/b/"], now=NOW)
+    assert cluster.mark_articles_covered(mark, [HAND], now=NOW) == []
+
+
+@pytest.mark.parametrize("article", [{"id": "x"}, {"id": "x", "sources": []}, {"id": "x", "sources": ["", None]}])
+def test_an_article_without_source_urls_covers_nothing(article):
+    seen = {"clusters": {}}
+    assert cluster.mark_articles_covered(seen, [article], now=NOW) == [] and seen["clusters"] == {}
+    assert cluster.mark_articles_covered(seen, None, now=NOW) == []

@@ -1884,3 +1884,34 @@ def test_the_fold_follows_the_gate_repair_switch(tmp_path, monkeypatch):
     rig = ThinRig(monkeypatch)
     result = run_once(tmp_path, dry_run=True, scenario="pass", gates_fn=rig.gates, config_path=path)
     assert result.status == "failed" and rig.fold_calls == []
+
+
+# --- a story published some other way is not written again ----------------------------------------
+
+
+def hand_published(tmp_path, url="https://a.example/1"):
+    folder = tmp_path / "state" / "articles"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "published-by-hand.md").write_text(
+        "---\ntitle: Published by hand\ncategory: pc\npubDate: 2026-10-08\nentities:\n  - Nvidia\n"
+        f"sources:\n  - name: Example A\n    url: {url}\n---\n\n## What happened\n\nBody.\n",
+        encoding="utf-8",
+    )
+
+
+def test_a_story_whose_source_is_in_a_published_article_is_not_drafted_again(tmp_path):
+    hand_published(tmp_path)
+    result = run_once(tmp_path, dry_run=True, scenario="pass")
+    assert result.status != "completed"
+    assert not (tmp_path / "state" / "articles" / f"{dryrun.SAMPLE_SLUG}.md").exists()
+
+
+def test_a_published_article_on_other_sources_does_not_block_an_unrelated_story(tmp_path):
+    hand_published(tmp_path, url="https://unrelated.example/story")
+    assert run_once(tmp_path, dry_run=True, scenario="pass").status == "completed"
+
+
+def test_the_article_records_the_pipeline_reads_carry_their_source_urls(tmp_path):
+    hand_published(tmp_path)
+    records = run_module._article_records(tmp_path / "state" / "articles")
+    assert records[0]["sources"] == ["https://a.example/1"] and records[0]["id"] == "published-by-hand"
