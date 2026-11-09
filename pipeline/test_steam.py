@@ -458,23 +458,31 @@ def test_the_saved_path_line_survives_a_folder_name_the_console_cannot_show(tmp_
     assert code == 0 and "saved: " in output and "out ???" in output
 
 
-# --- a Steam picture must be landscape too ---------------------------------------------------------------------------------
+# --- the shape of a Steam picture ---------------------------------------------------------------------------------------------
 
 
-def test_a_portrait_picture_is_skipped_for_the_next_candidate(tmp_path):
+def test_an_absurdly_tall_picture_is_skipped_for_the_next_candidate(tmp_path):
     fake = happy()
-    fake.routes[HERO] = (200, "image/jpeg", jpg(1000, 1500))
+    fake.routes[HERO] = (200, "image/jpeg", jpg(900, 2400))
     result = find(fake, tmp_path)
     assert result["hero"]["height"] == 900 and SHOT in fake.calls
 
 
-def test_when_every_picture_is_portrait_there_is_no_hero_and_the_trace_says_why(tmp_path):
+def test_when_every_picture_is_an_absurd_shape_there_is_no_hero_and_the_trace_says_why(tmp_path):
     fake = happy()
-    fake.routes[HERO] = (200, "image/jpeg", jpg(1000, 1500))
-    fake.routes[SHOT] = (200, "image/jpeg", jpg(1080, 1920))
+    fake.routes[HERO] = (200, "image/jpeg", jpg(900, 2400))
+    fake.routes[SHOT] = (200, "image/jpeg", jpg(1000, 2600))
     lines = []
     assert steam.find_hero(title=TITLE, entities=ENTITIES, slug="p", public_dir=tmp_path, fetch=fake, trace=lines.append) is None
-    assert any("that picture is unusable" in line and "not a landscape" in line for line in lines) and not (tmp_path / "images").exists()
+    assert any("that picture is unusable" in line and "too tall and narrow" in line for line in lines) and not (tmp_path / "images").exists()
+
+
+def test_an_ordinary_portrait_screenshot_is_accepted_and_scaled(tmp_path):
+    fake = happy()
+    fake.routes[HERO] = (404, "", b"")
+    fake.routes[SHOT] = (200, "image/jpeg", jpg(1080, 1920))
+    result = find(fake, tmp_path)
+    assert (result["hero"]["width"], result["hero"]["height"]) == (900, 1600) and images.hero_failures(result["hero"], tmp_path) == []
 
 
 def test_the_wide_steam_library_art_is_inside_the_allowed_shape(tmp_path):

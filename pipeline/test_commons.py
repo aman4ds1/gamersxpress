@@ -867,9 +867,10 @@ def test_the_saved_path_line_survives_a_folder_name_the_console_cannot_show(tmp_
 # --- the two live photos that should not have been chosen ------------------------------------------------------------------
 
 
-def test_a_portrait_photo_is_refused_before_it_is_downloaded():
-    assert "wrong shape for a hero" in commons.unusable_reason(photo(width=1536, height=2160), PHRASE, commons.DEFAULTS)
+def test_an_absurdly_shaped_photo_is_refused_before_it_is_downloaded_but_an_upright_one_is_not():
+    assert "wrong shape for a hero" in commons.unusable_reason(photo(width=1300, height=3000), PHRASE, commons.DEFAULTS)
     assert "wrong shape for a hero" in commons.unusable_reason(photo(width=5000, height=1200), PHRASE, commons.DEFAULTS)
+    assert commons.unusable_reason(photo(width=1536, height=2160), PHRASE, commons.DEFAULTS) is None
     assert "wrong shape for a hero" in commons.unusable_reason(photo(width=None, height=None, mime="image/jpeg"), PHRASE, {**commons.DEFAULTS, "min_width": 0})
     assert commons.unusable_reason(photo(width=1600, height=1000), PHRASE, commons.DEFAULTS) is None
 
@@ -920,21 +921,23 @@ def test_a_title_that_starts_with_the_product_is_preferred():
     assert sorted([inside, first], key=lambda item: commons.rank(item, PHRASE)) == [first, inside]
 
 
-def test_the_portrait_playstation_5_pro_photo_is_skipped_for_a_landscape_one(tmp_path):
+def test_a_portrait_photo_is_only_used_after_a_landscape_one(tmp_path):
     portrait = file_page("PlayStation 5 Pro no disc drive.jpg", width=1536, height=2160)
     landscape = file_page("PlayStation 5 Pro console.jpg", width=3000, height=1800)
     fake = Fake({f"Category:{PHRASE}": cat_page()}, {f"Category:{PHRASE}": [portrait, landscape]},
                 {f["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg()) for f in (portrait, landscape)})
-    result, lines = traced(fake, tmp_path)
-    assert result["file"] == "File:PlayStation 5 Pro console.jpg"
-    assert any("skipped 'PlayStation 5 Pro no disc drive'" in line and "wrong shape for a hero" in line for line in lines)
+    assert find(fake, tmp_path)["file"] == "File:PlayStation 5 Pro console.jpg"
     assert portrait["imageinfo"][0]["thumburl"] not in fake.calls
 
 
-def test_only_a_portrait_photo_means_no_hero(tmp_path):
+def test_when_a_portrait_photo_is_the_only_good_one_it_is_used_scaled_to_the_height_limit(tmp_path):
+    # PlayStation 5 Pro on the live site: the one clean photo of the product is 1536 x 2160.
     portrait = file_page("PlayStation 5 Pro no disc drive.jpg", width=1536, height=2160)
-    fake = Fake({f"Category:{PHRASE}": cat_page()}, {f"Category:{PHRASE}": [portrait]})
-    assert find(fake, tmp_path) is None and not (tmp_path / "images").exists()
+    fake = Fake({f"Category:{PHRASE}": cat_page()}, {f"Category:{PHRASE}": [portrait]},
+                {portrait["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg(1536, 2160))})
+    result = find(fake, tmp_path)
+    assert result is not None and (result["hero"]["width"], result["hero"]["height"]) == (1138, 1600)
+    assert result["hero"]["title"] == "PlayStation 5 Pro no disc drive" and images.hero_failures(result["hero"], tmp_path) == []
 
 
 def test_the_steam_deck_comparison_photo_is_skipped_for_a_clean_one(tmp_path):
@@ -948,9 +951,9 @@ def test_the_steam_deck_comparison_photo_is_skipped_for_a_clean_one(tmp_path):
     assert comparison["imageinfo"][0]["thumburl"] not in fake.calls
 
 
-def test_a_photo_that_passes_the_listing_but_is_the_wrong_shape_once_downloaded_is_skipped(tmp_path):
+def test_a_photo_that_passes_the_listing_but_is_an_absurd_shape_once_downloaded_is_skipped(tmp_path):
     listed_ok = file_page("PlayStation 5 Pro console.jpg", width=3000, height=1800)
     fake = Fake({f"Category:{PHRASE}": cat_page()}, {f"Category:{PHRASE}": [listed_ok]},
-                {listed_ok["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg(1000, 1500))})
+                {listed_ok["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg(900, 2400))})
     result, lines = traced(fake, tmp_path)
-    assert result is None and any("that picture is unusable" in line and "not a landscape" in line for line in lines)
+    assert result is None and any("that picture is unusable" in line and "too tall and narrow" in line for line in lines)

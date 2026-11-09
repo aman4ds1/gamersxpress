@@ -15,7 +15,15 @@ const { title, description, pubDate, category, hero } = article.data;
     <span class="gx-tick gx-tl" aria-hidden="true"></span><span class="gx-tick gx-br" aria-hidden="true"></span>
     {
       hero && (
-        <img src={hero.src} alt="" width={hero.width} height={hero.height} loading="lazy" decoding="async" class="gx-thumb" />
+        <img
+          src={hero.src}
+          alt=""
+          width={hero.width}
+          height={hero.height}
+          loading="lazy"
+          decoding="async"
+          class:list={['gx-thumb', hero.width / hero.height < 1.2 && 'gx-thumb-contain']}
+        />
       )
     }
     <div class="flex items-center justify-between gap-2.5">

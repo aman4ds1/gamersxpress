@@ -82,15 +82,16 @@ const topicLinks = article.data.entities
       {
         hero && (
           <figure class="mt-8">
-            <img
-              src={hero.src}
-              alt={hero.alt}
-              width={hero.width}
-              height={hero.height}
-              fetchpriority="high"
-              decoding="async"
-              class="h-auto w-full rounded-xl border border-line"
-            />
+            <div class="gx-heroframe">
+              <img
+                src={hero.src}
+                alt={hero.alt}
+                width={hero.width}
+                height={hero.height}
+                fetchpriority="high"
+                decoding="async"
+              />
+            </div>
             <figcaption class="gx-mono mt-2 text-[11px] tracking-wider text-ink-muted">
               Image:{' '}
               {hero.title && <>“{hero.title}” by{' '}</>}

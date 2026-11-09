@@ -61,6 +61,11 @@ body { transition: background-color 0.35s ease, color 0.35s ease; }
 /* pictures: a thumbnail on a card, a wide banner on the top story */
 .gx-thumb { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); }
 .gx-thumb-wide { aspect-ratio: 21 / 9; border-radius: 12px; }
+/* a portrait or square picture is shown whole, centred, instead of cropped to the thumbnail */
+.gx-thumb-contain { object-fit: contain; }
+/* the picture on an article page: full width when landscape, a bounded centred frame when tall */
+.gx-heroframe { display: flex; justify-content: center; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); }
+.gx-heroframe img { display: block; width: auto; height: auto; max-width: 100%; max-height: 560px; object-fit: contain; }
 
 /* labels */
 .gx-grad { background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3), var(--a1)); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: gx-flow 6s linear infinite; }

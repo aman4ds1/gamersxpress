@@ -49,7 +49,7 @@ const topics = [...entityCounts.entries()]
                     height={top.data.hero.height}
                     fetchpriority="high"
                     decoding="async"
-                    class="gx-thumb gx-thumb-wide"
+                    class:list={['gx-thumb', 'gx-thumb-wide', top.data.hero.width / top.data.hero.height < 1.2 && 'gx-thumb-contain']}
                   />
                 )
               }

@@ -452,15 +452,16 @@ def test_safe_print_writes_to_a_stream_even_when_that_stream_object_is_falsy():
     assert stream.getvalue() == "hello\n"
 
 
-# --- a hero must be landscape -----------------------------------------------------------------------------------------
+# --- the shape of a hero ------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("width,height,fragment", [
-    (1200, 1000, None), (1600, 900, None), (1920, 620, None), (3500, 1000, None),
-    (1199, 1000, "not a landscape picture"), (1536, 2160, "not a landscape picture"), (1000, 1000, "not a landscape picture"),
+    (1200, 1000, None), (1600, 900, None), (1920, 620, None), (3500, 1000, None), (1000, 1000, None),
+    (1536, 2160, None), (800, 1600, None),                                       # an upright console: tall, but fine
+    (799, 1600, "too tall and narrow"), (1000, 2500, "too tall and narrow"), (900, 2400, "too tall and narrow"),
     (3501, 1000, "too panoramic"), (4000, 500, "too panoramic"), (0, 500, "no size"), (500, 0, "no size"),
 ])
-def test_only_landscape_proportions_are_accepted_for_a_hero(width, height, fragment):
+def test_only_sensible_proportions_are_accepted_for_a_hero(width, height, fragment):
     problem = images.aspect_problem(width, height)
     assert (problem is None) if fragment is None else (fragment in problem)
 
@@ -471,44 +472,103 @@ def test_the_limits_come_from_the_settings():
     assert images.aspect_problem(2000, 1000, settings) is None and images.aspect_problem(2001, 1000, settings)
 
 
-def test_a_portrait_or_ultra_wide_picture_is_refused_when_processed_and_no_file_is_written(tmp_path):
-    with pytest.raises(images.ImageError, match="not a landscape picture"):
-        images.process_image(picture(1000, 1500), tmp_path / "a.webp")
+def test_an_absurdly_tall_or_wide_picture_is_refused_when_processed_and_no_file_is_written(tmp_path):
+    with pytest.raises(images.ImageError, match="too tall and narrow"):
+        images.process_image(picture(900, 2400), tmp_path / "a.webp")
     with pytest.raises(images.ImageError, match="too panoramic"):
         images.process_image(picture(3000, 500), tmp_path / "b.webp")
     assert not (tmp_path / "a.webp").exists() and not (tmp_path / "b.webp").exists()
 
 
 def test_the_edge_of_the_allowed_shape_is_accepted_when_processed(tmp_path):
-    assert images.process_image(picture(1200, 1000), tmp_path / "a.webp")["width"] == 1200
-    with pytest.raises(images.ImageError, match="not a landscape"):
-        images.process_image(picture(1199, 1000), tmp_path / "b.webp")
+    info = images.process_image(picture(1000, 2000), tmp_path / "a.webp")
+    assert (info["width"], info["height"]) == (800, 1600)         # exactly 1 : 2, scaled to the height limit
+    with pytest.raises(images.ImageError, match="too tall and narrow"):
+        images.process_image(picture(999, 2000), tmp_path / "b.webp")
 
 
-def test_the_aspect_limits_can_be_set_in_a_config_file(tmp_path):
+def test_an_ordinary_portrait_photo_is_accepted_and_scaled_to_the_height_limit(tmp_path):
+    info = images.process_image(picture(1536, 2160), tmp_path / "a.webp")
+    assert (info["width"], info["height"]) == (1138, 1600) and images.aspect_problem(info["width"], info["height"]) is None
+    assert images.process_image(picture(1000, 1500), tmp_path / "b.webp")["height"] == 1500        # already small enough
+    both = images.process_image(picture(2400, 3600), tmp_path / "c.webp")
+    assert both["height"] == 1600 and both["width"] == 1067
+
+
+def test_a_wide_picture_is_still_scaled_by_its_width(tmp_path):
+    info = images.process_image(picture(3200, 1800), tmp_path / "a.webp")
+    assert (info["width"], info["height"]) == (1600, 900)
+
+
+def test_a_portrait_picture_never_ends_up_narrower_than_the_minimum_width(tmp_path):
+    for width, height in ((1000, 2000), (1001, 2002), (1536, 2160), (1100, 2150)):
+        assert images.process_image(picture(width, height), tmp_path / "a.webp")["width"] >= images.DEFAULTS["min_width"], (width, height)
+
+
+def test_the_height_limit_can_be_set(tmp_path):
+    info = images.process_image(picture(1000, 1400), tmp_path / "a.webp", settings={**images.DEFAULTS, "max_height": 1000})
+    assert info["height"] == 1000 and info["width"] == 714
+
+
+def test_the_aspect_and_height_limits_can_be_set_in_a_config_file(tmp_path):
     path = tmp_path / "c.yaml"
-    path.write_text("images:\n  min_aspect: 1.5\n  max_aspect: 2\n", encoding="utf-8")
+    path.write_text("images:\n  min_aspect: 0.7\n  max_aspect: 2\n  max_height: 1200\n", encoding="utf-8")
     config = images.load_image_config(path)
-    assert config["min_aspect"] == 1.5 and config["max_aspect"] == 2.0 and isinstance(config["max_aspect"], float)
-    path.write_text("images:\n  min_aspect: true\n  max_aspect: -1\n", encoding="utf-8")
+    assert config["min_aspect"] == 0.7 and config["max_aspect"] == 2.0 and isinstance(config["max_aspect"], float) and config["max_height"] == 1200
+    path.write_text("images:\n  min_aspect: true\n  max_aspect: -1\n  max_height: 0\n", encoding="utf-8")
     config = images.load_image_config(path)
-    assert config["min_aspect"] == images.DEFAULTS["min_aspect"] and config["max_aspect"] == images.DEFAULTS["max_aspect"]
-    assert images.DEFAULTS["min_aspect"] == 1.2 and images.DEFAULTS["max_aspect"] == 3.5
+    assert (config["min_aspect"], config["max_aspect"], config["max_height"]) == (0.5, 3.5, 1600)
+    assert (images.DEFAULTS["min_aspect"], images.DEFAULTS["max_aspect"], images.DEFAULTS["max_height"]) == (0.5, 3.5, 1600)
 
 
-def test_the_publish_check_refuses_a_hero_file_that_is_not_landscape(tmp_path):
+def test_the_publish_check_refuses_a_hero_file_of_an_absurd_shape_and_accepts_a_portrait_one(tmp_path):
     folder = tmp_path / "images"
     folder.mkdir()
-    Image.new("RGB", (900, 1200), (1, 2, 3)).save(folder / "tall.webp", "WEBP")       # bypasses the processor on purpose
-    hero = {"src": "/images/tall.webp", "alt": "A tall picture of a console", "credit": "Me", "license": "Own work", "width": 900, "height": 1200}
-    assert any("hero image:" in f and "not a landscape picture" in f for f in images.hero_failures(hero, tmp_path))
-    Image.new("RGB", (1200, 800), (1, 2, 3)).save(folder / "wide.webp", "WEBP")
-    assert images.hero_failures({**hero, "src": "/images/wide.webp", "width": 1200, "height": 800}, tmp_path) == []
+    hero = {"src": "/images/tall.webp", "alt": "A tall picture of a console", "credit": "Me", "license": "Own work"}
+    Image.new("RGB", (900, 2400), (1, 2, 3)).save(folder / "tall.webp", "WEBP")       # bypasses the processor on purpose
+    assert any("hero image:" in f and "too tall and narrow" in f for f in images.hero_failures({**hero, "width": 900, "height": 2400}, tmp_path))
+    Image.new("RGB", (900, 1200), (1, 2, 3)).save(folder / "portrait.webp", "WEBP")
+    assert images.hero_failures({**hero, "src": "/images/portrait.webp", "width": 900, "height": 1200}, tmp_path) == []
+    Image.new("RGB", (4000, 800), (1, 2, 3)).save(folder / "wide.webp", "WEBP")
+    assert any("too panoramic" in f for f in images.hero_failures({**hero, "src": "/images/wide.webp", "width": 4000, "height": 800}, tmp_path))
 
 
-def test_add_hero_refuses_a_portrait_photo_and_changes_nothing(tmp_path):
+def test_add_hero_refuses_an_absurdly_tall_photo_and_changes_nothing(tmp_path):
     path = make_article(tmp_path)
-    (tmp_path / "tall.jpg").write_bytes(picture(1500, 2100))
-    with pytest.raises(images.ImageError, match="not a landscape picture"):
-        images.add_hero(path, tmp_path / "tall.jpg", alt="A tall picture of a console", credit="Me", license="Own work", public_dir=tmp_path / "public")
+    (tmp_path / "tall.jpg").write_bytes(picture(1000, 2600))
+    with pytest.raises(images.ImageError, match="too tall and narrow"):
+        images.add_hero(path, tmp_path / "tall.jpg", alt="A very tall picture", credit="Me", license="Own work", public_dir=tmp_path / "public")
     assert path.read_text(encoding="utf-8") == ARTICLE and not (tmp_path / "public" / "images").exists()
+
+
+def test_add_hero_accepts_a_portrait_photo_and_records_the_scaled_size(tmp_path):
+    path = make_article(tmp_path)
+    (tmp_path / "upright.jpg").write_bytes(picture(1536, 2160))
+    hero = images.add_hero(path, tmp_path / "upright.jpg", alt="A console standing upright", credit="Me", license="Own work", public_dir=tmp_path / "public")
+    assert (hero["width"], hero["height"]) == (1138, 1600) and images.hero_failures(hero, tmp_path / "public") == []
+
+
+# --- the pages show a hero in a bounded frame ------------------------------------------------------------------------------
+
+ROOT = images.PROJECT_ROOT
+
+
+def read(relative):
+    return (ROOT / relative).read_text(encoding="utf-8")
+
+
+def test_the_article_page_puts_the_hero_in_a_bounded_centred_frame():
+    page, css = read("src/pages/news/[id].astro"), read("src/styles/gx.css")
+    assert 'class="gx-heroframe"' in page and 'class="h-auto w-full' not in page
+    frame = css[css.index(".gx-heroframe {"):]
+    assert "justify-content: center" in frame and "overflow: hidden" in frame
+    image = css[css.index(".gx-heroframe img {"):]
+    assert "max-height: 560px" in image and "max-width: 100%" in image and "object-fit: contain" in image
+    assert "width: auto" in image and "height: auto" in image
+
+
+def test_cards_and_the_top_story_show_a_non_landscape_picture_whole_instead_of_cropped():
+    card, home, css = read("src/components/ArticleCard.astro"), read("src/pages/index.astro"), read("src/styles/gx.css")
+    assert "gx-thumb-contain" in card and "hero.width / hero.height < 1.2" in card
+    assert "gx-thumb-contain" in home and "top.data.hero.width / top.data.hero.height < 1.2" in home
+    assert ".gx-thumb-contain { object-fit: contain; }" in css and "object-fit: cover" in css

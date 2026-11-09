@@ -47,10 +47,12 @@ DEFAULTS: dict[str, Any] = {
     ],
     "min_width": 800,
     "max_width": 1600,
-    # A hero is shown full width at its own proportions, so a tall picture would push the article
-    # a screen down: it must be landscape (width / height between these two).
-    "min_aspect": 1.2,
+    # A tall photo is fine (a console stood upright is a portrait picture) because the page shows it
+    # in a bounded frame, but nothing absurd: width / height must be between these two.
+    "min_aspect": 0.5,
     "max_aspect": 3.5,
+    # A tall picture is scaled down to this height, so it stays a light file.
+    "max_height": 1600,
     "max_bytes": 400_000,
     "quality": 82,
 }
@@ -144,7 +146,7 @@ def aspect_problem(width: int, height: int, settings: dict | None = None) -> str
         return "the picture has no size"
     ratio = width / height
     if ratio < cfg["min_aspect"]:
-        return f"{width}x{height} is not a landscape picture (width must be at least {cfg['min_aspect']} times the height)"
+        return f"{width}x{height} is too tall and narrow (width must be at least {cfg['min_aspect']} times the height)"
     if ratio > cfg["max_aspect"]:
         return f"{width}x{height} is too panoramic (width must be at most {cfg['max_aspect']} times the height)"
     return None
@@ -154,9 +156,10 @@ def process_image(source: bytes | str | Path, dest: str | Path, *, settings: dic
     """Resize ``source`` into a WebP file at ``dest``; return its ``width``, ``height`` and ``bytes``.
 
     The picture is rotated as its camera data says, then that data (location, device) is dropped,
-    scaled down to ``max_width`` if wider, and encoded at the best quality that fits ``max_bytes``.
-    A picture narrower than ``min_width`` is refused: it would be blurry at the top of a page. So is one
-    that is not landscape (or is absurdly panoramic): shown full width it would break the page.
+    scaled down to fit ``max_width`` x ``max_height``, and encoded at the best quality that fits
+    ``max_bytes``. A picture narrower than ``min_width`` is refused: it would be blurry at the top of a
+    page. So is one of an absurd shape (more than twice as tall as wide, or more than 3.5 times as wide as
+    tall). An ordinary portrait photo is accepted; the page shows it in a bounded frame.
     """
     cfg = settings or load_image_config()
     data = source if isinstance(source, bytes) else Path(source).read_bytes()
@@ -171,9 +174,9 @@ def process_image(source: bytes | str | Path, dest: str | Path, *, settings: dic
     shape = aspect_problem(image.width, image.height, cfg)
     if shape:
         raise ImageError(shape)
-    if image.width > cfg["max_width"]:
-        height = round(image.height * cfg["max_width"] / image.width)
-        image = image.resize((cfg["max_width"], height), Image.LANCZOS)
+    scale = min(1.0, cfg["max_width"] / image.width, cfg["max_height"] / image.height)
+    if scale < 1.0:
+        image = image.resize((round(image.width * scale), round(image.height * scale)), Image.LANCZOS)
     image = image.convert("RGB")
     encoded = b""
     for quality in (cfg["quality"], 75, 68, 60, 52):

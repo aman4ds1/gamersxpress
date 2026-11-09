@@ -15,11 +15,12 @@ for sharing. Nothing about publishing depends on an image.
   `Steam store`, `Own work`, `Licensed`.
 - **Never use a picture from another news outlet.** It is copyrighted, can bring a takedown notice
   and can get an AdSense application refused.
-- The picture must be **landscape**: its width must be between 1.2 and 3.5 times its height
-  (`min_aspect` and `max_aspect` in `pipeline/config.yaml`). A hero is shown full width at its own
-  proportions, so a tall portrait photo would push the article a screen down. Portrait, square and
-  ultra-panoramic pictures are refused by the add command, by the automatic steps and by the publish
-  check.
+- **Any ordinary shape is fine, including a tall portrait photo** (a console standing upright is a
+  portrait picture). The width must be between 0.5 and 3.5 times the height (`min_aspect` and
+  `max_aspect` in `pipeline/config.yaml`); anything taller than 1 : 2 or wider than 3.5 : 1 is refused.
+  A tall picture is scaled down to 1600 px high (`max_height`). The article page shows every hero in a
+  centred frame at most 560 px tall, so a tall photo is shown whole and never pushes the text down, and
+  cards show a portrait or square picture whole instead of cropping it.
 - The picture must be at least 800 px wide. It is resized to at most 1600 px and compressed to
   under 400 KB.
 
@@ -154,7 +155,7 @@ It is deliberately strict, because a wrong picture is worse than none:
 - **Licenses:** public domain, CC0, CC BY and CC BY-SA, with a named author (except public domain
   and CC0). No NonCommercial or NoDerivatives licenses, no ported versions, nothing with a
   personality-rights restriction.
-- **Plain photos only:** at least 1200 px wide and landscape, and not a logo, diagram, render, toy,
+- **Plain photos only:** at least 1200 px wide, and not a logo, diagram, render, toy,
   cosplay, poster or box shot.
 - **One product per photo.** A title with "comparison", "compared", "vs", "versus", "size", "beside",
   "alongside" or "together" is refused, and so is one that joins another maker's or platform's name to
