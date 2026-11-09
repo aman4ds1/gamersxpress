@@ -846,3 +846,112 @@ def test_generate_seo_checks_entities_against_the_body_not_the_front_matter_the_
         articles_dir=tmp_path / "articles", drafts_dir=tmp_path / "drafts",
     )
     assert "Valve" not in result["entities"] and "FromSoftware" in result["entities"]
+
+
+# --- completing a short tag list --------------------------------------------------------------------------------------
+
+
+def test_a_tag_list_that_is_long_enough_is_only_normalized_and_capped_never_added_to():
+    assert seo.complete_tags(["Game Pass", "xbox", "pc gaming"], entities=["Starfield"], category="xbox") == ["game-pass", "xbox", "pc-gaming"]
+    assert seo.complete_tags([f"tag {i}" for i in range(9)], entities=["X Y"]) == [f"tag-{i}" for i in range(seo.MAX_TAGS)]
+    assert seo.complete_tags(["a1", "b2", "c3", "d4"], entities=["Extra Thing"]) == ["a1", "b2", "c3", "d4"]
+
+
+def test_two_tags_are_completed_from_the_stories_entities_in_order():
+    assert seo.complete_tags(["nvidia", "gpu"], entities=["NVIDIA", "RTX 5090", "Intel"], category="hardware") == ["nvidia", "gpu", "rtx-5090"]
+    assert seo.complete_tags(["gpu"], entities=["NVIDIA", "RTX 5090", "Intel"]) == ["gpu", "nvidia", "rtx-5090"]
+
+
+def test_no_more_tags_are_added_than_are_needed():
+    assert seo.complete_tags([], entities=["One Two", "Three Four", "Five Six", "Seven Eight"]) == ["one-two", "three-four", "five-six"]
+    assert seo.complete_tags(["a1", "b2"], entities=["C Three", "D Four"]) == ["a1", "b2", "c-three"]
+
+
+def test_the_category_fills_in_after_the_entities_and_before_the_last_resort_tags():
+    assert seo.complete_tags(["gpu"], entities=["NVIDIA"], category="hardware") == ["gpu", "nvidia", "hardware"]
+    assert seo.complete_tags(["gpu"], entities=[], category="nintendo") == ["gpu", "nintendo", "gaming-news"]
+    assert seo.complete_tags(["gpu"], entities=[], category="gaming-news") == ["gpu", "gaming-news", "video-games"]
+
+
+@pytest.mark.parametrize("category", ["sports", "", None, 5, "Hardware"])
+def test_a_category_that_is_not_an_allowed_one_is_never_added(category):
+    assert seo.complete_tags(["gpu"], entities=[], category=category) == ["gpu", "gaming-news", "video-games"]
+
+
+def test_a_story_with_nothing_to_fill_from_still_gets_three_valid_tags():
+    assert seo.complete_tags([], entities=[], category=None) == list(seo.FALLBACK_TAGS)
+    assert len(seo.FALLBACK_TAGS) >= seo.MIN_TAGS and all(seo._TAG_RE.fullmatch(tag) for tag in seo.FALLBACK_TAGS)
+    assert seo.complete_tags(None) == list(seo.FALLBACK_TAGS) and seo.complete_tags("xbox") == ["xbox", "gaming-news", "video-games"]
+
+
+def test_a_tag_that_is_already_there_is_not_added_again_under_another_spelling():
+    assert seo.complete_tags(["nvidia", "gpu"], entities=["NVIDIA", "nvidia", "Nvidia "], category="hardware") == ["nvidia", "gpu", "hardware"]
+    assert seo.complete_tags(["gaming-news"], entities=[], category=None) == ["gaming-news", "video-games", "gaming"]
+
+
+def test_an_entity_that_does_not_make_a_valid_short_tag_is_skipped():
+    long_name = "The Legend of Some Extremely Long Named Game Subtitle"
+    assert len(seo.slugify(long_name)) > seo.MAX_ADDED_TAG_CHARS
+    assert seo.complete_tags(["gpu"], entities=[long_name, "", "  ", "\u65e5\u672c\u8a9e", 7, None, "Good Name"]) == ["gpu", "good-name", "gaming-news"]
+    assert seo.complete_tags(["gpu"], entities=["A" * seo.MAX_ADDED_TAG_CHARS])[1] == "a" * seo.MAX_ADDED_TAG_CHARS
+    assert seo.complete_tags(["gpu"], entities=["A" * (seo.MAX_ADDED_TAG_CHARS + 1)])[1] == "gaming-news"
+
+
+def test_the_input_is_not_changed_and_the_minimum_and_limit_can_be_set():
+    original = ["gpu"]
+    assert seo.complete_tags(original, entities=["NVIDIA"]) == ["gpu", "nvidia", "gaming-news"] and original == ["gpu"]
+    assert seo.complete_tags(["gpu"], entities=["NVIDIA", "Intel"], minimum=2) == ["gpu", "nvidia"]
+    assert seo.complete_tags(["gpu"], entities=["NVIDIA", "Intel"], minimum=5, limit=4) == ["gpu", "nvidia", "intel", "gaming-news"]
+
+
+def generate_for(tmp_path, data, **kwargs):
+    articles, drafts = tmp_path / "articles", tmp_path / "drafts"
+    articles.mkdir(exist_ok=True)
+    drafts.mkdir(exist_ok=True)
+    generate = make_generate(data)
+    result = seo.generate_seo(ARTICLE, make_facts(), generate=generate, entities_path=tmp_path / "entities.json",
+                              articles_dir=articles, drafts_dir=drafts, **kwargs)
+    return result, generate
+
+
+def test_a_model_that_returns_two_tags_no_longer_costs_a_retry_or_the_story(tmp_path):
+    # The live failure: "tags must have 3 to 6 entries, got 2", twice, and the story was dropped.
+    result, generate = generate_for(tmp_path, seo_data(tags=["nvidia", "gpu"]))
+    assert result["tags"] == ["nvidia", "gpu", seo.slugify(result["entities"][0])] and len(generate.calls) == 1
+    assert len(result["tags"]) == 3 and result["tags"][2] == "rtx-5090"
+
+
+def test_three_tags_that_collapse_into_two_are_completed_too(tmp_path):
+    result, generate = generate_for(tmp_path, seo_data(tags=["game pass", "Game Pass", "gpu"]))
+    assert result["tags"][:2] == ["game-pass", "gpu"] and len(result["tags"]) == 3 and len(generate.calls) == 1
+
+
+def test_a_model_that_returns_no_tags_at_all_gets_tags_from_the_entities_then_the_category(tmp_path):
+    result, generate = generate_for(tmp_path, seo_data(tags=[]))
+    expected = [seo.slugify(entity) for entity in result["entities"]] + ["hardware", "gaming-news"]
+    assert result["tags"] == expected[:3] and len(result["tags"]) == 3 and len(generate.calls) == 1
+
+
+def test_tags_are_only_filled_from_the_entities_that_survive_the_pipelines_own_filtering(tmp_path):
+    result, _generate = generate_for(tmp_path, seo_data(tags=["gpu"], entities=["NVIDIA", "Intel Arc"]))
+    assert "Intel Arc" not in result["entities"] and "intel-arc" not in result["tags"]       # the article never names it
+    assert result["tags"] == ["gpu", seo.slugify(result["entities"][0]), "hardware"]
+
+
+def test_a_model_that_already_returned_enough_tags_keeps_exactly_its_own(tmp_path):
+    result, generate = generate_for(tmp_path, seo_data(tags=["nvidia", "gpu", "rtx-5090"]))
+    assert result["tags"] == ["nvidia", "gpu", "rtx-5090"] and len(generate.calls) == 1
+
+
+def test_a_story_with_a_real_problem_still_retries_and_fails_even_though_its_tags_are_completed(tmp_path):
+    with pytest.raises(seo.SeoError, match="value not in the facts sheet"):
+        generate_for(tmp_path, seo_data(title="NVIDIA launches a $499 gaming GPU", tags=["gpu"]))
+
+
+def test_completing_tags_is_logged(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="gamersxpress.pipeline.seo"):
+        result, _generate = generate_for(tmp_path, seo_data(tags=["gpu"]))
+    assert any(message.startswith("seo completed tags: ['gpu'] -> ['gpu', ") and "rtx-5090" in message for message in caplog.messages)
+    assert result["tags"][0] == "gpu"

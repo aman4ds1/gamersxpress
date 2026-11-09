@@ -85,6 +85,10 @@ MAX_SLUG = 65
 MAX_ALT = 200
 MIN_TAGS = 3
 MAX_TAGS = 6
+#: Longest tag that code will add itself when it has to fill a short tag list.
+MAX_ADDED_TAG_CHARS = 40
+#: Last resort for a story with too few entities to fill its tags: plain, always-true topic tags.
+FALLBACK_TAGS = ("gaming-news", "video-games", "gaming")
 
 
 def content_limits() -> dict:
@@ -445,6 +449,36 @@ def normalize_tags(tags: Any, *, limit: int = MAX_TAGS) -> list[str]:
     if limit and len(out) > limit:
         out = out[:limit]
     return out
+
+
+def complete_tags(
+    tags: Any,
+    *,
+    entities: Iterable[Any] = (),
+    category: Any = None,
+    minimum: int = MIN_TAGS,
+    limit: int = MAX_TAGS,
+) -> list[str]:
+    """Fill a short tag list up to ``minimum`` without asking the model again.
+
+    The model sometimes returns two tags, or three that collapse into two once they are normalized.
+    That used to cost a retry and, on a second miss, the whole story. The missing tags are taken, in
+    order, from the story's canonical entities (names the article itself uses), then its category,
+    then :data:`FALLBACK_TAGS`. A tag code adds must be a valid slug of at most
+    :data:`MAX_ADDED_TAG_CHARS` characters and new to the list. A list that is already long enough
+    is only normalized and capped, never added to.
+    """
+    out = normalize_tags(tags, limit=limit)
+    candidates = [slugify(entity) for entity in entities if isinstance(entity, str)]
+    if category in ALLOWED_CATEGORIES:
+        candidates.append(category)
+    candidates.extend(FALLBACK_TAGS)
+    for tag in candidates:
+        if len(out) >= minimum:
+            break
+        if tag and tag not in out and len(tag) <= MAX_ADDED_TAG_CHARS and _TAG_RE.fullmatch(tag):
+            out.append(tag)
+    return out[:limit]
 
 
 # --- prompt ------------------------------------------------------------------
@@ -813,6 +847,12 @@ def generate_seo(
         if data["entities"] != raw_entities:
             logger.info("seo normalized entities: %r -> %r", raw_entities, data["entities"])
 
+        # Too few tags is never worth a retry or a lost story: fill them from the story's own entities.
+        completed = complete_tags(data["tags"], entities=data["entities"], category=data.get("category"))
+        if completed != data["tags"]:
+            logger.info("seo completed tags: %r -> %r", data["tags"], completed)
+            data["tags"] = completed
+
         errors = validate(data, article=article, facts=sheet, entities=entities, config=config)
         if errors:
             logger.warning("seo attempt %d invalid: %s", attempt + 1, "; ".join(errors))
@@ -858,6 +898,7 @@ __all__ = [
     "existing_slugs",
     "generate_seo",
     "load_entities",
+    "complete_tags",
     "normalize_tags",
     "save_entities",
     "slugify",
