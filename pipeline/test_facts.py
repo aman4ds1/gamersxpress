@@ -8325,3 +8325,169 @@ def test_other_claims_break_a_tie_between_two_sources():
     assert not any("dexerto.com" in m["source_urls"][0] for m in merged)
     assert not any("January 29" in m["value"] for m in merged)
     assert len(merged) == 2
+
+
+# --- identical values agree; a better-corroborated claim is the fallback central ------------------
+
+def vclaim(text, value, urls, kind="reported"):
+    return {"claim": text, "value": value, "kind": kind, "source_urls": list(urls), "origin": "unstated"}
+
+
+TITLE_A = vclaim("The full title of The Elder Scrolls VI is officially revealed as The Elder Scrolls VI",
+                 "The Elder Scrolls VI: Sentinel", ["https://a.example/x"])
+TITLE_B = vclaim("The next entry in the series is titled The Elder Scrolls VI: Sentinel",
+                 "The Elder Scrolls VI: Sentinel", ["https://b.example/y"])
+NOWHERE = vclaim("The release date for The Elder Scrolls VI: Sentinel remains nowhere in sight",
+                 "Still nowhere in sight", ["https://a.example/x"])
+
+
+def test_two_claims_giving_the_identical_title_agree_even_when_worded_differently():
+    assert facts._overlap_score(TITLE_B, TITLE_A) < facts.DEFAULT_CORROBORATION_OVERLAP
+    assert facts._values_agree(TITLE_B, TITLE_A) and facts._values_agree(TITLE_A, TITLE_B)
+    assert facts.corroboration_score(TITLE_B, TITLE_A, entities=["Elder Scrolls VI"]) > 0
+
+
+@pytest.mark.parametrize("a,b", [
+    (("Price rises", "$499"), ("Cost goes up", "$499")),                      # a bare figure never agrees
+    (("Sony delays the game", "May 20"), ("Sony moves the game", "May 20")),   # one non-figure word at most
+    (("The studio names its game", "Elder Scrolls VI: Sentinel"), ("The studio names a sequel", "Elder Scrolls VI: Legends")),
+    (("Nintendo raised prices", "Nintendo Switch 2"), ("Reviews are in for the console", "Nintendo Switch 2")),  # unrelated claims
+    (("Nintendo raised prices", "Nintendo Switch 2"), ("Nintendo reviews are in", "Nintendo Switch 2")),        # one shared word
+])
+def test_values_that_do_not_really_agree_stay_apart(a, b):
+    assert not facts._values_agree(vclaim(*a, ["u1"]), vclaim(*b, ["u2"]))
+
+
+def test_matching_values_still_lose_to_a_contradicting_figure_or_a_missing_entity():
+    a = vclaim("The studio names its new game Quasar Arena: Sentinel in 2026", "Quasar Arena: Sentinel", ["u1"])
+    b = vclaim("The studio names its new game Quasar Arena: Sentinel in 2027", "Quasar Arena: Sentinel", ["u2"])
+    assert facts._values_agree(a, b) and facts.corroboration_score(a, b, entities=["Quasar Arena"]) == 0.0
+    assert facts.corroboration_score(TITLE_B, TITLE_A, entities=["Totally Different Game"]) == 0.0
+
+
+def test_agreeing_sources_counts_outlets_beyond_the_first():
+    assert facts._agreeing_sources(NOWHERE, [NOWHERE, TITLE_A, TITLE_B]) == 0
+    assert facts._agreeing_sources(TITLE_A, [NOWHERE, TITLE_A, TITLE_B]) == 1
+    merged = {**TITLE_A, "source_urls": ["https://a.example/x", "https://c.example/z"]}
+    assert facts._agreeing_sources(merged, [merged]) == 1
+    # A claim from the same source, or one stating a different figure, adds nothing.
+    same_source = {**TITLE_B, "source_urls": ["https://a.example/x"]}
+    assert facts._agreeing_sources(TITLE_A, [TITLE_A, same_source]) == 0
+    conflict = vclaim("Quasar sold 4 million copies in its first week", "4 million copies", ["u1"])
+    other = vclaim("Quasar sold 8 million copies in its first week", "8 million copies", ["u2"])
+    assert facts._agreeing_sources(conflict, [conflict, other]) == 0
+
+
+HEADLINE = "The Elder Scrolls VI: Sentinel Is Official, Release Date Still Nowhere In Sight"
+
+
+def test_the_alternative_central_is_the_corroborated_claim_that_still_shares_the_headline():
+    assert facts.alternative_central([NOWHERE, TITLE_A, TITLE_B], HEADLINE, NOWHERE) in (TITLE_A, TITLE_B)
+    picked = facts.alternative_central([NOWHERE, TITLE_A, TITLE_B], HEADLINE, NOWHERE)
+    assert picked is TITLE_B   # equally corroborated, closer to the headline
+
+
+def test_there_is_no_alternative_without_a_corroborated_claim_a_headline_or_a_chosen_claim():
+    assert facts.alternative_central([NOWHERE, TITLE_A], HEADLINE, NOWHERE) is None      # nobody agrees
+    assert facts.alternative_central([NOWHERE, TITLE_A, TITLE_B], "", NOWHERE) is None
+    assert facts.alternative_central([NOWHERE, TITLE_A, TITLE_B], HEADLINE, None) is None
+    assert facts.alternative_central([], HEADLINE, NOWHERE) is None
+
+
+def test_an_alternative_must_share_at_least_half_as_much_of_the_headline_as_the_best_claim():
+    far = vclaim("A teaser shows sand blowing across a desert", "sand blowing", ["https://c.example/q"])
+    far2 = vclaim("A teaser shows sand blowing across a desert at dusk", "sand blowing", ["https://d.example/r"])
+    assert facts.alternative_central([NOWHERE, far, far2], HEADLINE, NOWHERE) is None
+
+
+def test_the_alternative_never_returns_the_chosen_claim_and_prefers_the_most_agreed():
+    third = vclaim("The game is titled The Elder Scrolls VI: Sentinel", "The Elder Scrolls VI: Sentinel", ["https://c.example/q"])
+    best = facts.alternative_central([NOWHERE, TITLE_A, TITLE_B, third], HEADLINE, NOWHERE)
+    assert best is not NOWHERE and facts._agreeing_sources(best, [NOWHERE, TITLE_A, TITLE_B, third]) == 2
+    assert facts.alternative_central([TITLE_A, TITLE_B], HEADLINE, TITLE_A) is TITLE_B
+    # Even when the chosen claim is the closest to the headline and corroborated, it is not its own alternative.
+    assert facts.alternative_central([TITLE_A, TITLE_B], HEADLINE, TITLE_B) is TITLE_A
+
+
+QUASAR_TITLE = "Quasar Arena: Sentinel Is Official, Release Date Still Nowhere In Sight"
+
+
+def run_alt_central_story(tmp_path, monkeypatch, *, owner_b="co-b", groups=(("c1", "c2"),), mode="evidence"):
+    """A weak headline claim nobody else states, and a title claim two outlets state."""
+    use_mode(monkeypatch, mode)
+    ua, ub = "https://outlet0.example/quasar", "https://outlet1.example/quasar"
+    sources = [
+        source(link=ua, name="Outlet 0", owner="co-a", tier=2, title=QUASAR_TITLE,
+               text="Zed Studio announced the full title of Quasar Arena is Quasar Arena: Sentinel. "
+                    "There is still no release date in sight."),
+        source(link=ub, name="Outlet 1", owner=owner_b, tier=2, title="Quasar Arena Sentinel revealed in new teaser",
+               text="Zed Studio announced the next game is titled Quasar Arena: Sentinel in a new teaser."),
+    ]
+    weak = acme_claim(ua, claim="Release date remains nowhere in sight", value="Still nowhere in sight", kind="reported",
+                      origin="unstated", quote="There is still no release date in sight", attribution_quote="",
+                      speaker="", speaker_type="none")
+    named = dict(origin="Zed Studio", speaker="Zed Studio", attribution_quote="Zed Studio announced")
+    title_a = acme_claim(ua, claim="The full title of Quasar Arena is revealed as Quasar Arena: Sentinel",
+                         value="Quasar Arena: Sentinel", quote="Zed Studio announced the full title of Quasar Arena is Quasar Arena: Sentinel", **named)
+    title_b = acme_claim(ub, claim="The next game is titled Quasar Arena: Sentinel", value="Quasar Arena: Sentinel",
+                         quote="Zed Studio announced the next game is titled Quasar Arena: Sentinel in a new teaser", **named)
+    inner, calls = grouping_generate([{"claims": [weak, title_a]}, {"claims": [title_b]}], [list(g) for g in groups])
+    try:
+        result = facts.facts(gathered("quasar", sources), id="quasar", title=QUASAR_TITLE,
+                             entities=["Quasar Arena", "Zed Studio"], output_dir=tmp_path, now=NOW, generate=inner)
+    except facts.UnconfirmedStory:
+        result = json.loads((tmp_path / "unconfirmed" / "quasar.json").read_text(encoding="utf-8"))
+    return result, calls
+
+
+def central_of(result):
+    return [item["claim"] for item in result["claims"] if item.get("central")]
+
+
+def test_a_story_that_fails_on_its_headline_claim_confirms_on_the_corroborated_alternative(tmp_path, monkeypatch):
+    result, _calls = run_alt_central_story(tmp_path, monkeypatch)
+    assert result["confirmation"]["confirmed"] is True and result["confirmation"]["alternative_central"] is True
+    assert central_of(result) == ["The full title of Quasar Arena is revealed as Quasar Arena: Sentinel"]
+
+
+def test_the_same_story_is_unconfirmed_without_the_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(facts, "alternative_central", lambda *args, **kwargs: None)
+    result, _calls = run_alt_central_story(tmp_path, monkeypatch)
+    assert result["confirmation"]["confirmed"] is False
+    assert central_of(result) == ["Release date remains nowhere in sight"]
+
+
+def test_the_fallback_adds_no_model_call(tmp_path, monkeypatch):
+    with_fallback = run_alt_central_story(tmp_path / "a", monkeypatch)[1]
+    monkeypatch.setattr(facts, "alternative_central", lambda *args, **kwargs: None)
+    without = run_alt_central_story(tmp_path / "b", monkeypatch, groups=(("c1", "c2"),))[1]
+    assert len(with_fallback) <= len(without)
+
+
+def test_a_story_that_confirms_on_its_headline_claim_never_reaches_the_fallback(tmp_path, monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("alternative_central must not run for a confirmed story")
+
+    monkeypatch.setattr(facts, "alternative_central", boom)
+    result, _calls = run_alt_central_story(tmp_path, monkeypatch, groups=(("c0", "c1", "c2"),))
+    assert result["confirmation"]["confirmed"] is True and "alternative_central" not in result["confirmation"]
+    assert central_of(result) == ["Release date remains nowhere in sight"]
+
+
+def test_an_alternative_that_does_not_confirm_either_leaves_the_story_unconfirmed(tmp_path, monkeypatch):
+    # Both title claims come from one owner, so the alternative group is a single origin.
+    result, _calls = run_alt_central_story(tmp_path, monkeypatch, owner_b="co-a")
+    assert result["confirmation"]["confirmed"] is False and "alternative_central" not in result["confirmation"]
+    assert central_of(result) == ["Release date remains nowhere in sight"]
+
+
+def test_only_corroborating_kinds_count_as_agreement():
+    opinion = {**TITLE_B, "kind": "opinion"}
+    assert facts._agreeing_sources(TITLE_A, [TITLE_A, opinion]) == 0
+    assert facts._agreeing_sources(TITLE_A, [TITLE_A, {**TITLE_B, "kind": "confirmed"}]) == 1
+
+
+def test_the_fallback_only_applies_in_the_evidence_mode(tmp_path, monkeypatch):
+    # In shadow mode the legacy verdict decides, so the central claim must stay the headline's.
+    result, _calls = run_alt_central_story(tmp_path, monkeypatch, mode="shadow")
+    assert central_of(result) == ["Release date remains nowhere in sight"]

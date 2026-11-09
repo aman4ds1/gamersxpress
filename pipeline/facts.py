@@ -5454,6 +5454,61 @@ def central_claim(claims: list[dict], *, title: str = "") -> Optional[dict]:
     return ranked[-1][5]
 
 
+def _claim_source_keys(claim: dict) -> set[str]:
+    urls = claim.get("source_urls") or [claim.get("source_url")]
+    return {_source_url_key(url) for url in urls if url}
+
+
+def _agreeing_sources(claim: dict, claims: list[dict]) -> int:
+    """How many outlets beyond the first state ``claim``'s fact, itself included.
+
+    A claim merged from several sources already counts them. Another claim agrees when its
+    wording overlaps at least the corroboration cutoff or it states the same value, and the
+    two state no contradicting figures or dates.
+    """
+    sources = _claim_source_keys(claim)
+    for other in claims or []:
+        if other is claim or other.get("kind") not in CORROBORATING_KINDS:
+            continue
+        keys = _claim_source_keys(other)
+        if not keys:
+            continue
+        if (
+            _overlap_score(other, claim) >= _corroboration_overlap() or _values_agree(other, claim)
+        ) and not _claims_conflict(other, claim):
+            sources |= keys
+    return max(len(sources) - 1, 0)
+
+
+def alternative_central(claims: list[dict], title: str, chosen: dict | None) -> Optional[dict]:
+    """The claim to judge instead when the headline's claim cannot be confirmed.
+
+    A headline with two halves ("X is official, Y still unknown") can make the half no other
+    outlet states the central claim, and a story is confirmed only by what a second outlet also
+    reports. This is the claim that shares at least half as much of the headline as the best
+    one does and is stated by another source, by wording (``corroboration_overlap``) or by the
+    same value. It is only ever used for a story that would otherwise stay unconfirmed, so a
+    story that confirms on its headline claim is never touched. Most-agreed, then closest to
+    the headline, then longest wins; None when nothing qualifies.
+    """
+    title_tokens = _word_tokens(str(title or ""))
+    if not title_tokens or chosen is None:
+        return None
+    scored = [(_title_overlap_score(claim, title_tokens), claim) for claim in claims or []]
+    best = max((score for score, _claim in scored), default=0)
+    if best <= 0:
+        return None
+    options = [
+        (_agreeing_sources(claim, claims), score, len(str(claim.get("claim", ""))), index, claim)
+        for index, (score, claim) in enumerate(scored)
+        if claim is not chosen and score >= 0.5 * best
+    ]
+    options = [option for option in options if option[0] >= 1]
+    if not options:
+        return None
+    return max(options, key=lambda option: option[:4])[4]
+
+
 #: How much of the shared wording two claims must share -- the Jaccard overlap
 #: over the content words of their text plus value -- before the one counts as
 #: corroborating the other's fact. Overridable through
@@ -5564,6 +5619,39 @@ def _central_adds_hard_token(candidate: dict, central: dict) -> bool:
     return bool((central_numbers - candidate_numbers) or (central_months - candidate_months))
 
 
+#: Two claims state the same value when their value words are this close (Jaccard) ...
+_VALUE_AGREE_OVERLAP = 0.8
+#: ... and the claims themselves share this much wording (Jaccard) and at least two words.
+_VALUE_AGREE_TEXT_OVERLAP = 0.2
+
+
+def _words_of(text: object) -> set[str]:
+    folded = cluster.strip_diacritics(str(text or "")).lower()
+    return {token for token in re.findall(r"[a-z0-9]+", folded) if token not in _STOP_WORDS}
+
+
+def _values_agree(candidate: dict, central: dict) -> bool:
+    """Whether two claims state the same *value* about the same subject.
+
+    Outlets word the same news differently, so the overlap of whole claims can sit
+    well under the corroboration cutoff while both state the identical title, name or
+    figure ("The next entry is titled The Elder Scrolls VI: Sentinel" and "The full
+    title is officially revealed as The Elder Scrolls VI" both give the value "The
+    Elder Scrolls VI: Sentinel"). Such a pair agrees when the values are (nearly)
+    identical and share at least two words that are not figures, so a bare number never
+    counts, and the claims share at least two words and a fifth of their wording, so two
+    unrelated claims that happen to hold the same name do not.
+    """
+    a, b = _words_of(candidate.get("value")), _words_of(central.get("value"))
+    if not a or not b or len(a & b) / len(a | b) < _VALUE_AGREE_OVERLAP:
+        return False
+    if len({word for word in a & b if not word.isdigit()}) < 2:
+        return False
+    ta, tb = _words_of(candidate.get("claim")), _words_of(central.get("claim"))
+    shared = ta & tb
+    return len(shared) >= 2 and len(shared) / len(ta | tb) >= _VALUE_AGREE_TEXT_OVERLAP
+
+
 def corroboration_score(
     candidate: dict, central: dict, *, entities: list[str] | None = None
 ) -> float:
@@ -5577,6 +5665,8 @@ def corroboration_score(
     score = _overlap_score(candidate, central)
     if score < _corroboration_overlap():
         score = _containment_score(candidate, central)
+    if score < _corroboration_overlap() and _values_agree(candidate, central):
+        score = _corroboration_overlap()
     if score < _corroboration_overlap():
         return 0.0
     if _claims_conflict(candidate, central):
@@ -7994,6 +8084,37 @@ def facts(
             allow_single_origin=single_origin_on,
             min_single_origin_owners=single_origin_owners,
         )
+
+    # A headline with two halves can make the half no other outlet states the central claim.
+    # A story that would stay unconfirmed is judged once more on the best-corroborated claim
+    # that still shares the headline, over the group the same grouping call gave it. This
+    # adds no model call, and a story that confirms on its headline claim never gets here.
+    if (
+        evidence_conf is not None
+        and confirmation_mode == "evidence"
+        and not evidence_conf.get("confirmed")
+        and central is not None
+    ):
+        alternative = alternative_central(claims, title, central)
+        if alternative is not None:
+            alternative_conf = evidence_confirmation(
+                evidence_central_claims(grouping, groups[claims.index(alternative)]),
+                sources_by_url,
+                tier1_confirms=tier1_confirms,
+                aliases=aliases,
+                min_first_party=min_first_party,
+                allow_single_origin=single_origin_on,
+                min_single_origin_owners=single_origin_owners,
+            )
+            if alternative_conf.get("confirmed"):
+                logger.info(
+                    "story %s: confirmed on an alternative central claim %r (the headline claim %r was not)",
+                    name, alternative.get("claim"), central.get("claim"),
+                )
+                alternative_conf["alternative_central"] = True
+                central, central_group, evidence_conf = alternative, groups[claims.index(alternative)], alternative_conf
+                for claim in claims:
+                    claim["central"] = claim is central
 
     # The grouping call can leave the central claim alone in its group while
     # another outlet's verified claim states the same fact. A story that would
