@@ -128,13 +128,21 @@ license (linked to the license text).
 
 It is deliberately strict, because a wrong picture is worse than none:
 
-- **The category must be named exactly like the product** in the headline and sit under a hardware
-  parent (consoles, controllers, graphics cards...). "Nintendo Switch 2" never finds the original
-  Switch's photos.
+- **The category must be named exactly like the product** in the headline. "Nintendo Switch 2" never
+  finds the original Switch's photos.
+- **The category must be hardware.** Either the product is on the `trusted_products` list in
+  `pipeline/config.yaml` (obvious consoles, controllers and handhelds such as "PlayStation 5 Pro" and
+  "Steam Deck"), or one of the category's parents or grandparents is a hardware category (consoles,
+  controllers, graphics cards...) and none of its direct parents is about games, people or companies.
+  When you confirm a product's category exists on Commons, add its exact name to that list.
 - **Never an older model.** A name followed by a number or model word in the headline ("Steam Deck"
   in "Steam Deck 2 teased", "PlayStation 5" in "PlayStation 5 Pro") is not looked up.
 - **The photo must name the product itself:** every word of the product name must be in the photo's
-  file title or description.
+  file title or description, and its text must not name a different model ("Steam Deck OLED" is
+  never used for "Steam Deck").
+- **Where photos come from.** The category itself. Only if none of its photos is usable, up to three
+  of its subcategories that name the same product (never one for a different model, and never games,
+  screenshots, accessories, repairs or similar).
 - **Licenses:** public domain, CC0, CC BY and CC BY-SA, with a named author (except public domain
   and CC0). No NonCommercial or NoDerivatives licenses, no ported versions, nothing with a
   personality-rights restriction.
@@ -154,8 +162,8 @@ CC BY photos).
 python -m pipeline.commons check "PlayStation 5 Pro price rises in Europe" --entity "PlayStation 5 Pro"
 ```
 
-It prints every step (which category it looked for, how many photos it found, why each unsuitable
-one was skipped) and ends with `RESULT: working`, `RESULT: no photo for this headline` or
+It prints every step (which category it looked for, its parents and grandparents and whether they
+count as hardware, which subcategories it tried, why each unsuitable photo was skipped) and ends with `RESULT: working`, `RESULT: no photo for this headline` or
 `RESULT: Wikimedia Commons could not be reached` (exit codes 0, 1 and 2). Try a console or
 graphics-card headline that should find photos and one about a game that should not. Pass
 `--category` to test another category.

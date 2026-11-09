@@ -1472,4 +1472,33 @@ images:
     max_files: 40
     max_candidates: 5
     max_queries: 3
+    max_subcategories: 3
     timeout_seconds: 10
+    # Products that are plainly hardware: their Commons category needs no parent check. The category
+    # must still be named exactly like the product, and every photo still has to pass its own checks.
+    # Add more here once you have confirmed their category exists on Commons.
+    trusted_products:
+      - PlayStation 5
+      - PlayStation 5 Pro
+      - PlayStation 4
+      - PlayStation 4 Pro
+      - PlayStation 3
+      - PlayStation VR2
+      - DualSense
+      - DualShock 4
+      - Xbox Series X
+      - Xbox Series S
+      - Xbox One
+      - Xbox One X
+      - Xbox One S
+      - Nintendo Switch
+      - Nintendo Switch 2
+      - Nintendo Switch Lite
+      - Nintendo Switch OLED
+      - Steam Deck
+      - Valve Index
+      - Meta Quest 2
+      - Meta Quest 3
+      - Meta Quest Pro
+      - ROG Ally
+      - Legion Go

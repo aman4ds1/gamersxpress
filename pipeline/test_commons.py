@@ -51,17 +51,24 @@ def api(data, status=200):
 class Fake:
     """A stand-in for fetch(): category lookups, file listings and picture downloads."""
 
-    def __init__(self, categories=None, files=None, pictures=None):
+    def __init__(self, categories=None, files=None, pictures=None, subcats=None):
         self.categories, self.files, self.pictures, self.calls = categories or {}, files or {}, pictures or {}, []
+        self.subcats = subcats or {}
 
     def __call__(self, url):
         self.calls.append(url)
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        if query.get("list") == ["categorymembers"]:
+            names = self.subcats.get(query["cmtitle"][0], [])
+            return api({"batchcomplete": True, "query": {"categorymembers": [{"ns": 14, "title": name} for name in names]}})
         if "titles" in query:
-            page = self.categories.get(query["titles"][0], cat_page(query["titles"][0].removeprefix("Category:"), missing=True))
-            if isinstance(page, Exception):
-                raise page
-            return api({"batchcomplete": True, "query": {"pages": [page]}})
+            pages = []
+            for title in query["titles"][0].split("|"):
+                page = self.categories.get(title, cat_page(title.removeprefix("Category:"), missing=True))
+                if isinstance(page, Exception):
+                    raise page
+                pages.append(page)
+            return api({"batchcomplete": True, "query": {"pages": pages}})
         if "gcmtitle" in query:
             return api({"batchcomplete": True, "query": {"pages": self.files.get(query["gcmtitle"][0], [])}})
         answer = self.pictures.get(url, (404, "", b""))
@@ -190,6 +197,7 @@ def test_only_multi_word_product_names_are_looked_up_longest_first_without_repea
     (["Category:Video game controllers"], True), (["Category:Computer hardware by manufacturer"], True),
     (["Category:Xbox controllers"], True), (["Category:Video game consoles by generation"], True), (["Category:Intel microprocessors"], True),
     (["Category:Video games"], False), (["Category:Companies of Japan"], False), (["Category:People"], False), ([], False),
+    (["Category:Sony hardware"], True), (["Category:Valve hardware"], True), (["Category:Hardware stores"], False),
     (["Category:Console games"], False), (["Category:Video games by console"], False), (["Category:PlayStation 5 games"], False),
     (["Category:Sony Interactive Entertainment"], False), (["Category:Video game developers"], False),
 ])
@@ -246,22 +254,119 @@ def test_photos_are_ranked_named_in_title_then_landscape_then_wider():
 # --- talking to Commons -----------------------------------------------------------------------------
 
 
-def category_of(page, fetch=None):
+def category_of(page, fetch=None, trusted=None):
     fake = fetch or Fake(categories={f"Category:{PHRASE}": page})
-    return commons.find_category(PHRASE, fake)
+    return commons.find_category(PHRASE, fake, trusted)
 
 
-def test_the_category_named_exactly_like_the_product_under_a_hardware_parent_is_found():
+def test_a_category_named_exactly_like_the_product_with_a_hardware_parent_is_hardware():
     found = category_of(cat_page())
-    assert found["title"] == f"Category:{PHRASE}" and found["files"] == 30 and found["parents"] == PARENTS
+    assert found["hardware"] is True and found["reason"] == "a parent category is hardware"
+    assert found["title"] == f"Category:{PHRASE}" and found["files"] == 30 and found["subcats"] == 2 and found["parents"] == PARENTS
 
 
-@pytest.mark.parametrize("page", [
-    cat_page(missing=True), cat_page(files=2), cat_page(parents=["Category:Video games"]), cat_page(parents=[]),
-    cat_page("PlayStation 5"),   # a different category came back
+@pytest.mark.parametrize("page,reason", [
+    (cat_page(parents=["Category:Video games"]), "direct parent is about games"),
+    (cat_page(parents=[]), "no parent or grandparent"),
+    (cat_page(parents=["Category:Something else"]), "no parent or grandparent"),
+    (cat_page(parents=["Category:PlayStation 5 games", "Category:PlayStation consoles"]), "direct parent is about games"),
+    (cat_page(parents=["Category:Sony Interactive Entertainment", "Category:Video game developers"]), "direct parent is about games"),
 ])
-def test_any_other_category_is_not_used(page):
+def test_a_category_that_is_not_hardware_is_found_but_not_used(page, reason):
+    found = category_of(page)
+    assert found["hardware"] is False and reason in found["reason"]
+
+
+@pytest.mark.parametrize("page", [cat_page(missing=True), cat_page("PlayStation 5")])   # none, or a different one came back
+def test_a_category_that_does_not_exist_or_is_not_the_one_asked_for_is_not_found(page):
     assert category_of(page) is None
+
+
+def test_an_empty_category_is_not_used():
+    found = category_of(cat_page(files=0) | {"categoryinfo": {"files": 0, "subcats": 0}})
+    assert found["hardware"] is False and found["reason"] == "the category is empty"
+
+
+def test_a_category_with_a_single_file_is_still_used():
+    # Steam Deck on the live site: one file in the category itself, the photos are in subcategories.
+    found = category_of(cat_page(files=1))
+    assert found["hardware"] is True and found["files"] == 1
+
+
+def test_a_category_with_only_subcategories_is_used():
+    found = category_of(cat_page() | {"categoryinfo": {"files": 0, "subcats": 4}})
+    assert found["hardware"] is True
+
+
+# ---- the live PlayStation 5 Pro result: parents were PlayStation 5, a date and a maintenance category ----
+
+LIVE_PARENTS = ["Category:PlayStation 5", "Category:2024-11-07", "Category:Uses of Wikidata Infobox"]
+
+
+def test_a_category_under_the_base_product_is_hardware_through_its_grandparent():
+    fake = Fake(categories={
+        f"Category:{PHRASE}": cat_page(files=26, parents=LIVE_PARENTS),
+        "Category:PlayStation 5": cat_page("PlayStation 5", parents=["Category:PlayStation consoles"]),
+        "Category:2024-11-07": cat_page("2024-11-07", parents=["Category:November 2024"]),
+        "Category:Uses of Wikidata Infobox": cat_page("Uses of Wikidata Infobox", parents=["Category:Wikidata maintenance"]),
+    })
+    found = commons.find_category(PHRASE, fake)
+    assert found["hardware"] is True and found["reason"] == "a grandparent category is hardware"
+    assert "Category:PlayStation consoles" in found["ancestors"]
+    asked = [urllib.parse.parse_qs(urllib.parse.urlsplit(c).query)["titles"][0] for c in fake.calls]
+    assert asked[0] == f"Category:{PHRASE}" and asked[1] == "|".join(LIVE_PARENTS)    # one extra request, all parents at once
+
+
+def test_a_grandparent_that_is_not_hardware_leaves_the_category_unused():
+    fake = Fake(categories={
+        f"Category:{PHRASE}": cat_page(files=26, parents=["Category:Something"]),
+        "Category:Something": cat_page("Something", parents=["Category:Things"]),
+    })
+    found = commons.find_category(PHRASE, fake)
+    assert found["hardware"] is False and found["reason"] == "no parent or grandparent category is hardware"
+
+
+def test_a_games_parent_blocks_the_category_even_when_a_grandparent_is_hardware():
+    fake = Fake(categories={
+        f"Category:{PHRASE}": cat_page(parents=["Category:Pro games"]),
+        "Category:Pro games": cat_page("Pro games", parents=["Category:PlayStation consoles"]),
+    })
+    found = commons.find_category(PHRASE, fake)
+    assert found["hardware"] is False and "games" in found["reason"] and len(fake.calls) == 1
+
+
+def test_only_the_first_eight_parents_are_looked_up():
+    parents = [f"Category:Parent {i}" for i in range(12)]
+    fake = Fake(categories={f"Category:{PHRASE}": cat_page(parents=parents)})
+    commons.find_category(PHRASE, fake)
+    asked = urllib.parse.parse_qs(urllib.parse.urlsplit(fake.calls[1]).query)["titles"][0].split("|")
+    assert asked == parents[:8]
+
+
+def test_a_trusted_product_needs_no_parent_check_and_makes_no_extra_request():
+    fake = Fake(categories={f"Category:{PHRASE}": cat_page(parents=["Category:Wikidata things"])})
+    found = commons.find_category(PHRASE, fake, trusted=["playstation 5 PRO"])
+    assert found["hardware"] is True and found["reason"] == "a product on the trusted list" and len(fake.calls) == 1
+
+
+def test_a_trusted_product_is_still_refused_when_its_category_is_empty_or_about_something_else():
+    empty = Fake(categories={f"Category:{PHRASE}": cat_page() | {"categoryinfo": {"files": 0, "subcats": 0}}})
+    assert commons.find_category(PHRASE, empty, trusted=[PHRASE])["hardware"] is False
+    other = Fake(categories={f"Category:{PHRASE}": cat_page("PlayStation 5")})
+    assert commons.find_category(PHRASE, other, trusted=[PHRASE]) is None
+
+
+def test_the_trusted_list_is_in_the_shipped_config_and_names_the_obvious_products():
+    names = commons.load_commons_config()["trusted_products"]
+    for product in ("PlayStation 5", "PlayStation 5 Pro", "Steam Deck", "Xbox Series X", "Nintendo Switch 2"):
+        assert product in names
+    assert "Steam Deck 2" not in names and commons.DEFAULTS["max_subcategories"] == 3
+
+
+def test_parents_of_several_categories_come_back_together_and_an_empty_request_makes_none():
+    fake = Fake(categories={"Category:A": cat_page("A", parents=["Category:X", "Category:Y"]), "Category:B": cat_page("B", parents=["Category:Z"])})
+    assert commons.parent_categories(["Category:A", "Category:B"], fake) == ["Category:X", "Category:Y", "Category:Z"]
+    assert commons.parent_categories([], fake) == [] and len(fake.calls) == 1
 
 
 @pytest.mark.parametrize("data", [{"query": {"pages": []}}, {"query": {}}, {"batchcomplete": True}, {"query": {"pages": ["junk"]}}])
@@ -443,13 +548,14 @@ def test_the_trace_reports_every_step_including_why_photos_were_skipped(tmp_path
     result, lines = traced(fake, tmp_path)
     text = "\n".join(lines)
     assert result is not None and "looking for a product category among ['PlayStation 5 Pro']" in text
-    assert "Category:PlayStation 5 Pro (30 files, under Category:PlayStation consoles" in text
+    assert "Category:PlayStation 5 Pro: 30 files, 2 subcategories; parents: Category:PlayStation consoles, Category:Sony hardware" in text
+    assert "hardware category (a product on the trusted list)" in text
     assert "skipped 'PlayStation 5 Pro logo': not a plain product photo (logo)" in text and "2 of 3 photos are usable" in text
     assert "(1600x900)" in lines[-1] and "by Jane Doe (CC BY-SA 4.0)" in lines[-1]
 
 
 def test_the_trace_says_why_nothing_was_found(tmp_path):
-    assert "no hardware category named exactly 'PlayStation 5 Pro'" in "\n".join(traced(Fake(), tmp_path)[1])
+    assert "no category named exactly 'PlayStation 5 Pro'" in "\n".join(traced(Fake(), tmp_path)[1])
     assert "is not one of" in traced(happy(), tmp_path, category="esports")[1][0]
     down = Fake(categories={f"Category:{PHRASE}": commons.CommonsError("could not reach Wikimedia Commons: no route")})
     assert traced(down, tmp_path)[1][-1] == "commons: could not reach Wikimedia Commons: no route"
@@ -544,3 +650,153 @@ def test_a_pro_model_story_looks_up_the_pro_category_and_not_the_base_models():
     assert commons.product_phrases("PlayStation 5 Pro price rises in Europe", ["PlayStation 5", PHRASE], 3) == [PHRASE]
     assert commons.product_phrases("Nintendo Switch price rises", ["Nintendo Switch"], 3) == ["Nintendo Switch"]
     assert commons.product_phrases("Xbox Series X price rises", ["Xbox Series X"], 3) == ["Xbox Series X"]
+
+
+# --- the three live results, replayed ------------------------------------------------------------------------
+
+NO_TRUST = {**commons.DEFAULTS, "trusted_products": []}
+DECK = "Steam Deck"
+
+
+def deck_fake(subcats=None, direct=None):
+    """Steam Deck as found live: one file in the category, the photos in subcategories."""
+    subcats = subcats or ["Category:Steam Deck OLED", "Category:Steam Deck games", "Category:Steam Deck in use",
+                          "Category:Steam Deck 2", "Category:Steam Deck docks", "Category:Steam Deck photographs"]
+    in_use = [file_page("Steam Deck in use outdoors.jpg", description="A Steam Deck in use")]
+    photographs = [file_page("Steam Deck front view.jpg", description="The Steam Deck handheld", width=3000, height=1800)]
+    files = {"Category:Steam Deck": direct if direct is not None else [file_page("Steam Deck logo.png")],
+             "Category:Steam Deck in use": in_use, "Category:Steam Deck photographs": photographs}
+    pictures = {f["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg()) for group in files.values() for f in group}
+    return Fake(categories={"Category:Steam Deck": cat_page(DECK, files=1, parents=["Category:Handheld game consoles"]) | {"categoryinfo": {"files": 1, "subcats": 6}}},
+                files=files, pictures=pictures, subcats={"Category:Steam Deck": subcats})
+
+
+def test_playstation_5_pro_as_found_live_is_hardware_through_its_grandparent_and_gets_a_photo(tmp_path):
+    files = good_files()
+    fake = Fake(
+        categories={
+            f"Category:{PHRASE}": cat_page(files=26, parents=LIVE_PARENTS),
+            "Category:PlayStation 5": cat_page("PlayStation 5", parents=["Category:PlayStation consoles"]),
+        },
+        files={f"Category:{PHRASE}": files},
+        pictures={f["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg()) for f in files},
+    )
+    result = find(fake, tmp_path, settings=NO_TRUST)            # without relying on the trusted list
+    assert result is not None and result["file"] == "File:PlayStation 5 Pro console.jpg"
+    assert images.hero_failures(result["hero"], tmp_path) == []
+
+
+def test_steam_deck_as_found_live_gets_a_photo_from_its_subcategories(tmp_path):
+    fake = deck_fake()
+    result = find(fake, tmp_path, title="Steam Deck stock runs out", entities=[DECK])
+    assert result is not None and result["file"] in {"File:Steam Deck front view.jpg", "File:Steam Deck in use outdoors.jpg"}
+    assert result["hero"]["alt"] == "Photo of the Steam Deck" and result["hero"]["license"] == "CC BY-SA 4.0"
+    listed = [urllib.parse.parse_qs(urllib.parse.urlsplit(c).query)["gcmtitle"][0] for c in fake.calls if "gcmtitle=" in c]
+    assert listed == ["Category:Steam Deck", "Category:Steam Deck in use", "Category:Steam Deck photographs"]
+
+
+def test_steam_deck_2_as_found_live_has_no_category_and_so_no_photo(tmp_path):
+    fake = deck_fake()
+    result, lines = traced(fake, tmp_path, title="Steam Deck 2 teased by Valve", entities=["Steam Deck", "Steam Deck 2"])
+    assert result is None and "no category named exactly 'Steam Deck 2'" in "\n".join(lines)
+    assert not any("gcmtitle=" in c for c in fake.calls)           # the older model's category is never even asked for
+
+
+# --- subcategories ------------------------------------------------------------------------------------------------
+
+
+def test_only_subcategories_that_name_the_same_product_and_nothing_else_are_eligible():
+    titles = ["Category:Steam Deck OLED", "Category:Steam Deck games", "Category:Steam Deck 2", "Category:Steam Deck docks",
+              "Category:Steam Deck screenshots", "Category:Steam Deck repair", "Category:Steam Deck photographs",
+              "Category:Steam Deck in use", "Category:Valve hardware", "Category:Steam Deck Pro prototypes"]
+    assert commons.eligible_subcategories(titles, DECK, 5) == ["Category:Steam Deck in use", "Category:Steam Deck photographs"]
+    assert commons.eligible_subcategories(titles, "Steam Deck OLED", 5) == ["Category:Steam Deck OLED"]
+    assert commons.eligible_subcategories(titles, DECK, 1) == ["Category:Steam Deck in use"] and commons.eligible_subcategories([], DECK, 3) == []
+
+
+def test_subcategory_titles_are_listed_and_junk_is_ignored():
+    fake = Fake(subcats={"Category:X": ["Category:A", "Category:B"]})
+    assert commons.list_subcategories("Category:X", fake) == ["Category:A", "Category:B"]
+    junk = lambda url: api({"query": {"categorymembers": ["x", {"ns": 14}, {"title": "Category:Ok"}]}})
+    assert commons.list_subcategories("Category:X", junk) == ["Category:Ok"]
+    assert commons.list_subcategories("Category:X", lambda url: api({"query": {}})) == []
+
+
+def test_subcategories_are_not_asked_for_when_the_category_itself_has_a_usable_photo(tmp_path):
+    direct = [file_page("Steam Deck front.jpg", description="Steam Deck")]
+    fake = deck_fake(direct=direct)
+    fake.pictures[direct[0]["imageinfo"][0]["thumburl"]] = (200, "image/jpeg", jpg())
+    assert find(fake, tmp_path, title="Steam Deck stock runs out", entities=[DECK])["file"] == "File:Steam Deck front.jpg"
+    assert not any("list=categorymembers" in c for c in fake.calls)
+
+
+def test_only_the_allowed_number_of_subcategories_is_searched(tmp_path):
+    names = [f"Category:Steam Deck photos {i}" for i in range(6)]
+    fake = deck_fake(subcats=names)
+    find(fake, tmp_path, title="Steam Deck stock runs out", entities=[DECK], settings={**commons.DEFAULTS, "max_subcategories": 2})
+    listed = [urllib.parse.parse_qs(urllib.parse.urlsplit(c).query)["gcmtitle"][0] for c in fake.calls if "gcmtitle=" in c]
+    assert listed == ["Category:Steam Deck", names[0], names[1]]
+
+
+def test_a_photo_from_a_subcategory_must_pass_every_photo_check(tmp_path):
+    bad = [file_page("Steam Deck in use.jpg", license="CC BY-NC 4.0", description="Steam Deck"),
+           file_page("Steam Deck OLED in use.jpg", description="Steam Deck OLED")]
+    fake = deck_fake()
+    fake.files["Category:Steam Deck in use"] = bad
+    fake.files["Category:Steam Deck photographs"] = []
+    assert find(fake, tmp_path, title="Steam Deck stock runs out", entities=[DECK]) is None
+
+
+# --- a photo whose own text names a different model -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("title,description", [
+    ("Steam Deck OLED front", ""), ("Handheld", "The Steam Deck OLED model"), ("Steam Deck 2 render concept", "Steam Deck"),
+    ("Steam Deck Pro", ""),
+])
+def test_a_photo_that_names_a_different_model_is_refused(title, description):
+    reason = commons.unusable_reason(photo(title=title, description=description), DECK, commons.DEFAULTS)
+    assert reason is not None and ("different model" in reason or "not a plain" in reason)
+
+
+def test_a_photo_of_the_base_model_is_not_refused_for_naming_other_words():
+    assert commons.unusable_reason(photo(title="Steam Deck front", description="Steam Deck 512GB, shown with a case"), DECK, commons.DEFAULTS) is None
+    assert commons.unusable_reason(photo(title="Steam Deck stock", description="Steam Deck"), DECK, commons.DEFAULTS) is None
+
+
+def test_a_pro_photo_inside_the_base_models_category_is_refused():
+    assert "different model" in commons.unusable_reason(photo(title="PlayStation 5 Pro console"), "PlayStation 5", commons.DEFAULTS)
+    assert commons.unusable_reason(photo(title="PlayStation 5 console"), "PlayStation 5", commons.DEFAULTS) is None
+
+
+# --- the trace explains the new steps -----------------------------------------------------------------------------
+
+
+def test_the_trace_shows_parents_grandparents_and_why_a_category_was_not_used(tmp_path):
+    fake = Fake(categories={
+        f"Category:{PHRASE}": cat_page(files=26, parents=LIVE_PARENTS),
+        "Category:PlayStation 5": cat_page("PlayStation 5", parents=["Category:Entertainment"]),
+    })
+    result, lines = traced(fake, tmp_path, settings=NO_TRUST)
+    text = "\n".join(lines)
+    assert result is None
+    assert "parents: Category:PlayStation 5, Category:2024-11-07, Category:Uses of Wikidata Infobox; grandparents:" in text
+    assert "not used, no parent or grandparent category is hardware" in text
+
+
+def test_the_trace_says_when_it_falls_back_to_subcategories(tmp_path):
+    lines = traced(deck_fake(), tmp_path, title="Steam Deck stock runs out", entities=[DECK])[1]
+    assert any("no usable photo in the category itself; trying subcategories ['Category:Steam Deck in use', 'Category:Steam Deck photographs']" in l for l in lines)
+
+
+# --- config ------------------------------------------------------------------------------------------------------------
+
+
+def test_the_trusted_list_and_the_subcategory_limit_can_be_set_in_a_config_file(tmp_path):
+    path = tmp_path / "c.yaml"
+    path.write_text("images:\n  commons:\n    trusted_products: [Alpha One]\n    max_subcategories: 5\n", encoding="utf-8")
+    config = commons.load_commons_config(path)
+    assert config["trusted_products"] == ["Alpha One"] and config["max_subcategories"] == 5
+    path.write_text("images:\n  commons:\n    trusted_products: nope\n    max_subcategories: 0\n", encoding="utf-8")
+    config = commons.load_commons_config(path)
+    assert config["trusted_products"] == commons.DEFAULTS["trusted_products"] and config["max_subcategories"] == 3

@@ -11,10 +11,14 @@ A wrong picture is worse than none, so every step is strict:
 * only articles in the configured categories (``images.commons.categories``, default hardware and
   tech) are considered;
 * the Commons category must be named *exactly* like the product in the headline (so "Nintendo
-  Switch 2" never finds the original Switch's photos) and must sit under a hardware parent category
-  (consoles, graphics cards, controllers...), which keeps out games, people and companies;
+  Switch 2" never finds the original Switch's photos) and must be hardware: one of the products
+  listed in ``images.commons.trusted_products``, or a category whose parents or grandparents are
+  hardware categories (consoles, graphics cards, controllers...) and none of whose direct parents is
+  about games, people or companies;
 * a photo must itself say what it shows: every word of the product name must be in its file title or
-  description;
+  description, and its text must not name a different model ("Steam Deck OLED" for "Steam Deck");
+* photos come from the category itself, and only when none of those is usable from a few of its
+  subcategories that name the same product (never a different model's or a games subcategory);
 * its license must be one we allow (public domain, CC0, CC BY, CC BY-SA), it must name an author
   unless it is public domain, and it must carry no personality-rights restriction;
 * it must be a real photo, at least 1200 px wide, not a logo, diagram, render, toy or box shot.
@@ -58,7 +62,6 @@ USER_AGENT = "GamersXpress/1.0 (https://gamersxpress.com; image lookup; python-u
 MAX_FETCH_BYTES = 8_000_000
 THUMB_WIDTH = 1600
 MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
-MIN_FILES_IN_CATEGORY = 3
 
 #: A parent category marks the product's category as hardware when its name contains one of these
 #: phrases ("Video game consoles", "Nvidia graphics cards")...
@@ -69,7 +72,16 @@ HARDWARE_PARENT_PHRASES = (
 )
 #: ...or ends with one of these words ("PlayStation consoles", "Xbox controllers"), which keeps out
 #: "Console games" and "Video games by console".
-HARDWARE_PARENT_ENDINGS = ("consoles", "controllers", "gpus", "processors", "headsets")
+HARDWARE_PARENT_ENDINGS = ("consoles", "controllers", "gpus", "processors", "headsets", "hardware")
+#: A category whose *direct* parent has one of these words is about games, people or companies, not a
+#: product ("PlayStation 5 games" is not the console), whatever sits further up.
+NON_HARDWARE_PARENT_WORDS = frozenset({"games", "characters", "developers", "publishers", "companies", "people", "films", "television", "music"})
+#: A subcategory with one of these words is not a place for plain product photos.
+SKIPPED_SUBCATEGORY_WORDS = frozenset({
+    "games", "game", "screenshots", "software", "accessories", "accessory", "docks", "cases", "people", "users", "repair",
+    "teardown", "disassembled", "interface", "logo", "logos", "boxes", "packaging", "stores", "retail", "events",
+    "cosplay", "fan", "art", "mods", "modifications", "advertising", "advertisements",
+})
 #: A photo whose file title has one of these words is not a photograph of the product itself.
 EXCLUDED_TITLE_WORDS = frozenset({
     "logo", "icon", "diagram", "schematic", "map", "screenshot", "render", "concept", "cosplay", "cosplayer",
@@ -85,7 +97,16 @@ DEFAULTS: dict[str, Any] = {
     "max_files": 40,
     "max_candidates": 5,
     "max_queries": 3,
+    "max_subcategories": 3,
     "timeout_seconds": 10,
+    # Products that are plainly hardware: their category needs no parent check. The category must still
+    # be named exactly like the product, and every photo still has to pass its own checks.
+    "trusted_products": [
+        "PlayStation 5", "PlayStation 5 Pro", "PlayStation 4", "PlayStation 4 Pro", "PlayStation 3", "PlayStation VR2",
+        "DualSense", "DualShock 4", "Xbox Series X", "Xbox Series S", "Xbox One", "Xbox One X", "Xbox One S",
+        "Nintendo Switch", "Nintendo Switch 2", "Nintendo Switch Lite", "Nintendo Switch OLED", "Steam Deck",
+        "Valve Index", "Meta Quest 2", "Meta Quest 3", "Meta Quest Pro", "ROG Ally", "Legion Go",
+    ],
 }
 
 Fetch = Callable[[str], "tuple[int, str, bytes]"]
@@ -107,10 +128,11 @@ def load_commons_config(path: str | Path | None = None) -> dict[str, Any]:
         for key in ("enabled", "share_alike"):
             if isinstance(section.get(key), bool):
                 settings[key] = section[key]
-        categories = section.get("categories")
-        if isinstance(categories, list):
-            settings["categories"] = [str(item) for item in categories]
-        for key in ("min_width", "max_files", "max_candidates", "max_queries", "timeout_seconds"):
+        for key in ("categories", "trusted_products"):
+            names = section.get(key)
+            if isinstance(names, list):
+                settings[key] = [str(item) for item in names]
+        for key in ("min_width", "max_files", "max_candidates", "max_queries", "max_subcategories", "timeout_seconds"):
             value = section.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 settings[key] = value
@@ -253,9 +275,9 @@ def unusable_reason(info: dict, phrase: str, config: dict) -> str | None:
         return f"only {info.get('width')} px wide (min {config['min_width']})"
     if not info.get("thumb_url"):
         return "no picture link"
-    if license_info(info.get("license"), config) is None:
-        return f"license {info.get('license')!r} is not allowed"
     licence = license_info(info.get("license"), config)
+    if licence is None:
+        return f"license {info.get('license')!r} is not allowed"
     if licence["attribution"] and not info.get("artist"):
         return "no named author to credit"
     if "personality" in str(info.get("restrictions") or "").lower():
@@ -265,6 +287,9 @@ def unusable_reason(info: dict, phrase: str, config: dict) -> str | None:
         return f"not a plain product photo ({', '.join(sorted(bad))})"
     if not says_product(info, phrase):
         return f"its title and description do not name {phrase!r}"
+    text = normalize(info.get("title")) + normalize(info.get("description"))
+    if images_stage.continues_as_another_model(text, normalize(phrase), images_stage.HARDWARE_MODEL_WORDS):
+        return f"its text names a different model than {phrase!r}"
     return None
 
 
@@ -293,21 +318,82 @@ def _api(fetch: Fetch, **params: Any) -> dict:
     return data
 
 
-def find_category(phrase: str, fetch: Fetch) -> dict | None:
-    """``{"title", "files", "parents"}`` for the hardware category named exactly ``phrase``, else None."""
+def is_game_category(parents: list[str]) -> bool:
+    """Whether a direct parent is about games, people or companies rather than a product."""
+    return any(
+        NON_HARDWARE_PARENT_WORDS & set(normalize(re.sub(r"^Category:", "", str(parent)))) for parent in parents
+    )
+
+
+def parent_categories(titles: list[str], fetch: Fetch) -> list[str]:
+    """The (non-hidden) parent categories of the given categories, one request for all of them."""
+    if not titles:
+        return []
+    data = _api(fetch, action="query", titles="|".join(titles), prop="categories", cllimit="max", clshow="!hidden")
+    parents: list[str] = []
+    for page in (data.get("query") or {}).get("pages") or []:
+        if isinstance(page, dict):
+            parents += [str(item.get("title") or "") for item in page.get("categories") or [] if isinstance(item, dict)]
+    return parents
+
+
+def find_category(phrase: str, fetch: Fetch, trusted: list[str] | None = None) -> dict | None:
+    """The category named exactly ``phrase`` with a verdict on whether it is hardware; None if there is none.
+
+    The result has ``title``, ``files``, ``subcats``, ``parents``, ``ancestors``, ``hardware`` (bool) and
+    ``reason`` (why it is or is not hardware).
+    """
     data = _api(fetch, action="query", titles=f"Category:{phrase}", prop="categoryinfo|categories", cllimit="50", clshow="!hidden")
     pages = (data.get("query") or {}).get("pages") or []
     page = pages[0] if pages and isinstance(pages[0], dict) else None
-    if not page:
-        return None   # a category that does not exist has no files, which the checks below refuse
+    if not page or page.get("missing"):
+        return None
     title = str(page.get("title") or "")
     if normalize(re.sub(r"^Category:", "", title)) != normalize(phrase):
         return None
-    files = int((page.get("categoryinfo") or {}).get("files") or 0)
+    info = page.get("categoryinfo") or {}
+    files, subcats = int(info.get("files") or 0), int(info.get("subcats") or 0)
     parents = [str(item.get("title") or "") for item in page.get("categories") or [] if isinstance(item, dict)]
-    if files < MIN_FILES_IN_CATEGORY or not is_hardware_category(parents):
-        return None
-    return {"title": title, "files": files, "parents": parents}
+    found: dict[str, Any] = {"title": title, "files": files, "subcats": subcats, "parents": parents, "ancestors": [],
+                             "hardware": False, "reason": ""}
+    if files + subcats == 0:
+        found["reason"] = "the category is empty"
+    elif normalize(phrase) in [normalize(name) for name in trusted or []]:
+        found.update(hardware=True, reason="a product on the trusted list")
+    elif is_game_category(parents):
+        found["reason"] = "a direct parent is about games, people or companies"
+    elif is_hardware_category(parents):
+        found.update(hardware=True, reason="a parent category is hardware")
+    else:
+        found["ancestors"] = parent_categories(parents[:8], fetch)
+        if is_hardware_category(found["ancestors"]):
+            found.update(hardware=True, reason="a grandparent category is hardware")
+        else:
+            found["reason"] = "no parent or grandparent category is hardware"
+    return found
+
+
+def list_subcategories(category_title: str, fetch: Fetch) -> list[str]:
+    """The titles of a category's direct subcategories."""
+    data = _api(fetch, action="query", list="categorymembers", cmtitle=category_title, cmtype="subcat", cmlimit="50")
+    members = (data.get("query") or {}).get("categorymembers") or []
+    return [str(item.get("title")) for item in members if isinstance(item, dict) and item.get("title")]
+
+
+def eligible_subcategories(titles: list[str], phrase: str, limit: int) -> list[str]:
+    """Subcategories worth looking in: they name the product, not another model, and not a non-photo topic."""
+    wanted = normalize(phrase)
+    chosen: list[str] = []
+    for title in sorted(titles):
+        tokens = normalize(re.sub(r"^Category:", "", title))
+        if not set(wanted) <= set(tokens):
+            continue
+        if SKIPPED_SUBCATEGORY_WORDS & set(tokens):
+            continue
+        if images_stage.continues_as_another_model(tokens, wanted, images_stage.HARDWARE_MODEL_WORDS):
+            continue
+        chosen.append(title)
+    return chosen[:limit]
 
 
 def _meta(metadata: dict, key: str) -> str:
@@ -368,20 +454,23 @@ def find_hero(
         phrases = product_phrases(title, entities, cfg["max_queries"])
         say(f"commons: looking for a product category among {phrases}")
         for phrase in phrases:
-            found = find_category(phrase, fetch)
+            found = find_category(phrase, fetch, cfg["trusted_products"])
             if found is None:
-                say(f"commons: no hardware category named exactly {phrase!r}")
+                say(f"commons: no category named exactly {phrase!r}")
                 continue
-            say(f"commons: {found['title']} ({found['files']} files, under {', '.join(found['parents'][:3])})")
-            files = list_files(found["title"], fetch, cfg["max_files"])
-            usable = []
-            for info in files:
-                reason = unusable_reason(info, phrase, cfg)
-                if reason:
-                    say(f"commons: skipped {info['title']!r}: {reason}")
-                else:
-                    usable.append(info)
-            say(f"commons: {len(usable)} of {len(files)} photos are usable")
+            say(f"commons: {found['title']}: {found['files']} files, {found['subcats']} subcategories; "
+                f"parents: {', '.join(found['parents'][:6]) or 'none'}"
+                + (f"; grandparents: {', '.join(found['ancestors'][:6])}" if found["ancestors"] else ""))
+            if not found["hardware"]:
+                say(f"commons: not used, {found['reason']}")
+                continue
+            say(f"commons: hardware category ({found['reason']})")
+            usable = _usable_photos(list_files(found["title"], fetch, cfg["max_files"]), phrase, cfg, say)
+            if not usable:
+                subs = eligible_subcategories(list_subcategories(found["title"], fetch), phrase, cfg["max_subcategories"])
+                say(f"commons: no usable photo in the category itself; trying subcategories {subs}")
+                for sub in subs:
+                    usable += _usable_photos(list_files(sub, fetch, cfg["max_files"]), phrase, cfg, say)
             for info in sorted(usable, key=lambda item: rank(item, phrase))[: cfg["max_candidates"]]:
                 hero = _try_photo(info, phrase, slug, public_dir, fetch, image_settings, say, cfg)
                 if hero:
@@ -392,6 +481,18 @@ def find_hero(
     except Exception:  # an image must never stop a story from publishing
         logger.exception("commons: unexpected error")
     return None
+
+
+def _usable_photos(files: list[dict], phrase: str, cfg: dict, say: Callable[[str], None]) -> list[dict]:
+    usable = []
+    for info in files:
+        reason = unusable_reason(info, phrase, cfg)
+        if reason:
+            say(f"commons: skipped {info['title']!r}: {reason}")
+        else:
+            usable.append(info)
+    say(f"commons: {len(usable)} of {len(files)} photos are usable")
+    return usable
 
 
 def _try_photo(info, phrase, slug, public_dir, fetch, image_settings, say, cfg) -> dict | None:
