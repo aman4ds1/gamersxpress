@@ -31,6 +31,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ARTICLES_DIR = PROJECT_ROOT / "src" / "content" / "articles"
 DEFAULT_COVERS_DIR = PROJECT_ROOT / "public" / "covers"
+DEFAULT_IMAGES_DIR = PROJECT_ROOT / "public" / "images"
 DEFAULT_DRAFTS_DIR = PROJECT_ROOT / "drafts"
 DEFAULT_LOG_PATH = PROJECT_ROOT / "data" / "published-log.json"
 DEFAULT_SEEN_PATH = PROJECT_ROOT / "data" / "seen.json"
@@ -49,8 +50,9 @@ def build_front_matter(
     cover: dict | None = None,
     *,
     pub_date: Any = None,
+    hero: dict | None = None,
 ) -> dict:
-    """Assemble the article front matter from facts + SEO + cover."""
+    """Assemble the article front matter from facts + SEO + cover (+ the hero image, when it has one)."""
     date = pub_date or _generated_date(facts)
     front: dict[str, Any] = {
         "title": seo["title"],
@@ -69,6 +71,8 @@ def build_front_matter(
     if cover and cover.get("image"):
         front["image"] = cover["image"]
         front["imageAlt"] = cover.get("imageAlt")
+    if hero:
+        front["hero"] = dict(hero)
     return front
 
 
@@ -243,8 +247,10 @@ def publish(
     seen_path: str | Path | None = None,
     now: dt.datetime | None = None,
     verification: str | None = None,
+    hero_path: str | Path | None = None,
+    images_dir: str | Path | None = None,
 ) -> dict:
-    """Write the article, cover, published-log entry and seen marker.
+    """Write the article, cover, hero image, published-log entry and seen marker.
 
     ``verification`` is the story's label (``"single-origin"`` or None). A
     single-origin story is a relayed report: it is recorded and returned as a
@@ -259,6 +265,7 @@ def publish(
 
     articles_dir = Path(articles_dir) if articles_dir else DEFAULT_ARTICLES_DIR
     covers_dir = Path(covers_dir) if covers_dir else DEFAULT_COVERS_DIR
+    images_dir = Path(images_dir) if images_dir else DEFAULT_IMAGES_DIR
     articles_dir.mkdir(parents=True, exist_ok=True)
     article_path = articles_dir / f"{slug}.md"
     article_path.write_text(article, encoding="utf-8")
@@ -272,6 +279,12 @@ def publish(
         covers_dir.mkdir(parents=True, exist_ok=True)
         destination_cover = covers_dir / f"{slug}.webp"
         shutil.copyfile(cover_path, destination_cover)
+
+    destination_hero = None
+    if hero_path:
+        images_dir.mkdir(parents=True, exist_ok=True)
+        destination_hero = images_dir / f"{slug}.webp"
+        shutil.copyfile(hero_path, destination_hero)
 
     append_log(
         {
@@ -291,6 +304,7 @@ def publish(
         "slug": slug,
         "article_path": str(article_path),
         "cover_path": str(destination_cover) if destination_cover else None,
+        "hero_path": str(destination_hero) if destination_hero else None,
         "mode": mode,
         "verification": verification,
     }

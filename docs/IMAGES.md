@@ -61,7 +61,60 @@ To remove one, delete the `hero:` block from the article and the file from `publ
 - The pipeline's publish gate `hero` also checks that the file exists, its size and width match, its
   license is allowed, and it is small enough. An article that fails is not published.
 
+## Automatic Steam art (PC game stories)
+
+When a story's headline names a game that has a Steam store page, the pipeline fetches that game's
+key art from Valve's public store data and attaches it as the hero, credited to the developer with
+the license `Steam store` and a link to the store page. It happens on its own, with no extra model
+calls and no keys.
+
+- **Strict matching.** The Steam app's name must appear in the headline as a whole phrase, it must
+  be a game (not DLC, a demo, a soundtrack or a bundle), and it must not carry an adult-only
+  sexual-content descriptor. A one-word game name must also be a proper name the headline stands on.
+- **Best picture first.** The wide library art, then up to three screenshots, then the page
+  backdrop; the first one that is at least 800 px wide is used.
+- **Never in the way.** If there is no match, no usable picture or a network problem, the article is
+  published without a picture. A dry run never contacts Steam.
+- **Safe fetching.** Only https links on Steam's own hosts are fetched; redirects and files over
+  8 MB are refused.
+- **Not a formal license.** The art belongs to the developers and publishers. Gaming sites use it to
+  illustrate coverage of the game, but if you would rather not, set `images.steam.enabled: false`
+  in `pipeline/config.yaml`. An article's picture can also be replaced by hand (see above) or removed.
+
+The picture is committed with the article (draft pull request or direct publish) and removed again
+by the Unpublish workflow.
+
+### Check that the Steam art works
+
+**1. Try any headline by hand** (needs internet; run it from the project folder):
+
+```powershell
+python -m pipeline.steam check "Path of Exile 2 launches on December 11, 2026" --entity "Path of Exile 2"
+```
+
+It prints every step (what it searched for, which Steam app matched, whether it is a game, each
+picture it tried) and ends with one of:
+
+| Last line | Meaning |
+|---|---|
+| `RESULT: working` | A picture was found and passes the publish check. It is saved under a temporary folder (or `--out`). |
+| `RESULT: no picture for this headline` | Steam has no matching game, or no usable picture. Read the lines above to see why. |
+| `RESULT: Steam could not be reached` | A network problem on your machine. Try again. |
+
+The exit code is 0, 1 and 2 for those three. Try a headline that should match (a game on Steam)
+and one that should not (a hardware story): the second must say "no picture".
+
+**2. Look at a real run.** In GitHub open Actions, then Pipeline, then a run that wrote an article,
+and search the "Run the pipeline" log for `steam:`. Each article logs its searches and the outcome.
+The article itself then has a `hero:` block in its front matter, and its commit or draft pull
+request contains `public/images/<slug>.webp`.
+
+**3. Look at the live page.** An article with a hero shows the picture under its headline with
+"Image: <developer> · Steam store".
+
+If a story about a Steam game has no picture, run the command from step 1 with that article's
+headline and send me the output.
+
 ## Planned
 
-1. Automatic Steam store images for PC game stories (license `Steam store`).
-2. Automatic Wikimedia Commons images for hardware stories.
+Automatic Wikimedia Commons images for hardware stories.

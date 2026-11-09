@@ -60,6 +60,7 @@ if str(_PIPELINE_DIR) not in sys.path:
 
 import cluster
 import cover as cover_stage
+import steam as steam_stage
 import dryrun as dryrun_stage
 import facts as facts_stage
 import gates as gates_stage
@@ -246,6 +247,7 @@ class Paths:
     gathered_dir: Path
     articles_dir: Path
     covers_dir: Path
+    images_dir: Path
     drafts_dir: Path
     entities: Path
     fonts_dir: Path
@@ -290,6 +292,7 @@ def default_paths(dry_run: bool = False, dry_run_dir: str | Path | None = None) 
             gathered_dir=data / "gathered",
             articles_dir=PROJECT_ROOT / "src" / "content" / "articles",
             covers_dir=PROJECT_ROOT / "public" / "covers",
+            images_dir=PROJECT_ROOT / "public" / "images",
             drafts_dir=PROJECT_ROOT / "drafts",
             entities=data / "entities.json",
             fonts_dir=PROJECT_ROOT / "assets" / "fonts",
@@ -320,6 +323,7 @@ def default_paths(dry_run: bool = False, dry_run_dir: str | Path | None = None) 
         gathered_dir=base / "gathered",
         articles_dir=base / "articles",
         covers_dir=base / "covers",
+        images_dir=base / "images",
         drafts_dir=base / "drafts",
         entities=entities,
         fonts_dir=PROJECT_ROOT / "assets" / "fonts",
@@ -406,6 +410,16 @@ def _body_of(article: str) -> str:
     return body
 
 
+def _no_image(**_kwargs: Any) -> None:
+    """The image step of an offline run: there is no picture."""
+    return None
+
+
+def default_image_fn(dry_run: bool) -> Callable[..., dict | None]:
+    """The Steam art lookup, except in a dry run, which never touches the network."""
+    return _no_image if dry_run else steam_stage.find_hero
+
+
 def _article_records(articles_dir: Path) -> list[dict]:
     records: list[dict] = []
     if not articles_dir.is_dir():
@@ -451,6 +465,7 @@ def run(
     seo_fn: Callable[..., dict] | None = None,
     link_fn: Callable[..., Any] | None = None,
     cover_fn: Callable[..., dict] | None = None,
+    image_fn: Callable[..., dict | None] | None = None,
     gates_fn: Callable[..., Any] | None = None,
     performance: dict | None = None,
     link_checker: Callable[[str], Any] | None = None,
@@ -515,6 +530,7 @@ def run(
     seo_fn = seo_fn or seo_stage.generate_seo
     link_fn = link_fn or link_stage.add_links
     cover_fn = cover_fn or cover_stage.generate_cover
+    image_fn = image_fn or default_image_fn(dry_run)
     gates_fn = gates_fn or gates_stage.run_gates
     if performance is None:
         performance = score_stage.load_performance(paths.performance)
@@ -1001,14 +1017,26 @@ def run(
                 index = link_stage.build_index(_article_records(paths.articles_dir))
                 linked = link_fn(draft, index, self_id=slug, now=now)
                 body = _body_of(linked.article)
-                front = publish_stage.build_front_matter(facts, seo, cover)
+                # A real picture for the story, when a safe source has one. It must never
+                # stop an article from publishing: any problem means no picture.
+                hero = None
+                try:
+                    with timings.stage("image"):
+                        hero = image_fn(
+                            title=seo["title"], entities=list(seo.get("entities") or []), slug=slug,
+                            public_dir=cover_staging / "public",
+                        )
+                except Exception:
+                    logger.exception("image lookup failed: the article goes without a picture")
+                front = publish_stage.build_front_matter(facts, seo, cover, hero=(hero or {}).get("hero"))
                 article = publish_stage.assemble_article(body, front)
 
             def run_gates(text: str, report: Any) -> Any:
                 return gates_fn(
                     text, slug=slug, facts=facts, cluster_id=cluster_id, gathered=gathered,
                     verify_report=report.to_dict(), run_state=run_state, config=gates_config,
-                    articles_dir=paths.articles_dir, page_template=paths.page_template, now=now,
+                    articles_dir=paths.articles_dir, page_template=paths.page_template,
+                    public_dir=cover_staging / "public", now=now,
                     link_checker=link_checker, site_checks=site_checks,
                 )
 
@@ -1113,6 +1141,7 @@ def run(
                     articles_dir=paths.articles_dir, covers_dir=paths.covers_dir,
                     log_path=paths.log, seen_path=paths.seen, now=now,
                     verification=publish_stage.verification_label(facts),
+                    hero_path=(hero or {}).get("path"), images_dir=paths.images_dir,
                 )
         finally:
             shutil.rmtree(cover_staging, ignore_errors=True)

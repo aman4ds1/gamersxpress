@@ -76,6 +76,7 @@ MAX_SLUG_CHARS = 120
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ARTICLES_DIR = "src/content/articles"
 COVERS_DIR = "public/covers"
+IMAGES_DIR = "public/images"
 #: How many times a publish retries when someone else pushed to main first.
 PUSH_ATTEMPTS = 3
 
@@ -260,10 +261,11 @@ def prepare_draft_branch(
         raise CiError("unsafe run id")
     article = f"src/content/articles/{slug}.md"
     cover = f"public/covers/{slug}.webp"
+    hero = f"{IMAGES_DIR}/{slug}.webp"
     if not (repo / article).is_file():
         logger.warning("run completed but %s is missing: no draft branch", article)
         return None
-    files = [article] + ([cover] if (repo / cover).is_file() else [])
+    files = [article] + [path for path in (cover, hero) if (repo / path).is_file()]
     title = notify.article_title(repo / article) or slug
     branch = f"draft/{slug}-{run_id}"
 
@@ -345,10 +347,11 @@ def prepare_publish_commit(
     slug = _safe_slug(report.get("slug"))
     article = f"{ARTICLES_DIR}/{slug}.md"
     cover = f"{COVERS_DIR}/{slug}.webp"
+    hero = f"{IMAGES_DIR}/{slug}.webp"
     if not (repo / article).is_file():
         logger.warning("run completed but %s is missing: nothing to publish", article)
         return None
-    files = [article] + ([cover] if (repo / cover).is_file() else [])
+    files = [article] + [path for path in (cover, hero) if (repo / path).is_file()]
     title = notify.article_title(repo / article) or slug
 
     def build(parent: str) -> str:
@@ -380,6 +383,7 @@ def prepare_unpublish_commit(
     slug = _safe_slug(slug)
     article = f"{ARTICLES_DIR}/{slug}.md"
     cover = f"{COVERS_DIR}/{slug}.webp"
+    hero = f"{IMAGES_DIR}/{slug}.webp"
     shown: dict[str, str] = {}
 
     def build(parent: str) -> str:
@@ -388,7 +392,7 @@ def prepare_unpublish_commit(
         text = _text(_git(repo, "show", f"{parent}:{article}"))
         match = re.search(r"^title:\s*(.+?)\s*$", text.split("\n---", 2)[0], re.MULTILINE)
         shown["title"] = match.group(1).strip().strip("\"'") if match else slug
-        files = [article] + ([cover] if _tree_has(repo, parent, cover) else [])
+        files = [article] + [path for path in (cover, hero) if _tree_has(repo, parent, path)]
         with tempfile.TemporaryDirectory() as scratch:
             env = _identity_env({"GIT_INDEX_FILE": str(Path(scratch) / "index")})
             _git(repo, "read-tree", parent, env=env)

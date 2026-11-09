@@ -1915,3 +1915,96 @@ def test_the_article_records_the_pipeline_reads_carry_their_source_urls(tmp_path
     hand_published(tmp_path)
     records = run_module._article_records(tmp_path / "state" / "articles")
     assert records[0]["sources"] == ["https://a.example/1"] and records[0]["id"] == "published-by-hand"
+
+
+# --- a real picture for the story ---------------------------------------------------------------------
+
+import images as images_module  # noqa: E402
+
+
+def sample_jpeg(width=1600, height=700):
+    import io as _io
+    from PIL import Image as _Image
+
+    buffer = _io.BytesIO()
+    _Image.new("RGB", (width, height), (30, 70, 150)).save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+def image_step(*, license="Steam store", write=True, calls=None, result=True):
+    """An image_fn that stages a real picture the way the Steam step does."""
+
+    def image_fn(*, title, entities, slug, public_dir):
+        if calls is not None:
+            calls.append({"title": title, "entities": entities, "slug": slug, "public_dir": public_dir})
+        if not result:
+            return None
+        path = images_module.Path(public_dir) / "images" / f"{slug}.webp"
+        info = images_module.process_image(sample_jpeg(), path) if write else {"width": 1600, "height": 700}
+        hero = {"src": f"/images/{slug}.webp", "alt": "Key art for the game from its Steam store page",
+                "credit": "Zed Studio", "license": license, "sourceUrl": "https://store.steampowered.com/app/1/",
+                "width": info["width"], "height": info["height"]}
+        return {"hero": hero, "path": path}
+
+    return image_fn
+
+
+def saved_article(tmp_path):
+    return (tmp_path / "state" / "articles" / f"{dryrun.SAMPLE_SLUG}.md").read_text(encoding="utf-8")
+
+
+def test_a_story_with_a_hero_is_published_with_the_picture_and_the_front_matter(tmp_path):
+    calls = []
+    result = run_once(tmp_path, dry_run=True, scenario="pass", image_fn=image_step(calls=calls))
+    assert result.status == "completed"
+    front = gates_module.parse_front_matter(saved_article(tmp_path))[0]
+    assert front["hero"]["license"] == "Steam store" and front["hero"]["src"] == f"/images/{dryrun.SAMPLE_SLUG}.webp"
+    assert (tmp_path / "state" / "images" / f"{dryrun.SAMPLE_SLUG}.webp").is_file()
+    assert images_module.hero_failures(front["hero"], tmp_path / "state") == []
+
+
+def test_the_image_step_is_told_the_headline_the_entities_the_slug_and_a_staging_folder(tmp_path):
+    calls = []
+    run_once(tmp_path, dry_run=True, scenario="pass", image_fn=image_step(calls=calls))
+    assert len(calls) == 1 and calls[0]["slug"] == dryrun.SAMPLE_SLUG
+    assert calls[0]["title"] and isinstance(calls[0]["entities"], list)
+    assert not calls[0]["public_dir"].exists()   # the staging folder is removed once the run is over
+
+
+def test_a_story_without_a_picture_publishes_without_a_hero_and_writes_no_images(tmp_path):
+    result = run_once(tmp_path, dry_run=True, scenario="pass", image_fn=image_step(result=False))
+    assert result.status == "completed" and "hero" not in gates_module.parse_front_matter(saved_article(tmp_path))[0]
+    assert not (tmp_path / "state" / "images").exists()
+
+
+def test_a_crash_in_the_image_step_never_stops_the_article(tmp_path):
+    def broken(**kwargs):
+        raise RuntimeError("steam is down")
+
+    result = run_once(tmp_path, dry_run=True, scenario="pass", image_fn=broken)
+    assert result.status == "completed" and not (tmp_path / "state" / "images").exists()
+
+
+def test_a_hero_with_a_license_that_is_not_allowed_fails_the_gates_and_publishes_nothing(tmp_path):
+    result = run_once(tmp_path, dry_run=True, scenario="pass", image_fn=image_step(license="Getty Images"))
+    assert result.status == "failed" and result.report["error"] == "publish gates failed"
+    assert any("not an allowed license" in failure for failure in result.report["failures"])
+    assert not (tmp_path / "state" / "images").exists()
+
+
+def test_a_hero_whose_picture_was_never_staged_fails_the_gates(tmp_path):
+    result = run_once(tmp_path, dry_run=True, scenario="pass", image_fn=image_step(write=False))
+    assert result.status == "failed" and any("does not exist" in f for f in result.report["failures"])
+
+
+def test_a_dry_run_never_looks_up_a_picture_on_the_network(tmp_path, monkeypatch):
+    def boom(**kwargs):
+        raise AssertionError("a dry run must not call Steam")
+
+    monkeypatch.setattr(run_module.steam_stage, "find_hero", boom)
+    assert run_once(tmp_path, dry_run=True, scenario="pass").status == "completed"
+
+
+def test_the_default_image_step_is_the_steam_lookup_outside_a_dry_run():
+    assert run_module.default_image_fn(False) is run_module.steam_stage.find_hero
+    assert run_module.default_image_fn(True) is run_module._no_image and run_module._no_image(title="x") is None

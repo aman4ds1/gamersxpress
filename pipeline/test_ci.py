@@ -763,3 +763,44 @@ def test_announce_ignores_files_in_the_articles_folder_that_are_not_articles(rep
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "mixed files")
     assert [a["slug"] for a in ci.announce_new_articles(repo)] == ["good-post"]
+
+
+# --- the hero picture rides with the article ----------------------------------------------------------
+
+HERO_FILE = f"public/images/{SLUG}.webp"
+
+
+def add_hero_file(repo):
+    (repo / "public" / "images").mkdir(parents=True, exist_ok=True)
+    (repo / HERO_FILE).write_bytes(b"RIFFhero")
+
+
+def test_a_published_article_commits_its_hero_picture_with_it(repo):
+    add_article(repo)
+    add_hero_file(repo)
+    info = ci.prepare_publish_commit(repo, AUTO_REPORT)
+    assert info["files"] == [ARTICLE, COVER, HERO_FILE]
+    assert sorted(remote_git(repo, "ls-tree", "-r", "--name-only", "main").split()).count(HERO_FILE) == 1
+
+
+def test_an_article_without_a_hero_commits_just_the_article_and_cover(repo):
+    add_article(repo)
+    assert ci.prepare_publish_commit(repo, AUTO_REPORT)["files"] == [ARTICLE, COVER]
+
+
+def test_a_draft_branch_holds_the_hero_picture_too(repo):
+    add_article(repo)
+    add_hero_file(repo)
+    info = ci.prepare_draft_branch(repo, REPORT, run_id="123")
+    assert HERO_FILE in info["files"]
+    assert HERO_FILE in remote_git(repo, "ls-tree", "-r", "--name-only", info["branch"]).split()
+
+
+def test_unpublishing_removes_the_hero_picture_as_well(repo):
+    add_article(repo)
+    add_hero_file(repo)
+    ci.prepare_publish_commit(repo, AUTO_REPORT)
+    sync_to_remote(repo)
+    info = ci.prepare_unpublish_commit(repo, SLUG)
+    assert info["files"] == [ARTICLE, COVER, HERO_FILE]
+    assert HERO_FILE not in remote_git(repo, "ls-tree", "-r", "--name-only", "main").split()

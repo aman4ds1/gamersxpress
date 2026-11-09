@@ -1450,3 +1450,10 @@ images:
   max_width: 1600
   max_bytes: 400000
   quality: 82
+  # Automatic key art from Steam for PC game stories (pipeline/steam.py). The picture is the
+  # developer's promotional art from Steam's public store data, used to illustrate coverage of
+  # that game; it is not a formal license, so this can be switched off here.
+  steam:
+    enabled: true
+    max_queries: 3
+    timeout_seconds: 10

@@ -236,3 +236,44 @@ def test_publish_keeps_auto_and_adds_no_label_for_an_ordinary_story(tmp_path):
     assert result["mode"] == "auto"
     assert result["verification"] is None
     assert "verification" not in tmp_path.joinpath("log.json").read_text(encoding="utf-8")
+
+
+# --- the hero image --------------------------------------------------------------------------------
+
+HERO = {"src": "/images/example-story.webp", "alt": "Key art for Example from its Steam store page",
+        "credit": "Example Studio", "license": "Steam store", "sourceUrl": "https://store.steampowered.com/app/1/",
+        "width": 1600, "height": 517}
+
+
+def test_the_front_matter_carries_the_hero_when_there_is_one_and_leaves_it_out_otherwise():
+    with_hero = publish.build_front_matter(FACTS, SEO, None, pub_date="2026-10-09", hero=HERO)
+    assert with_hero["hero"] == HERO and with_hero["hero"] is not HERO
+    assert "hero" not in publish.build_front_matter(FACTS, SEO, None, pub_date="2026-10-09")
+    assert "hero" not in publish.build_front_matter(FACTS, SEO, None, pub_date="2026-10-09", hero={})
+
+
+def test_an_article_with_a_hero_round_trips_through_the_parser():
+    front = publish.build_front_matter(FACTS, SEO, None, pub_date="2026-10-09", hero=HERO)
+    article = publish.assemble_article("body text", front)
+    assert publish._front_matter_dict(article)["hero"] == HERO
+
+
+def test_publish_copies_the_hero_picture_next_to_the_cover(tmp_path):
+    hero = tmp_path / "staged.webp"
+    hero.write_bytes(b"RIFFhero")
+    result = publish.publish(
+        "---\ntitle: x\n---\nbody\n", slug="example-story", title="Example story", category="pc", mode="draft",
+        hero_path=hero, images_dir=tmp_path / "images", articles_dir=tmp_path / "articles", covers_dir=tmp_path / "covers",
+        log_path=tmp_path / "log.json", seen_path=tmp_path / "seen.json", now=NOW,
+    )
+    assert (tmp_path / "images" / "example-story.webp").read_bytes() == b"RIFFhero"
+    assert result["hero_path"] == str(tmp_path / "images" / "example-story.webp")
+
+
+def test_publish_without_a_hero_writes_no_image_and_reports_none(tmp_path):
+    result = publish.publish(
+        "---\ntitle: x\n---\nbody\n", slug="example-story", title="Example story", category="pc", mode="draft",
+        images_dir=tmp_path / "images", articles_dir=tmp_path / "articles", covers_dir=tmp_path / "covers",
+        log_path=tmp_path / "log.json", seen_path=tmp_path / "seen.json", now=NOW,
+    )
+    assert result["hero_path"] is None and not (tmp_path / "images").exists()
