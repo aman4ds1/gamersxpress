@@ -2322,3 +2322,67 @@ def test_verify_rejects_repetition_the_model_passed_so_the_repair_can_cut_it(tmp
     )
     assert report.passed is False
     assert "Servers went live on November 5, 2026 worldwide." in report.unsupported
+
+
+# --- the reason a clause was flagged travels with it ----------------------------------------------------------------------
+
+
+def verify_with(tmp_path, payload):
+    return verify_module.verify(
+        ARTICLE, sheet(), run_state=providers.RunState(), generate=make_generate(payload), report_dir=tmp_path, verify_config=config(),
+    )
+
+
+def test_every_separate_flag_list_gives_its_clause_a_reason_and_a_category(tmp_path):
+    payload = model(
+        rumors=["A sequel is coming"], regional=["It costs 10 euros in France"], costs=["Players receive a $5 fee"],
+        labels=["A mid-tier card"], categories=["It is an extraction shooter"],
+    )
+    by_clause = {item["clause"]: item for item in verify_with(tmp_path, payload).unsupported_detail}
+    expected = {
+        "A sequel is coming": "rumors_stated_as_fact", "It costs 10 euros in France": "unsupported_regional",
+        "Players receive a $5 fee": "costs_described_as_received", "A mid-tier card": "invented_labels",
+        "It is an extraction shooter": "category_claims",
+    }
+    assert set(by_clause) == set(expected)
+    for clause, category in expected.items():
+        assert by_clause[clause]["category"] == category and by_clause[clause]["reason"] == verify_module.LIST_FLAG_REASONS[category]
+
+
+def test_the_rumor_reason_says_it_is_a_rumor_and_tells_the_repair_to_delete():
+    reason = verify_module.LIST_FLAG_REASONS["rumors_stated_as_fact"]
+    assert "rumor" in reason and "delete the sentence" in reason and "unless the rumor is what the article is about" in reason
+
+
+def test_a_plain_unsupported_claim_gets_no_extra_detail(tmp_path):
+    report = verify_with(tmp_path, model(unsupported=["The card ships next month"]))
+    assert report.unsupported == ["The card ships next month"] and report.unsupported_detail == []
+    assert set(verify_module.LIST_FLAG_REASONS) == {"rumors_stated_as_fact", "unsupported_regional", "costs_described_as_received", "invented_labels", "category_claims"}
+
+
+def test_a_clause_failed_one_by_one_and_listed_as_a_rumor_gets_the_reason_added_to_its_one_entry(tmp_path):
+    clause = "A sequel is coming"
+    failing = [{"clause": clause, "fact_ids": [], "match": "none", "exceeds_facts": False, "difference": "not in the sheet"}]
+    report = verify_with(tmp_path, model(clauses=failing, rumors=[clause]))
+    entries = [item for item in report.unsupported_detail if item["clause"] == clause]
+    assert len(entries) == 1 and entries[0]["category"] == "rumors_stated_as_fact" and "sentence" in entries[0]
+    assert report.unsupported.count(clause) == 1
+
+
+def test_a_code_checks_own_reason_is_kept_and_a_clause_is_not_listed_twice():
+    existing = [{"clause": "Polygon reported it.", "reason": "only says which outlets covered it"}]
+    details = verify_module._list_flag_details({"rumors_stated_as_fact": ["polygon reported it", "Another rumor"]}, existing)
+    assert existing[0]["reason"] == "only says which outlets covered it" and "category" not in existing[0]
+    assert [item["clause"] for item in details] == ["Another rumor"]
+    twice = verify_module._list_flag_details({"rumors_stated_as_fact": ["Same one"], "invented_labels": ["same one."]}, [])
+    assert len(twice) == 1 and twice[0]["category"] == "rumors_stated_as_fact"
+
+
+def test_the_reasons_are_written_to_the_report_file(tmp_path):
+    report = verify_with(tmp_path, model(rumors=["A sequel is coming"]))
+    saved = json.loads((tmp_path / f"verify-{report.id}.json").read_text(encoding="utf-8"))
+    assert saved["unsupported_detail"][0]["category"] == "rumors_stated_as_fact"
+
+
+def test_a_passing_article_has_no_flag_details(tmp_path):
+    assert verify_with(tmp_path, model()).unsupported_detail == []

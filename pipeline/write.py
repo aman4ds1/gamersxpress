@@ -659,6 +659,68 @@ def _removable_heading_indices(
     return removable
 
 
+#: Most of the body's sentences that code may delete from a draft; more than this and the article is not
+#: worth saving by deletion (the writer or the gates decide).
+DELETE_MAX_SHARE = 1 / 3
+
+
+def delete_flagged_sentences(
+    article: str, clauses: list[Any], *, max_share: float = DELETE_MAX_SHARE
+) -> tuple[str, list[str]]:
+    """Remove the sentences that carry a flagged clause, in code; return ``(article, removed sentences)``.
+
+    This is a repair that only deletes, for a clause that should simply go (a rumor the story does not need).
+    The front matter and every other sentence keep their exact wording and order, so the result passes
+    :func:`validate_repair` against the draft it came from. A sentence that opens with an anaphoric marker
+    ("This...", "However...") right after a removed one goes with it, and a heading whose whole section is
+    removed goes too. The article is returned unchanged, with no removed sentences, when
+
+    * no sentence carries a flagged clause;
+    * the lead (the first sentence that is not a heading) is flagged: the story itself is in question;
+    * more than ``max_share`` of the body's sentences would go (the lead is always kept, so never all of them).
+    """
+    text = str(article or "")
+    body = _body_of_article(text)
+    front = text[: len(text) - len(body)]
+    groups = _paragraph_sentence_groups(body)
+    flat = [sentence for group in groups for sentence in group]
+
+    def is_heading(sentence: str) -> bool:
+        return bool(_HEADING_LINE_RE.match(sentence))
+
+    flags = [flagged and not is_heading(sentence) for flagged, sentence in zip(_flagged_flags(flat, clauses), flat)]
+    if not any(flags):
+        return text, []
+    content = [index for index, sentence in enumerate(flat) if not is_heading(sentence)]
+    if flags[content[0]]:
+        return text, []
+    dependents = _dependent_indices(body, flags)
+    headings = _removable_heading_indices(body, flags, dependents)
+    remove = {index for index, flagged in enumerate(flags) if flagged} | dependents | headings
+    removed_content = [index for index in content if index in remove]
+    if len(removed_content) / len(content) > max_share:
+        return text, []
+
+    rebuilt: list[str] = []
+    removed: list[str] = []
+    index = 0
+    for group in groups:
+        kept: list[str] = []
+        for sentence in group:
+            if index in remove:
+                if not is_heading(sentence):
+                    removed.append(sentence)
+            else:
+                kept.append(sentence)
+            index += 1
+        if kept:
+            one_per_line = all(_LIST_ITEM_LINE_RE.match(sentence) or is_heading(sentence) for sentence in kept)
+            rebuilt.append(("\n" if one_per_line else " ").join(kept))
+    leading = re.match(r"\s*", body).group(0)
+    trailing = "\n" if body.endswith("\n") else ""
+    return front + leading + "\n\n".join(rebuilt) + trailing, removed
+
+
 def _body_of_article(text: str) -> str:
     """The Markdown body of ``text`` with its front matter removed."""
     match = re.match(r"^---\r?\n.*?\r?\n---\r?\n?(.*)$", text or "", re.DOTALL)
@@ -818,6 +880,7 @@ def validate_repair(original: str, repaired: str, flagged_clauses: list[str]) ->
 
 
 __all__ = [
+    "delete_flagged_sentences",
     "DEFAULT_PROMPT_PATH",
     "DEFAULT_REPAIR_PROMPT_PATH",
     "FACTS_SHEET_TOKEN",

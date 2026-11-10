@@ -2046,3 +2046,133 @@ def test_a_story_steam_has_nothing_for_gets_the_commons_photo_with_its_category(
 def test_when_neither_has_a_picture_there_is_none(monkeypatch):
     stub_steps(monkeypatch, None, None)
     assert run_module.find_any_hero(title="t", entities=[], slug="s", public_dir="p") is None
+
+
+# --- a flagged rumor is deleted in code ---------------------------------------------------------------------------------------
+
+RUMOR = "A rumored mobile spin-off may have been cancelled in 2024."
+
+
+def rumor_verdict(*rumors, unsupported=()):
+    payload = json.loads(verdict_json(*unsupported))
+    payload["rumors_stated_as_fact"] = list(rumors)
+    return json.dumps(payload)
+
+
+def run_with_stubs(tmp_path, writer_outputs, verifier_outputs, **kwargs):
+    paths = make_paths(tmp_path)
+    calls = repair_calls()
+    generate = repair_generate(writer_outputs, verifier_outputs, calls)
+    result = run_module.run(paths=paths, now=NOW, env={}, dry_run=True, generate=generate,
+                            link_checker=lambda url: 200, site_checks=STUB_CHECKS, **kwargs)
+    return paths, calls, result
+
+
+def test_a_flagged_rumor_is_deleted_in_code_and_the_writer_is_not_called_again(tmp_path):
+    # The live Nier case: a rumor the story did not need, re-worded by the repair and flagged again.
+    original = dryrun.sample_body() + f"\n\n{RUMOR}\n"
+    paths, calls, result = run_with_stubs(tmp_path, [original], [rumor_verdict(RUMOR.rstrip(".")), verdict_json()])
+    assert result.status == "completed" and result.exit_code == 0
+    assert calls["writer"] == 1 and calls["verifier"] == 2, "no writer call for the repair"
+    drafts = paths.drafts_dir / result.report["slug"]
+    assert (drafts / "original.md").read_text(encoding="utf-8") == original
+    repaired = (drafts / "repaired.md").read_text(encoding="utf-8")
+    assert RUMOR not in repaired and repaired.rstrip() == dryrun.sample_body().rstrip()
+    report = verify_report_file(paths, result)
+    assert report["repair"]["attempted"] is True and report["repair"]["deleted_sentences"] == [RUMOR]
+    assert report["repair"]["repaired_chars"] == len(repaired) and report["repair"]["original_chars"] == len(original)
+    assert RUMOR.rstrip(".") in (drafts / "repair-clauses.txt").read_text(encoding="utf-8")
+
+
+def test_when_other_clauses_are_flagged_too_the_writer_repairs_only_those_and_never_sees_the_rumor(tmp_path):
+    original = dryrun.sample_body() + f"\n\n{RUMOR}\n\n{UNSUPPORTED}\n"
+    paths, calls, result = run_with_stubs(
+        tmp_path, [original, dryrun.sample_body()],
+        [rumor_verdict(RUMOR.rstrip("."), unsupported=[UNSUPPORTED]), verdict_json()],
+    )
+    assert result.status == "completed" and calls["writer"] == 2 and calls["verifier"] == 2
+    assert RUMOR not in calls["writer_prompts"][1] and UNSUPPORTED in calls["writer_prompts"][1]
+    assert verify_report_file(paths, result)["repair"]["deleted_sentences"] == [RUMOR]
+
+
+def test_the_ordinary_repair_records_that_nothing_was_deleted(tmp_path):
+    original = dryrun.sample_body() + f"\n\n{UNSUPPORTED}\n"
+    paths, calls, result = run_with_stubs(tmp_path, [original, dryrun.sample_body()], [verdict_json(UNSUPPORTED), verdict_json()])
+    assert result.status == "completed" and verify_report_file(paths, result)["repair"]["deleted_sentences"] == []
+
+
+def capture_repair(calls):
+    def repair(draft, flagged_clauses, facts, **kwargs):
+        calls.append({"draft": draft, "flagged": flagged_clauses})
+        return providers.Generation("writer", "gemini", "g", "google", draft)
+
+    return repair
+
+
+def test_a_rumor_in_the_lead_is_not_deleted_and_the_writer_is_told_why_it_was_flagged(tmp_path):
+    body = dryrun.sample_body()
+    lead = next(sentence for sentence in run_module.write_stage._sentences(body) if not sentence.startswith("#"))
+    seen = []
+    _paths, calls, result = run_with_stubs(tmp_path, [body], [rumor_verdict(lead), verdict_json()], repair_fn=capture_repair(seen))
+    assert len(seen) == 1 and lead in seen[0]["draft"]
+    assert seen[0]["flagged"] == [{"clause": lead, "reason": run_module.verify_stage.LIST_FLAG_REASONS["rumors_stated_as_fact"]}]
+    assert "rumor" in seen[0]["flagged"][0]["reason"] and "delete the sentence" in seen[0]["flagged"][0]["reason"]
+
+
+def test_a_rumor_flag_that_would_gut_the_article_is_left_to_the_writer(tmp_path):
+    body = dryrun.sample_body()
+    sentences = [s for s in run_module.write_stage._sentences(body) if not s.startswith("#")]
+    many = sentences[1:]
+    assert len(many) / len(sentences) > run_module.write_stage.DELETE_MAX_SHARE
+    seen = []
+    run_with_stubs(tmp_path, [body], [rumor_verdict(*many), verdict_json()], repair_fn=capture_repair(seen))
+    assert len(seen) == 1 and [item["clause"] for item in seen[0]["flagged"]] == many and seen[0]["draft"] == body
+
+
+def test_a_trimmed_article_that_still_fails_the_second_check_fails_the_run_without_another_repair(tmp_path):
+    original = dryrun.sample_body() + f"\n\n{RUMOR}\n"
+    _paths, calls, result = run_with_stubs(tmp_path, [original], [rumor_verdict(RUMOR.rstrip(".")), verdict_json(UNSUPPORTED)])
+    assert result.status == "failed" and result.error == "verification failed (article_rejected)"
+    assert calls["writer"] == 1 and calls["verifier"] == 2
+
+
+def test_the_rumor_a_sentence_never_found_in_the_draft_is_still_left_to_the_writer(tmp_path):
+    seen = []
+    run_with_stubs(tmp_path, [dryrun.sample_body()], [rumor_verdict("A sentence the article never contained at all"), verdict_json()],
+                   repair_fn=capture_repair(seen))
+    assert len(seen) == 1 and seen[0]["flagged"][0]["clause"] == "A sentence the article never contained at all"
+
+
+def stub_verify(unsupported, detail):
+    real = run_module.verify_stage.verify
+    state = {"calls": 0}
+
+    def verify(*args, **kwargs):
+        report = real(*args, **kwargs)
+        state["calls"] += 1
+        if state["calls"] == 1:
+            report.passed, report.failure_reason = False, "article_rejected"
+            report.unsupported, report.unsupported_detail = list(unsupported), list(detail)
+        return report
+
+    return verify
+
+
+def test_a_flag_that_is_not_a_rumor_is_never_deleted_in_code_even_when_it_has_a_reason(tmp_path):
+    clause = "The card is fast. It will ship soon."
+    body = dryrun.sample_body() + f"\n\n{clause}\n"
+    seen = []
+    detail = [{"clause": clause, "reason": "only says which outlets covered it"}]
+    run_with_stubs(tmp_path, [body], [verdict_json()], repair_fn=capture_repair(seen), verify_fn=stub_verify([clause], detail))
+    assert len(seen) == 1 and clause in seen[0]["draft"]
+    assert seen[0]["flagged"] == [{"clause": clause, "reason": "only says which outlets covered it"}]
+
+
+def test_a_rumor_clause_that_differs_only_in_case_or_punctuation_is_still_taken_off_the_writers_list(tmp_path):
+    body = dryrun.sample_body() + f"\n\n{RUMOR}\n"
+    seen = []
+    clause_in_list = RUMOR.upper().rstrip(".") + "!"          # how another list spelled the same clause
+    detail = [{"clause": RUMOR.rstrip("."), "reason": "rumor", "category": "rumors_stated_as_fact"}]
+    _paths, calls, result = run_with_stubs(tmp_path, [body], [verdict_json()], repair_fn=capture_repair(seen),
+                                           verify_fn=stub_verify([clause_in_list], detail))
+    assert seen == [] and calls["writer"] == 1 and result.status == "completed"

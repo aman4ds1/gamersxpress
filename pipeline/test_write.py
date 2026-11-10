@@ -1047,3 +1047,137 @@ def test_the_writer_prompt_tells_the_model_to_fold_a_short_section_instead_of_wr
     template = Path(write_module.DEFAULT_PROMPT_PATH).read_text(encoding="utf-8")
     assert "Every `##` section needs at least two sentences and 40 words" in template
     assert "fold what you have into another section instead of writing a short one" in template
+
+
+# --- deleting flagged sentences in code ---------------------------------------------------------------------------------------
+
+SAMPLE = """---
+title: A sample story
+description: A sample description of the story.
+tags:
+  - one
+  - two
+  - three
+---
+
+## What happened
+
+The studio shipped an update on November 6. It broke the install size.
+
+## Context
+
+A rumor sentence about a mobile game. Another rumor sentence about costs. A supported sentence about the studio. A second supported sentence about the update.
+
+## Extra
+
+Only a rumor lives here. This follows the rumor and leans on it.
+
+## Notes
+
+- A bullet that is supported
+- A bullet that is a rumor
+- Another supported bullet
+"""
+RUMOR_1 = "A rumor sentence about a mobile game"
+RUMOR_2 = "Another rumor sentence about costs"
+RUMOR_3 = "Only a rumor lives here"
+RUMOR_BULLET = "A bullet that is a rumor"
+
+
+def test_flagged_sentences_are_removed_and_every_other_sentence_keeps_its_wording_and_order():
+    result, removed = write_module.delete_flagged_sentences(SAMPLE, [RUMOR_1, RUMOR_2])
+    assert removed == ["A rumor sentence about a mobile game.", "Another rumor sentence about costs."]
+    assert "A supported sentence about the studio. A second supported sentence about the update." in result
+    assert RUMOR_1 not in result and RUMOR_2 not in result
+    assert result.startswith(SAMPLE[: SAMPLE.index("## What happened")])          # the front matter is byte for byte the same
+    assert "The studio shipped an update on November 6. It broke the install size." in result
+
+
+def test_the_result_is_always_a_valid_delete_only_repair_of_its_draft():
+    for clauses in ([RUMOR_1], [RUMOR_1, RUMOR_2], [RUMOR_3], [RUMOR_BULLET], [RUMOR_1, RUMOR_BULLET]):
+        result, removed = write_module.delete_flagged_sentences(SAMPLE, clauses)
+        assert removed, clauses
+        assert write_module.validate_repair(SAMPLE, result, clauses) == [], clauses
+
+
+def test_a_sentence_leaning_on_a_removed_one_goes_with_it_and_an_emptied_section_loses_its_heading():
+    result, removed = write_module.delete_flagged_sentences(SAMPLE, [RUMOR_3])
+    assert removed == ["Only a rumor lives here.", "This follows the rumor and leans on it."]
+    assert "## Extra" not in result and "## Notes" in result and "## Context" in result
+
+
+def test_a_list_item_is_removed_and_the_list_stays_one_item_per_line():
+    result, removed = write_module.delete_flagged_sentences(SAMPLE, [RUMOR_BULLET])
+    assert removed == ["- A bullet that is a rumor"]
+    assert "- A bullet that is supported\n- Another supported bullet" in result
+
+
+def test_a_clause_without_its_full_stop_or_in_another_case_still_finds_its_sentence():
+    result, removed = write_module.delete_flagged_sentences(SAMPLE, ["another RUMOR sentence about costs.", "A rumor sentence about a mobile"])
+    assert len(removed) == 2 or len(removed) == 1
+    assert "Another rumor sentence about costs" not in result
+
+
+def test_nothing_is_changed_when_no_sentence_matches():
+    assert write_module.delete_flagged_sentences(SAMPLE, ["A sentence that is nowhere in the article"]) == (SAMPLE, [])
+    assert write_module.delete_flagged_sentences(SAMPLE, []) == (SAMPLE, [])
+    assert write_module.delete_flagged_sentences("", [RUMOR_1]) == ("", [])
+
+
+def test_the_lead_is_never_deleted_because_then_the_story_itself_is_in_question():
+    assert write_module.delete_flagged_sentences(SAMPLE, ["The studio shipped an update on November 6"]) == (SAMPLE, [])
+    assert write_module.delete_flagged_sentences(SAMPLE, ["The studio shipped an update on November 6", RUMOR_1]) == (SAMPLE, [])
+
+
+def test_an_article_is_not_gutted_by_deletion():
+    many = [RUMOR_1, RUMOR_2, RUMOR_3, RUMOR_BULLET, "It broke the install size"]
+    assert write_module.delete_flagged_sentences(SAMPLE, many) == (SAMPLE, [])
+    assert write_module.delete_flagged_sentences(SAMPLE, many, max_share=0.9)[1]
+    assert write_module.delete_flagged_sentences(SAMPLE, many, max_share=1.0)[0] != SAMPLE      # only the lead is kept, never zero
+
+
+def test_a_heading_is_never_deleted_by_matching_its_text():
+    assert write_module.delete_flagged_sentences(SAMPLE, ["What happened", "Context"]) == (SAMPLE, [])
+
+
+def test_deleting_twice_changes_nothing_more_and_a_headline_free_article_works():
+    once, removed = write_module.delete_flagged_sentences(SAMPLE, [RUMOR_1])
+    assert write_module.delete_flagged_sentences(once, [RUMOR_1]) == (once, [])
+    plain = "Lead sentence here. A rumor about something. Another kept sentence. A fourth kept sentence. A fifth kept sentence. A sixth kept one."
+    assert write_module.delete_flagged_sentences(plain, ["A rumor about something"])[0] == (
+        "Lead sentence here. Another kept sentence. A fourth kept sentence. A fifth kept sentence. A sixth kept one.")
+
+
+def test_a_trailing_newline_and_the_blank_line_after_the_front_matter_are_kept():
+    result, _removed = write_module.delete_flagged_sentences(SAMPLE, [RUMOR_1])
+    assert result.endswith("\n") and not result.endswith("\n\n") and "---\n\n## What happened" in result
+    result, _removed = write_module.delete_flagged_sentences(SAMPLE.rstrip("\n"), [RUMOR_1])
+    assert not result.endswith("\n")
+
+
+def test_the_real_nier_draft_loses_only_its_two_rumor_sentences():
+    clauses = ["One cancelled project in 2024 may have been a Tencent-backed Nier mobile game",
+               "The mobile game reportedly struggled to find monetization to offset high costs"]
+    result, removed = write_module.delete_flagged_sentences(NIER_ORIGINAL, clauses)
+    assert removed == ["One cancelled project in 2024 may have been a Tencent-backed Nier mobile game.",
+                       "The mobile game reportedly struggled to find monetization to offset high costs."]
+    assert "Tencent" not in result and "monetization" not in result
+    assert "## Context and comparison" in result and "Most projects the developer was working on were cancelled" in result
+    assert "unchecking all eight DLC" in result and "366GB" in result
+    assert write_module.validate_repair(NIER_ORIGINAL, result, clauses) == []
+    assert len(result.split()) == len(NIER_ORIGINAL.split()) - 25      # 13 + 12 words
+
+
+def test_the_repair_prompt_forbids_copying_and_tells_the_writer_what_to_do_with_a_rumor():
+    template = write_module.load_template(write_module.DEFAULT_REPAIR_PROMPT_PATH)
+    assert "**Never copy.**" in template and "eight or more words" in template
+    assert "rests on a rumor, delete the sentence unless the rumor is what the whole article is about" in template
+
+
+NIER_ORIGINAL = '---\ntitle: Nier: Automata Update Inflates PC File Size to 366GB\ndescription: Square Enix is investigating a Steam update bug for Nier: Automata that drastically increased required storage space to 366GB.\npubDate: 2026-11-10\ncategory: pc\ntags:\n  - nier automata\n  - square enix\n  - steam\n  - pc\nentities:\n  - Nier: Automata\n  - PC\n  - Steam\nsources:\n  - name: PC Gamer\n    url: https://pcgamer.com/games/rpg/nier-automata-developer-is-currently-investigating-a-bizarre-update-bug-that-drastically-inflated-the-games-file-size-from-50gb-to-366gb/\n  - name: Eurogamer\n    url: https://eurogamer.net/square-enix-nier-automata-update-required-file-size-366gb\n  - name: Dexerto\n    url: https://dexerto.com/gaming/square-enix-responds-after-nier-automata-update-triggers-massive-366gb-storage-requirement-3425350/\n---\n\n## What happened\n\nSquare Enix is investigating an update bug on PC that inflated the required installation file size for Nier: Automata from 50GB to 366GB. The update on November 6 added language support for Simplified Chinese, Traditional Chinese, and Korean. The update on Steam is not optional.\n\nSquare Enix confirmed an issue where the installation process displays a storage requirement higher than expected. Square Enix posted an apology on the official Japanese Nier Automata account. Square Enix stated it is investigating the cause and working on a solution.\n\n## Why gamers should care\n\nThe inflated file size is true for the initial download and installation. Steam demanded 366GB of free space to install the game. Players reported that Steam incorrectly counts the full game file size for each DLC in the YoRHa Edition. The download reportedly stacks all eight DLC concurrently. Once installed, the file reportedly reverts to a size of roughly 50GB.\n\nSquare Enix recommended a temporary workaround. Players can download the base game without the inflated storage requirement by opening Steam properties and unchecking all eight DLC.\n\n## Context and comparison\n\nInformation from earlier in 2026 indicates Nier Automata will continue. Most projects the developer was working on were cancelled, as learned in 2025.\n\nOne cancelled project in 2024 may have been a Tencent-backed Nier mobile game. The mobile game reportedly struggled to find monetization to offset high costs.'
+
+
+def test_an_article_with_nothing_to_delete_comes_back_exactly_as_it_was_even_with_irregular_whitespace():
+    messy = "---\ntitle: T\n---\n\n\n## Heading\n\nA soft-wrapped paragraph that\ncontinues here. A second sentence.   Third one.\n\n\n\nAnother paragraph.\n\n- item one\n- item two"
+    assert write_module.delete_flagged_sentences(messy, ["Nothing like this sentence appears"]) == (messy, [])
+    assert write_module.delete_flagged_sentences(messy, ["A heading that is not there"]) == (messy, [])

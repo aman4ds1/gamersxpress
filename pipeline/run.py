@@ -411,6 +411,11 @@ def _body_of(article: str) -> str:
     return body
 
 
+def _fold_clause(clause: object) -> str:
+    """A flagged clause compared without case, trailing punctuation or extra spaces."""
+    return " ".join(str(clause or "").split()).casefold().rstrip(" .!?")
+
+
 def _no_image(**_kwargs: Any) -> None:
     """The image step of an offline run: there is no picture."""
     return None
@@ -961,16 +966,36 @@ def run(
                 }
                 for clause in changed_clauses
             ]
+            # A sentence the checker flagged as a rumor the story does not need is deleted in code, before
+            # any writer call: the writer only ever re-worded such sentences, and a re-wording of a rumor is
+            # still a rumor. When that clears every flagged clause the writer is not called at all.
+            rumor_clauses = [
+                str(item.get("clause") or "")
+                for item in verify_report.unsupported_detail or []
+                if isinstance(item, dict) and item.get("category") == "rumors_stated_as_fact"
+            ]
+            working, deleted = (draft, [])
+            if rumor_clauses:
+                working, deleted = write_stage.delete_flagged_sentences(draft, rumor_clauses)
+            if deleted:
+                logger.info("repair deleted %d rumor sentence(s) in code: %s", len(deleted), deleted)
+                gone = {_fold_clause(clause) for clause in rumor_clauses}
+                flagged_clauses = [item for item in flagged_clauses if _fold_clause(item["clause"]) not in gone]
             with timings.stage("repair"):
-                repaired = repair_fn(
-                    draft, flagged_clauses, facts, run_state=run_state, generate=generate,
-                )
+                if flagged_clauses:
+                    repaired_text = repair_fn(
+                        working, flagged_clauses, facts, run_state=run_state, generate=generate,
+                    ).value
+                else:
+                    repaired_text = working
                 publish_stage.save_repair(
-                    draft, repaired.value, slug=provisional_slug, drafts_dir=paths.drafts_dir,
+                    draft, repaired_text, slug=provisional_slug, drafts_dir=paths.drafts_dir,
                     changed_clauses=changed_clauses,
                 )
-                repair_problems = write_stage.validate_repair(
-                    draft, repaired.value, changed_clauses
+                repair_problems = (
+                    write_stage.validate_repair(working, repaired_text, [item["clause"] for item in flagged_clauses])
+                    if flagged_clauses
+                    else []
                 )
             if repair_problems:
                 logger.warning(
@@ -978,7 +1003,7 @@ def run(
                     "; ".join(repair_problems),
                 )
             else:
-                draft = repaired.value
+                draft = repaired_text
                 with timings.stage("verify"):
                     verify_report = verify_fn(
                         draft, facts, run_state=run_state, generate=generate,
@@ -987,8 +1012,9 @@ def run(
                         repair={
                             "attempted": True,
                             "changed_clauses": changed_clauses,
+                            "deleted_sentences": deleted,
                             "original_chars": len(writer.value),
-                            "repaired_chars": len(repaired.value),
+                            "repaired_chars": len(repaired_text),
                         },
                     )
 

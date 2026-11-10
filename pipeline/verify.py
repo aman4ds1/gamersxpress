@@ -276,6 +276,42 @@ SYSTEM_INSTRUCTION = (
 )
 
 
+#: Why the verifier's separate flag lists mean a clause must go. They travel with the clause so the repair
+#: step is told the truth instead of "flagged as unsupported by the facts".
+LIST_FLAG_REASONS = {
+    "rumors_stated_as_fact": (
+        "the facts sheet marks this as a rumor and the checker does not accept a sentence built on a rumor; "
+        "delete the sentence unless the rumor is what the article is about"
+    ),
+    "unsupported_regional": "states a region-specific price or availability that the facts sheet does not contain",
+    "costs_described_as_received": "describes a price or cost as something the player receives, earns or is given",
+    "invented_labels": "uses a label the facts sheet never uses",
+    "category_claims": "categorizes the game or mode in a way the facts sheet does not state",
+}
+
+
+def _list_flag_details(model_result: dict, existing: list[dict]) -> list[dict]:
+    """``{"clause", "reason", "category"}`` for every clause the verifier put on one of its separate lists.
+
+    A clause that already has a detail entry without a reason (the model's own per-clause verdict) gets the
+    reason added to that entry; a clause with a code check's reason keeps it.
+    """
+    by_key = {_clause_key(item.get("clause", "")): item for item in existing if isinstance(item, dict)}
+    added: list[dict] = []
+    for category, reason in LIST_FLAG_REASONS.items():
+        for clause in model_result.get(category) or []:
+            key = _clause_key(clause)
+            entry = by_key.get(key)
+            if entry is None:
+                entry = {"clause": clause, "reason": reason, "category": category}
+                by_key[key] = entry
+                added.append(entry)
+            elif not str(entry.get("reason") or "").strip():
+                entry["reason"] = reason
+                entry["category"] = category
+    return added
+
+
 @dataclass
 class VerifyReport:
     """Outcome of the verifier stage for one article."""
@@ -1518,6 +1554,8 @@ def verify(
         failure_reason = "article_rejected"
     else:
         failure_reason = None
+    unsupported_detail = list(model_result["unsupported_detail"]) + outlet_issues
+    unsupported_detail += _list_flag_details(model_result, unsupported_detail)
     report = VerifyReport(
         id=story_id,
         passed=passed,
@@ -1527,7 +1565,7 @@ def verify(
         verifier_provider=generation.provider,
         verifier_model=generation.model,
         unsupported=unsupported,
-        unsupported_detail=list(model_result["unsupported_detail"]) + outlet_issues,
+        unsupported_detail=unsupported_detail,
         unmatched_numbers=code_result["unmatched"],
         unmatched_detail=code_result.get("unmatched_detail", []),
         notes=model_result["notes"],
