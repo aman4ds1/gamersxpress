@@ -529,6 +529,22 @@ def _phrase_hits(text: str, phrases: Iterable[str]) -> list[str]:
     return hits
 
 
+#: Offer phrases that need more than a substring match. "sale" must be the word itself: "sales made on
+#: Steam" and "4 million copies in sales" are revenue figures, and "wholesale" or "resale" are not offers.
+#: "sale of ..." ("the sale of 4 million copies", "the sale of the studio") is a transaction, not a
+#: promotion; a promotion "of up to 50% off" is still caught by the "% off" phrase. Every other phrase
+#: stays a substring match on purpose ("discount" is meant to catch "discounted" and "discounts").
+_OFFER_WORD_PATTERNS = {
+    "sale": re.compile(r"(?<![a-z0-9_])sale(?![a-z0-9_])(?! of\b)"),
+}
+
+
+def _offer_in(lowered_sentence: str, phrase: str) -> bool:
+    """Whether the (lowercased) sentence contains the offer phrase in the sense the rule is about."""
+    pattern = _OFFER_WORD_PATTERNS.get(phrase)
+    return bool(pattern.search(lowered_sentence)) if pattern else phrase in lowered_sentence
+
+
 def _facts_claim_text(facts: dict | None) -> str:
     """The claim and value text of every claim in the sheet, joined."""
     parts: list[str] = []
@@ -1455,7 +1471,7 @@ def run_gates(
     offer_failures: list[str] = []
     for sentence in _sentences(body):
         lowered = sentence.lower()
-        offer = next((p for p in config["offer_phrases"] if p and p in lowered), None)
+        offer = next((p for p in config["offer_phrases"] if p and _offer_in(lowered, p)), None)
         if not offer:
             continue
         date = _date_token(sentence)

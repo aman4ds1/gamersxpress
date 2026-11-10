@@ -1412,3 +1412,79 @@ def test_the_hero_gate_can_be_switched_off(tmp_path):
     result = run(clean_article(front_overrides={"hero": hero}), facts=make_facts(), public_dir=public,
                  config=config_without("check_hero"))
     assert result.checks["hero"]["failures"] == []
+
+
+# --- the "sale" offer phrase is the word, not any text containing it -----------------------------------------------------------
+
+PHANTOM_BLADE = [
+    "S-Game confirmed that Phantom Blade Zero officially sold over 4 million copies worldwide within 72 hours of launch, based on its sales data.",
+    "The 4 million figure includes sales made on Steam, PlayStation 5, and the China-exclusive version.",
+]
+
+
+def offer_failures(*sentences, facts=None):
+    body = "## What happened\n\n" + filler() + "\n\n" + " ".join(sentences) + "\n"
+    extra = {} if facts is None else {"facts": facts}
+    return run(make_article(body=body)[0], **extra).checks["time_limited_offers"]["failures"]
+
+
+def test_the_sentences_from_the_phantom_blade_alert_are_not_mistaken_for_a_discount():
+    assert offer_failures(*PHANTOM_BLADE) == []
+
+
+@pytest.mark.parametrize("sentence", [
+    "First-week sales beat the studio's own forecast.",
+    "Sales figures were confirmed on Monday.",
+    "The wholesale price of the part rose again.",
+    "A resale market for the cards has appeared.",
+    "The sale of the studio to the publisher was completed.",
+    "The sale of 4 million copies is a record for the series.",
+    "It is a salesman's dream of a launch.",
+])
+def test_revenue_and_business_wording_is_not_an_offer(sentence):
+    assert offer_failures(sentence) == []
+
+
+@pytest.mark.parametrize("sentence", [
+    "The game is on sale this month.",
+    "A Summer Sale starts soon.",
+    "The bundle is sale-priced.",
+    "The pre-sale bundle is cheaper.",
+    "The SALE ends at the weekend.",
+    "Steam is hosting a sale.",
+    "The sale.",
+])
+def test_a_real_sale_without_a_date_still_fails(sentence):
+    failures = offer_failures(sentence)
+    assert len(failures) == 1 and "body offers 'sale' without a date range" in failures[0]
+
+
+def test_a_sale_with_a_date_from_the_facts_sheet_still_passes():
+    facts = make_facts()
+    facts["claims"] = [{"claim": "The sale runs from October 7 to October 21.", "value": "October 7 to October 21",
+                        "source_url": "https://a.example/1", "confidence": 1.0, "kind": "confirmed"}]
+    assert offer_failures("The sale runs from October 7 to October 21.", facts=facts) == []
+
+
+def test_a_sale_of_up_to_a_percentage_is_still_caught_by_the_percent_off_phrase():
+    failures = offer_failures("Steam runs a sale of up to 50% off.")
+    assert len(failures) == 1 and "'% off'" in failures[0]
+
+
+def test_the_other_offer_phrases_still_match_inside_longer_words():
+    for sentence, phrase in (("The game is discounted by half.", "discount"), ("Several discounts apply.", "discount"),
+                             ("There is a free weekend event.", "free weekend")):
+        failures = offer_failures(sentence)
+        assert len(failures) == 1 and f"'{phrase}'" in failures[0], sentence
+
+
+def test_a_sentence_with_both_revenue_and_a_real_sale_is_still_flagged_for_the_sale():
+    failures = offer_failures("The game sold well and is on sale now, with strong sales.")
+    assert len(failures) == 1 and "'sale'" in failures[0]
+
+
+def test_offer_matching_treats_only_sale_specially_and_a_custom_phrase_list_keeps_plain_substring_matching():
+    assert gates._offer_in("on sale", "sale") and not gates._offer_in("sales", "sale") and not gates._offer_in("the sale of x", "sale")
+    assert gates._offer_in("discounted", "discount") and gates._offer_in("50% off", "% off")
+    assert gates._offer_in("first-week sales", "sales")                   # a phrase with no pattern is a substring match
+    assert set(gates._OFFER_WORD_PATTERNS) == {"sale"}

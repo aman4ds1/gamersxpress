@@ -757,6 +757,8 @@ gates:
     - out now
   # Consumer offers (sales, trials, free weekends). A story may include one only
   # when the facts sheet gives its date range or start date; otherwise it fails.
+  # "sale" matches only that whole word, never "sales", "resale" or "sale of ...",
+  # so a story about copies sold is not mistaken for a discount.
   offer_phrases:
     - sale
     - discount
