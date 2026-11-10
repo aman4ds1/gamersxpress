@@ -1,11 +1,6 @@
 /* GamersXpress design: pixel logo, gold (light) / silver (dark) card linings, moving background. */
 @property --gx-a { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 @keyframes gx-spin { to { --gx-a: 360deg; } }
-@keyframes gx-drift1 { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(160px, 120px) scale(1.15); } }
-@keyframes gx-drift2 { 0%, 100% { transform: translate(0, 0) scale(1.1); } 50% { transform: translate(-180px, 90px) scale(0.95); } }
-@keyframes gx-drift3 { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(120px, -140px) scale(1.2); } }
-@keyframes gx-gridmove { to { background-position: 0 56px, 56px 0; } }
-@keyframes gx-float { 0% { transform: translateY(0) rotate(0); } 100% { transform: translateY(-420px) rotate(180deg); opacity: 0; } }
 @keyframes gx-flow { to { background-position: 200% 0; } }
 @keyframes gx-px { 0%, 100% { opacity: 0.7; } 40% { opacity: 1; } }
 @keyframes gx-pxc { 0%, 100% { fill: var(--base); } 33% { fill: var(--a1); } 66% { fill: var(--a2); } }
@@ -16,19 +11,6 @@ body { font-family: var(--font-sans); }
 .gx-mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .gx-pixel { font-family: "Press Start 2P", ui-monospace, monospace; }
 
-/* background */
-.gx-bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
-.gx-blob { position: absolute; width: 620px; height: 620px; border-radius: 50%; filter: blur(70px); }
-.gx-b1 { top: -180px; left: -140px; background: radial-gradient(circle, var(--c1), transparent 65%); animation: gx-drift1 22s ease-in-out infinite; }
-.gx-b2 { top: 240px; right: -200px; background: radial-gradient(circle, var(--c2), transparent 65%); animation: gx-drift2 26s ease-in-out infinite; }
-.gx-b3 { bottom: -220px; left: 30%; background: radial-gradient(circle, var(--c3), transparent 65%); animation: gx-drift3 30s ease-in-out infinite; }
-.gx-gridlines { position: absolute; inset: 0; background-image: linear-gradient(var(--gc) 1px, transparent 1px), linear-gradient(90deg, var(--gc) 1px, transparent 1px); background-size: 56px 56px; animation: gx-gridmove 6s linear infinite; -webkit-mask-image: radial-gradient(ellipse at 50% 30%, #000 30%, transparent 75%); mask-image: radial-gradient(ellipse at 50% 30%, #000 30%, transparent 75%); }
-.gx-shape { position: absolute; bottom: -40px; width: 14px; height: 14px; opacity: 0.55; animation: gx-float 18s linear infinite; }
-.gx-s1 { left: 8%; border: 2px solid var(--a1); border-radius: 50%; }
-.gx-s2 { left: 26%; border: 2px solid var(--a2); animation-duration: 22s; animation-delay: -6s; }
-.gx-s3 { left: 58%; width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 14px solid var(--a3); animation-duration: 20s; animation-delay: -12s; }
-.gx-s4 { left: 80%; border: 2px solid var(--a1); animation-duration: 24s; animation-delay: -3s; }
-.gx-s5 { left: 44%; border: 2px solid var(--a2); border-radius: 50%; animation-duration: 26s; animation-delay: -16s; }
 
 /* header / footer */
 .gx-bar { position: sticky; top: 0; z-index: 30; background: var(--bar); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
@@ -93,8 +75,7 @@ body { transition: background-color 0.35s ease, color 0.35s ease; }
   .gx-hero .gx-card { padding: 34px 24px 28px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .gx-blob, .gx-gridlines, .gx-shape, .gx-grad, .gx-gradbar, .gx-px, .gx-blink, .gx-lined { animation: none; }
-  .gx-shape { display: none; }
+  .gx-grad, .gx-gradbar, .gx-px, .gx-blink, .gx-lined { animation: none; }
   .gx-lined:hover, .gx-lined:focus-visible { transform: none; }
   .gx-theme svg, body { transition: none; }
 }

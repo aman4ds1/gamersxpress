@@ -1,0 +1,104 @@
+---
+// The page background: two pixel-art scenes, one shown at a time (the switch in the header sets
+// data-scene on <html>; see src/styles/scenes.css). Every sprite is original artwork drawn here as
+// SVG rectangles, so there are no image files and no network requests.
+type Rect = [number, number, number, number, string?];
+
+const cloud: Rect[] = [[5, 0, 5, 1], [11, 0, 4, 1], [4, 1, 13, 1], [2, 2, 16, 1], [1, 3, 18, 1], [0, 4, 20, 1], [1, 5, 18, 1], [3, 6, 14, 1]];
+const sun: Rect[] = [[4, 0, 4, 1], [2, 1, 8, 1], [1, 2, 10, 1], [0, 3, 12, 6], [1, 9, 10, 1], [2, 10, 8, 1], [4, 11, 4, 1]];
+const moon: Rect[] = [[4, 0, 4, 1], [2, 1, 5, 1], [1, 2, 5, 1], [0, 3, 5, 6], [1, 9, 5, 1], [2, 10, 5, 1], [4, 11, 4, 1]];
+const block: Rect[] = [
+  [0, 0, 16, 16, '#92400e'], [1, 1, 14, 14, '#fbbf24'],
+  [2, 2, 2, 2, '#92400e'], [12, 2, 2, 2, '#92400e'], [2, 12, 2, 2, '#92400e'], [12, 12, 2, 2, '#92400e'],
+  [6, 3, 4, 1, '#92400e'], [5, 4, 2, 1, '#92400e'], [9, 4, 2, 1, '#92400e'], [9, 5, 2, 1, '#92400e'],
+  [8, 6, 2, 1, '#92400e'], [7, 7, 2, 2, '#92400e'], [7, 10, 2, 2, '#92400e'],
+];
+const coin: Rect[] = [
+  [3, 0, 4, 1, '#fbbf24'], [2, 1, 6, 1, '#fbbf24'], [1, 2, 8, 10, '#fbbf24'], [2, 12, 6, 1, '#fbbf24'], [3, 13, 4, 1, '#fbbf24'],
+  [4, 3, 2, 8, '#f59e0b'],
+];
+const ghostBody: Rect[] = [[4, 0, 6, 1], [2, 1, 10, 1], [1, 2, 12, 1], [0, 3, 14, 7]];
+const ghostFeetA: Rect[] = [[0, 10, 4, 3], [5, 10, 4, 3], [10, 10, 4, 3]];
+const ghostFeetB: Rect[] = [[0, 10, 2, 2], [3, 10, 3, 3], [7, 10, 3, 3], [11, 10, 3, 2]];
+// Frightened ghosts: small pale eyes and a zigzag mouth. They run away from the chomper, never after it.
+const ghostFace: Rect[] = [
+  [4, 4, 2, 2, '#fde68a'], [8, 4, 2, 2, '#fde68a'],
+  [2, 8, 2, 1, '#fde68a'], [4, 7, 2, 1, '#fde68a'], [6, 8, 2, 1, '#fde68a'], [8, 7, 2, 1, '#fde68a'], [10, 8, 2, 1, '#fde68a'],
+];
+
+const clouds = ['gx-cl1', 'gx-cl2', 'gx-cl3', 'gx-cl4'];
+const blocks = ['gx-q1', 'gx-q2', 'gx-q3'];
+// Each lane: the chomper runs along it eating pellets and catches the ghosts running ahead of it. The class of a
+// ghost (gx-f56 ...) says how far along the lane the chomper catches it (56%); see scenes.css.
+const lanes = [
+  { lane: 'gx-l1', ghosts: ['gx-f56', 'gx-f78'], reverse: false },
+  { lane: 'gx-l2', ghosts: ['gx-f66'], reverse: true },
+  { lane: 'gx-l3', ghosts: ['gx-f48', 'gx-f84'], reverse: false },
+];
+---
+
+<div class="gx-bg" aria-hidden="true">
+  <!-- Scene 1: a pixel sky with drifting clouds, scrolling hills and bricks, and bobbing blocks. -->
+  <div class="gx-scene gx-skyscene">
+    <span class="gx-sky"></span>
+    <span class="gx-stars"></span>
+    <svg class="gx-skysun" viewBox="0 0 12 12" shape-rendering="crispEdges">
+      {sun.map(([x, y, w, h]) => <rect x={x} y={y} width={w} height={h} fill="currentColor" />)}
+    </svg>
+    <svg class="gx-skymoon" viewBox="0 0 12 12" shape-rendering="crispEdges">
+      {moon.map(([x, y, w, h]) => <rect x={x} y={y} width={w} height={h} fill="currentColor" />)}
+    </svg>
+    {
+      clouds.map((name) => (
+        <svg class={`gx-cloud ${name}`} viewBox="0 0 20 7" shape-rendering="crispEdges">
+          {cloud.map(([x, y, w, h]) => <rect x={x} y={y} width={w} height={h} fill="currentColor" />)}
+        </svg>
+      ))
+    }
+    <span class="gx-hills"></span>
+    <span class="gx-ground"></span>
+    {
+      blocks.map((name) => (
+        <span class={`gx-qwrap ${name}`}>
+          <svg class="gx-coin" viewBox="0 0 10 14" shape-rendering="crispEdges">
+            {coin.map(([x, y, w, h, fill]) => <rect x={x} y={y} width={w} height={h} fill={fill} />)}
+          </svg>
+          <svg class="gx-qblock" viewBox="0 0 16 16" shape-rendering="crispEdges">
+            {block.map(([x, y, w, h, fill]) => <rect x={x} y={y} width={w} height={h} fill={fill} />)}
+          </svg>
+        </span>
+      ))
+    }
+  </div>
+
+  <!-- Scene 2: a maze with rows of pellets. A chomper eats the pellets and then the frightened ghosts running ahead of it. -->
+  <div class="gx-scene gx-mazescene">
+    <span class="gx-maze"></span>
+    <span class="gx-mazefade"></span>
+    {
+      lanes.map(({ lane, ghosts, reverse }) => (
+        <span class={`gx-lane ${lane}${reverse ? ' gx-rev' : ''}`}>
+          <i class="gx-pellets"></i>
+          <i class="gx-runner gx-chomper-run">
+            <svg class="gx-chomper" viewBox="0 0 28 28">
+              <path class="gx-jaw-top" d="M0 14A14 14 0 0 1 28 14Z" fill="currentColor" />
+              <path class="gx-jaw-bottom" d="M0 14A14 14 0 0 0 28 14Z" fill="currentColor" />
+            </svg>
+          </i>
+          {
+            ghosts.map((name) => (
+              <i class={`gx-runner gx-ghost-run ${name}`}>
+                <svg class="gx-ghost" viewBox="0 0 14 13" shape-rendering="crispEdges">
+                  {ghostBody.map(([x, y, w, h]) => <rect x={x} y={y} width={w} height={h} fill="currentColor" />)}
+                  <g class="gx-feet-a">{ghostFeetA.map(([x, y, w, h]) => <rect x={x} y={y} width={w} height={h} fill="currentColor" />)}</g>
+                  <g class="gx-feet-b">{ghostFeetB.map(([x, y, w, h]) => <rect x={x} y={y} width={w} height={h} fill="currentColor" />)}</g>
+                  {ghostFace.map(([x, y, w, h, fill]) => <rect x={x} y={y} width={w} height={h} fill={fill} />)}
+                </svg>
+              </i>
+            ))
+          }
+        </span>
+      ))
+    }
+  </div>
+</div>

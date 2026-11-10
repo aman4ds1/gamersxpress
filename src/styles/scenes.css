@@ -1,0 +1,181 @@
+/* Background scenes (src/components/Scenes.astro). One scene is shown at a time: the header switch sets
+   data-scene on <html> to "sky" (a pixel sky), "maze" (a pellet maze) or "plain" (no scene).
+   Everything is original pixel artwork made of SVG rectangles; the repeating tiles below are small inline
+   SVG masks, so the page loads no image files for its background. Animations only move or clip elements
+   (transform / clip-path / opacity) and are all switched off for visitors who prefer reduced motion. */
+
+.gx-bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; contain: layout paint; }
+.gx-scene { position: absolute; inset: 0; display: none; }
+:root[data-scene='sky'] .gx-skyscene,
+:root:not([data-scene]) .gx-skyscene,
+:root[data-scene='maze'] .gx-mazescene { display: block; }
+
+/* colours: light by default, dark when the theme is dark (explicitly, or by the system when not chosen) */
+.gx-scene {
+  --sky-top: #b9dfff; --sky-mid: rgba(224, 242, 255, 0.55); --cloud: rgba(255, 255, 255, 0.96);
+  --hill: rgba(74, 196, 110, 0.4); --brick: rgba(217, 119, 6, 0.32);
+  --sun-on: 1; --moon-on: 0; --stars-on: 0; --sun: #f59e0b; --moon: #e5e7ff;
+  --maze: rgba(37, 99, 235, 0.3); --dot: #c99a1d; --chomp: #e0a800;
+  --fright: #3b6df0;
+}
+:root[data-theme='dark'] .gx-scene {
+  --sky-top: #070b2a; --sky-mid: rgba(25, 30, 76, 0.55); --cloud: rgba(180, 190, 255, 0.16);
+  --hill: rgba(20, 83, 45, 0.62); --brick: rgba(124, 45, 18, 0.5);
+  --sun-on: 0; --moon-on: 1; --stars-on: 1;
+  --maze: rgba(96, 165, 250, 0.42); --dot: #f5d77a; --chomp: #facc15; --fright: #5b8cff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .gx-scene {
+    --sky-top: #070b2a; --sky-mid: rgba(25, 30, 76, 0.55); --cloud: rgba(180, 190, 255, 0.16);
+    --hill: rgba(20, 83, 45, 0.62); --brick: rgba(124, 45, 18, 0.5);
+    --sun-on: 0; --moon-on: 1; --stars-on: 1;
+    --maze: rgba(96, 165, 250, 0.42); --dot: #f5d77a; --chomp: #facc15; --fright: #5b8cff;
+  }
+}
+
+/* ---- scene 1: pixel sky ------------------------------------------------------------------------------- */
+.gx-sky { position: absolute; inset: 0; background: linear-gradient(180deg, var(--sky-top) 0%, var(--sky-mid) 42%, transparent 82%); }
+.gx-stars { position: absolute; left: 0; top: 0; width: 2px; height: 2px; background: #fff; opacity: var(--stars-on); box-shadow: 43vw 21vh 0 0px #fff,85vw 8vh 0 0px #fff,70vw 14vh 0 0px #fff,76vw 9vh 0 1px #fff,29vw 6vh 0 0px #fff,57vw 55vh 0 0px #fff,32vw 13vh 0 1px #fff,56vw 9vh 0 1px #fff,17vw 30vh 0 1px #fff,82vw 9vh 0 1px #fff,76vw 52vh 0 0px #fff,30vw 7vh 0 1px #fff,19vw 39vh 0 0px #fff,20vw 17vh 0 1px #fff,41vw 25vh 0 0px #fff,76vw 26vh 0 0px #fff,14vw 10vh 0 1px #fff,9vw 28vh 0 0px #fff,89vw 70vh 0 0px #fff,42vw 61vh 0 1px #fff,60vw 48vh 0 0px #fff,33vw 25vh 0 1px #fff,33vw 12vh 0 1px #fff,40vw 69vh 0 0px #fff,45vw 59vh 0 0px #fff,79vw 11vh 0 0px #fff,67vw 55vh 0 0px #fff,98vw 45vh 0 0px #fff,64vw 55vh 0 0px #fff,87vw 11vh 0 1px #fff,75vw 42vh 0 0px #fff,90vw 46vh 0 1px #fff,65vw 60vh 0 0px #fff,13vw 36vh 0 0px #fff; animation: gx-twinkle 3.2s ease-in-out infinite; }
+.gx-skysun, .gx-skymoon { position: absolute; top: 7%; right: 9%; width: 72px; height: 72px; }
+.gx-skysun { color: var(--sun); opacity: var(--sun-on); filter: drop-shadow(0 0 14px rgba(251, 191, 36, 0.55)); }
+.gx-skymoon { color: var(--moon); opacity: var(--moon-on); }
+
+.gx-cloud { position: absolute; left: 0; height: auto; color: var(--cloud); will-change: transform; animation: gx-cloud linear infinite; }
+.gx-cl1 { top: 9%; width: 132px; animation-duration: 95s; animation-delay: -20s; }
+.gx-cl2 { top: 21%; width: 96px; animation-duration: 130s; animation-delay: -80s; }
+.gx-cl3 { top: 34%; width: 156px; animation-duration: 170s; animation-delay: -120s; opacity: 0.8; }
+.gx-cl4 { top: 15%; width: 84px; animation-duration: 110s; animation-delay: -55s; }
+
+.gx-hills { position: absolute; left: 0; bottom: 32px; width: calc(100% + 480px); height: 120px; background: var(--hill); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 480 120%22 shape-rendering=%22crispEdges%22%3E%3Crect x=%2210%22 y=%22112%22 width=%22220%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2220%22 y=%22104%22 width=%22200%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2230%22 y=%2296%22 width=%22180%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2240%22 y=%2288%22 width=%22160%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2255%22 y=%2280%22 width=%22130%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2270%22 y=%2272%22 width=%22100%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2285%22 y=%2264%22 width=%2270%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22100%22 y=%2256%22 width=%2240%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22265%22 y=%22112%22 width=%22160%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22273%22 y=%22104%22 width=%22144%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22281%22 y=%2296%22 width=%22128%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22289%22 y=%2288%22 width=%22112%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22299%22 y=%2280%22 width=%2292%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22309%22 y=%2272%22 width=%2272%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22321%22 y=%2264%22 width=%2248%22 height=%228%22 fill=%22%23000%22/%3E%3C/svg%3E") repeat-x 0 100% / 480px 120px; mask: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 480 120%22 shape-rendering=%22crispEdges%22%3E%3Crect x=%2210%22 y=%22112%22 width=%22220%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2220%22 y=%22104%22 width=%22200%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2230%22 y=%2296%22 width=%22180%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2240%22 y=%2288%22 width=%22160%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2255%22 y=%2280%22 width=%22130%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2270%22 y=%2272%22 width=%22100%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%2285%22 y=%2264%22 width=%2270%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22100%22 y=%2256%22 width=%2240%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22265%22 y=%22112%22 width=%22160%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22273%22 y=%22104%22 width=%22144%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22281%22 y=%2296%22 width=%22128%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22289%22 y=%2288%22 width=%22112%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22299%22 y=%2280%22 width=%2292%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22309%22 y=%2272%22 width=%2272%22 height=%228%22 fill=%22%23000%22/%3E%3Crect x=%22321%22 y=%2264%22 width=%2248%22 height=%228%22 fill=%22%23000%22/%3E%3C/svg%3E") repeat-x 0 100% / 480px 120px; will-change: transform; animation: gx-slide-hills 80s linear infinite; }
+.gx-ground { position: absolute; left: 0; bottom: 0; width: calc(100% + 32px); height: 32px; background: var(--brick); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 16%22 shape-rendering=%22crispEdges%22%3E%3Crect x=%220%22 y=%220%22 width=%2215%22 height=%227%22 fill=%22%23000%22/%3E%3Crect x=%2216%22 y=%220%22 width=%2215%22 height=%227%22 fill=%22%23000%22/%3E%3Crect x=%220%22 y=%228%22 width=%227%22 height=%227%22 fill=%22%23000%22/%3E%3Crect x=%228%22 y=%228%22 width=%2215%22 height=%227%22 fill=%22%23000%22/%3E%3Crect x=%2224%22 y=%228%22 width=%228%22 height=%227%22 fill=%22%23000%22/%3E%3C/svg%3E") repeat 0 0 / 32px 16px; mask: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 16%22 shape-rendering=%22crispEdges%22%3E%3Crect x=%220%22 y=%220%22 width=%2215%22 height=%227%22 fill=%22%23000%22/%3E%3Crect x=%2216%22 y=%220%22 width=%2215%22 height=%227%22 fill=%22%23000%22/%3E%3Crect x=%220%22 y=%228%22 width=%227%22 height=%227%22 fill=%22%23000%22/%3E%3Crect x=%228%22 y=%228%22 width=%2215%22 height=%227%22 fill=%22%23000%22/%3E%3Crect x=%2224%22 y=%228%22 width=%228%22 height=%227%22 fill=%22%23000%22/%3E%3C/svg%3E") repeat 0 0 / 32px 16px; will-change: transform; animation: gx-slide-ground 4s linear infinite; }
+
+.gx-qwrap { position: absolute; width: 34px; height: 34px; }
+.gx-qblock { position: absolute; inset: 0; width: 34px; height: 34px; opacity: 0.9; animation: gx-bob 2.6s ease-in-out infinite; }
+.gx-coin { position: absolute; left: 11px; top: 0; width: 12px; height: 17px; opacity: 0; animation: gx-coinpop 7s linear infinite; }
+.gx-q1 { left: 14%; top: 26%; }
+.gx-q2 { left: 49%; top: 41%; }
+.gx-q3 { left: 84%; top: 19%; }
+.gx-q2 .gx-qblock { animation-delay: -0.9s; }
+.gx-q3 .gx-qblock { animation-delay: -1.7s; }
+.gx-q2 .gx-coin { animation-delay: -2.3s; }
+.gx-q3 .gx-coin { animation-delay: -4.6s; }
+
+/* ---- scene 2: pellet maze ----------------------------------------------------------------------------- */
+.gx-maze { position: absolute; inset: 0; background: var(--maze); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 200 150%22%3E%3Cg fill=%22none%22 stroke=%22%23000%22 stroke-width=%223%22%3E%3Crect x=%2214%22 y=%2214%22 width=%2270%22 height=%2238%22 rx=%2210%22/%3E%3Crect x=%22116%22 y=%2214%22 width=%2270%22 height=%2238%22 rx=%2210%22/%3E%3Crect x=%2214%22 y=%2276%22 width=%2234%22 height=%2260%22 rx=%2210%22/%3E%3Crect x=%2270%22 y=%2276%22 width=%2260%22 height=%2222%22 rx=%2210%22/%3E%3Crect x=%22152%22 y=%2276%22 width=%2234%22 height=%2260%22 rx=%2210%22/%3E%3Crect x=%2278%22 y=%22114%22 width=%2244%22 height=%2222%22 rx=%2210%22/%3E%3C/g%3E%3C/svg%3E") 0 0 / 200px 150px repeat; mask: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 200 150%22%3E%3Cg fill=%22none%22 stroke=%22%23000%22 stroke-width=%223%22%3E%3Crect x=%2214%22 y=%2214%22 width=%2270%22 height=%2238%22 rx=%2210%22/%3E%3Crect x=%22116%22 y=%2214%22 width=%2270%22 height=%2238%22 rx=%2210%22/%3E%3Crect x=%2214%22 y=%2276%22 width=%2234%22 height=%2260%22 rx=%2210%22/%3E%3Crect x=%2270%22 y=%2276%22 width=%2260%22 height=%2222%22 rx=%2210%22/%3E%3Crect x=%22152%22 y=%2276%22 width=%2234%22 height=%2260%22 rx=%2210%22/%3E%3Crect x=%2278%22 y=%22114%22 width=%2244%22 height=%2222%22 rx=%2210%22/%3E%3C/g%3E%3C/svg%3E") 0 0 / 200px 150px repeat; }
+/* keeps the middle of the page, where the text is, free of maze lines */
+.gx-mazefade { position: absolute; inset: 0; background: radial-gradient(ellipse 52% 62% at 50% 42%, var(--surface) 32%, transparent 100%); }
+
+.gx-lane { position: absolute; left: -12vw; width: 124vw; height: 28px; --t: 26s; }
+.gx-l1 { top: 12.5%; --t: 26s; }
+.gx-l2 { top: 57%; --t: 32s; }
+.gx-l3 { top: 90%; --t: 38s; }
+.gx-pellets { position: absolute; inset: 0; opacity: 0.65; background: radial-gradient(circle at 12px 14px, var(--dot) 0 2.2px, transparent 2.8px) 0 0 / 24px 28px repeat-x; animation: gx-eat var(--t) linear infinite; }
+.gx-rev .gx-pellets { animation-name: gx-eat-rev; }
+
+.gx-runner { position: absolute; left: 0; top: 0; width: 28px; height: 28px; will-change: transform; animation: gx-run var(--t) linear infinite; }
+.gx-rev .gx-chomper-run { animation-name: gx-run-rev; }
+.gx-rev .gx-chomper, .gx-rev .gx-ghost { transform: scaleX(-1); }
+.gx-chomper { display: block; width: 28px; height: 28px; color: var(--chomp); }
+.gx-jaw-top, .gx-jaw-bottom { transform-box: view-box; transform-origin: 14px 14px; }
+.gx-jaw-top { animation: gx-jaw-top 0.44s ease-in-out infinite; }
+.gx-jaw-bottom { animation: gx-jaw-bottom 0.44s ease-in-out infinite; }
+.gx-ghost-run { width: 26px; height: 24px; }
+.gx-ghost { display: block; width: 26px; height: 24px; }
+.gx-ghost-run { animation: none; }
+.gx-ghost { color: var(--fright); }
+/* The ghosts run AHEAD of the chomper, slower than it, and are caught. A class gx-fNN is a ghost the chomper
+   catches NN% of the way along the lane: it starts --x0 ahead and flees to --end (a little ahead of the
+   chomper's front, 15px, so it vanishes as the mouth reaches it). All on the same clock (--t) as the chomper. */
+.gx-f48 { --x0: 18vw; --end: calc(124vw * 0.48 + 15px); animation: gx-flee-48 var(--t) linear infinite; }
+.gx-f56 { --x0: 22vw; --end: calc(124vw * 0.56 + 15px); animation: gx-flee-56 var(--t) linear infinite; }
+.gx-f78 { --x0: 40vw; --end: calc(124vw * 0.78 + 15px); animation: gx-flee-78 var(--t) linear infinite; }
+.gx-f84 { --x0: 34vw; --end: calc(124vw * 0.84 + 15px); animation: gx-flee-84 var(--t) linear infinite; }
+/* running the other way: it starts 26vw from the right end of the lane and is caught 13px ahead of the chomper's front */
+.gx-rev .gx-f66 { --x0: calc(124vw - 26vw); --end: calc(124vw * 0.34 - 13px); animation: gx-flee-66 var(--t) linear infinite; }
+.gx-feet-a { animation: gx-feet-a 0.5s steps(1) infinite; }
+.gx-feet-b { animation: gx-feet-b 0.5s steps(1) infinite; }
+
+/* ---- motion ------------------------------------------------------------------------------------------- */
+@keyframes gx-cloud { from { transform: translateX(-22vw); } to { transform: translateX(112vw); } }
+@keyframes gx-slide-hills { to { transform: translateX(-480px); } }
+@keyframes gx-slide-ground { to { transform: translateX(-32px); } }
+@keyframes gx-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes gx-coinpop {
+  0%, 78% { opacity: 0; transform: translateY(0) scaleX(1); }
+  80% { opacity: 1; transform: translateY(-4px) scaleX(1); }
+  86% { transform: translateY(-34px) scaleX(0.25); }
+  92% { transform: translateY(-46px) scaleX(1); }
+  98% { opacity: 1; transform: translateY(-40px) scaleX(0.25); }
+  100% { opacity: 0; transform: translateY(-34px) scaleX(1); }
+}
+@keyframes gx-twinkle { 0%, 100% { opacity: var(--stars-on); } 50% { opacity: calc(var(--stars-on) * 0.4); } }
+@keyframes gx-eat { from { clip-path: inset(0 0 0 20px); } to { clip-path: inset(0 0 0 calc(100% + 20px)); } }
+@keyframes gx-eat-rev { from { clip-path: inset(0 -8px 0 0); } to { clip-path: inset(0 calc(100% - 8px) 0 0); } }
+@keyframes gx-run { from { transform: translateX(0); } to { transform: translateX(124vw); } }
+@keyframes gx-run-rev { from { transform: translateX(124vw); } to { transform: translateX(0); } }
+/* a frightened ghost runs from --x0 to --end, where the chomper reaches it; it is eaten (it pops and is gone) until the lane restarts */
+@keyframes gx-flee-48 {
+  0% { transform: translateX(var(--x0)) scale(1); opacity: 1; }
+  48% { transform: translateX(var(--end)) scale(1); opacity: 1; }
+  49% { transform: translateX(var(--end)) scale(1.5); opacity: 0; }
+  100% { transform: translateX(var(--end)) scale(1.5); opacity: 0; }
+}
+@keyframes gx-flee-56 {
+  0% { transform: translateX(var(--x0)) scale(1); opacity: 1; }
+  56% { transform: translateX(var(--end)) scale(1); opacity: 1; }
+  57% { transform: translateX(var(--end)) scale(1.5); opacity: 0; }
+  100% { transform: translateX(var(--end)) scale(1.5); opacity: 0; }
+}
+@keyframes gx-flee-66 {
+  0% { transform: translateX(var(--x0)) scale(1); opacity: 1; }
+  66% { transform: translateX(var(--end)) scale(1); opacity: 1; }
+  67% { transform: translateX(var(--end)) scale(1.5); opacity: 0; }
+  100% { transform: translateX(var(--end)) scale(1.5); opacity: 0; }
+}
+@keyframes gx-flee-78 {
+  0% { transform: translateX(var(--x0)) scale(1); opacity: 1; }
+  78% { transform: translateX(var(--end)) scale(1); opacity: 1; }
+  79% { transform: translateX(var(--end)) scale(1.5); opacity: 0; }
+  100% { transform: translateX(var(--end)) scale(1.5); opacity: 0; }
+}
+@keyframes gx-flee-84 {
+  0% { transform: translateX(var(--x0)) scale(1); opacity: 1; }
+  84% { transform: translateX(var(--end)) scale(1); opacity: 1; }
+  85% { transform: translateX(var(--end)) scale(1.5); opacity: 0; }
+  100% { transform: translateX(var(--end)) scale(1.5); opacity: 0; }
+}
+@keyframes gx-jaw-top { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-26deg); } }
+@keyframes gx-jaw-bottom { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(26deg); } }
+@keyframes gx-feet-a { 0% { opacity: 1; } 50% { opacity: 0; } }
+@keyframes gx-feet-b { 0% { opacity: 0; } 50% { opacity: 1; } }
+
+/* ---- the switch in the header ------------------------------------------------------------------------- */
+.gx-scenebtn { width: 44px; padding: 0; }
+.gx-scenebtn svg { display: none; }
+:root[data-scene='sky'] .gx-scenebtn .ic-sky,
+:root:not([data-scene]) .gx-scenebtn .ic-sky,
+:root[data-scene='maze'] .gx-scenebtn .ic-maze,
+:root[data-scene='plain'] .gx-scenebtn .ic-plain { display: block; }
+.gx-scenebtn:hover svg { color: var(--gold); }
+
+/* ---- small screens, reduced motion, print ------------------------------------------------------------- */
+@media (max-width: 640px) {
+  .gx-cl3, .gx-cl4, .gx-l3, .gx-q2 { display: none; }
+  .gx-skysun, .gx-skymoon { width: 52px; height: 52px; }
+  .gx-maze { opacity: 0.7; }
+  .gx-mazefade { background: radial-gradient(ellipse 88% 72% at 50% 42%, var(--surface) 38%, transparent 100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gx-scene *, .gx-scene *::before { animation: none !important; }
+  .gx-cl1 { transform: translateX(8vw); }
+  .gx-cl2 { transform: translateX(46vw); }
+  .gx-cl3 { transform: translateX(70vw); }
+  .gx-cl4 { transform: translateX(28vw); }
+  .gx-chomper-run { transform: translateX(34vw); }
+  .gx-rev .gx-chomper-run { transform: translateX(70vw); }
+  .gx-ghost-run { transform: translateX(52vw); }
+  .gx-ghost-run + .gx-ghost-run { transform: translateX(66vw); }
+}
+@media print {
+  .gx-bg { display: none; }
+}
