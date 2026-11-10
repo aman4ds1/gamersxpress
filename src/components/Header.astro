@@ -1,7 +1,9 @@
 ---
 import PixelLogo from './PixelLogo.astro';
+import SearchPopup from './SearchPopup.astro';
 
 const navItems = [
+  { label: 'Home', href: '/' },
   { label: 'PC', href: '/category/pc' },
   { label: 'PlayStation', href: '/category/playstation' },
   { label: 'Xbox', href: '/category/xbox' },
@@ -9,7 +11,7 @@ const navItems = [
   { label: 'Hardware', href: '/category/hardware' },
   { label: 'Esports', href: '/category/esports' },
 ];
-const path = Astro.url.pathname.replace(/\/+$/, '');
+const path = Astro.url.pathname.replace(/\/+$/, '') || '/';
 ---
 
 <header class="gx-bar">
@@ -33,9 +35,15 @@ const path = Astro.url.pathname.replace(/\/+$/, '');
       }
     </nav>
     <div class="flex items-center gap-2.5">
-      <a href="/search" class="gx-iconbtn" aria-label="Search">
+      <button type="button" class="gx-iconbtn" id="search-open" aria-label="Search" aria-haspopup="dialog" aria-expanded="false" aria-controls="gx-sp" title="Search ( / )">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
-      </a>
+      </button>
+      <noscript>
+        <style>#search-open { display: none; }</style>
+        <a href="/search" class="gx-iconbtn" aria-label="Search">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+        </a>
+      </noscript>
       <button type="button" class="gx-iconbtn gx-scenebtn" id="scene-toggle" aria-label="Change the background">
         <svg class="ic-sky" width="18" height="18" viewBox="0 0 20 7" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true"><rect x="5" y="0" width="5" height="1" /><rect x="11" y="0" width="4" height="1" /><rect x="4" y="1" width="13" height="1" /><rect x="2" y="2" width="16" height="1" /><rect x="1" y="3" width="18" height="1" /><rect x="0" y="4" width="20" height="1" /><rect x="1" y="5" width="18" height="1" /><rect x="3" y="6" width="14" height="1" /></svg>
         <svg class="ic-maze" width="18" height="18" viewBox="0 0 28 28" fill="currentColor" aria-hidden="true"><path d="M14 14L28 8A14 14 0 1 0 28 20Z" /></svg>
@@ -48,6 +56,8 @@ const path = Astro.url.pathname.replace(/\/+$/, '');
     </div>
   </div>
 </header>
+
+<SearchPopup />
 
 <script>
   const button = document.getElementById('theme-toggle');

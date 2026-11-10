@@ -2,6 +2,7 @@
 @import "./fonts.css";
 @import "./gx.css";
 @import "./scenes.css";
+@import "./searchpopup.css";
 
 @theme inline {
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;

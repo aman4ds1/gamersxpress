@@ -45,6 +45,8 @@ const topicLinks = article.data.entities
 >
   <div class:list={['gx-wrap pt-10 pb-24', ADS_ENABLED && 'lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-10']}>
     <article class="mx-auto w-full max-w-[780px]">
+      <!-- Marks this page as an article for the search popup, which lists articles only (no topic or category pages). -->
+      <span hidden data-pagefind-filter="type[data-value]" data-value="article"></span>
       <a href={`/category/${category}`} class="gx-mono text-xs tracking-[0.16em] text-ink-muted no-underline hover:text-ink">◂ {categoryLabel.toUpperCase()}</a>
       <header class="mt-6 flex flex-col items-start gap-4">
         <span class="gx-chip" style={`--chip:${CATEGORY_COLORS[category]}`}>{categoryLabel}</span>
