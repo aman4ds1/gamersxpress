@@ -434,12 +434,19 @@ def entity_stop_list(path: str | Path | None = None) -> frozenset[str]:
     return result
 
 
+#: Units that make a figure ("366GB", "60fps", "144Hz") a measurement and not a name. Deliberately only storage,
+#: frequency, frame-rate and timing units: a bare "K" or "M" can be a real name ("2K", "M").
+_MEASURE_UNITS = frozenset({"gb", "mb", "tb", "kb", "gib", "mib", "tib", "ghz", "mhz", "khz", "hz", "fps", "ms", "mah", "nm"})
+_MEASURE_RE = re.compile(r"^\d+(?:" + "|".join(sorted(_MEASURE_UNITS, key=len, reverse=True)) + r")$")
+
+
 def is_stop_entity(name: object, *, stop: Iterable[str] | None = None) -> bool:
     """True when ``name`` is only stop words and never a real entity.
 
     A phrase is a stop entity when it is listed verbatim, or when every one of
-    its words is a stop word or a bare number/ordinal ("Year 1 DLC"). Names that
-    merely contain a stop word ("New World") are kept.
+    its words is a stop word or a bare number/ordinal ("Year 1 DLC"). A figure
+    with a unit ("366GB", "144 Hz") is a measurement, not a name, so it counts as
+    a number too. Names that merely contain a stop word ("New World") are kept.
     """
     stop_set = entity_stop_list() if stop is None else frozenset(stop)
     folded = re.sub(r"\s+", " ", strip_diacritics(str(name or "")).lower()).strip()
@@ -450,9 +457,14 @@ def is_stop_entity(name: object, *, stop: Iterable[str] | None = None) -> bool:
     words = re.findall(r"[^\W_]+", folded)
     if not words:
         return True
-    return all(
-        word in stop_set or word.isdigit() or _ORDINAL_RE.match(word)
-        for word in words
+    def is_number(word: str) -> bool:
+        return word.isdigit() or bool(_ORDINAL_RE.match(word)) or bool(_MEASURE_RE.match(word))
+
+    if all(word in stop_set or is_number(word) for word in words):
+        return True
+    # "366 GB": a figure and its unit as separate words (a unit alone is not enough to drop a name).
+    return any(is_number(word) for word in words) and all(
+        word in stop_set or is_number(word) or word in _MEASURE_UNITS for word in words
     )
 
 

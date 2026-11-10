@@ -1023,3 +1023,45 @@ def test_an_article_without_source_urls_covers_nothing(article):
     seen = {"clusters": {}}
     assert cluster.mark_articles_covered(seen, [article], now=NOW) == [] and seen["clusters"] == {}
     assert cluster.mark_articles_covered(seen, None, now=NOW) == []
+
+
+# --- a figure with a unit is a measurement, not an entity ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", [
+    "366GB", "50GB", "366gb", "3.5GB", "1,024MB", "2TB", "144Hz", "60fps", "3GHz", "16ms", "5000mAh", "7nm",
+    "366 GB", "144 Hz", "60 fps", "50GB 366GB", "366GB update",
+])
+def test_a_figure_with_a_unit_is_not_an_entity(name):
+    assert cluster.is_stop_entity(name)
+
+
+@pytest.mark.parametrize("name", [
+    "Nier: Automata", "2K", "2K Games", "7 Days to Die", "13 Sentinels: Aegis Rim", "RTX 5090", "Xbox 360", "Switch 2",
+    "1TB SSD", "GB", "Game Boy GB", "Hz", "Bluepoint Games", "Steam Deck", "GBA", "MB Studios",
+])
+def test_a_real_name_is_never_dropped_for_containing_a_digit_or_a_unit_word(name):
+    assert not cluster.is_stop_entity(name)
+
+
+def test_a_unit_on_its_own_is_not_enough_to_drop_a_name_but_a_figure_with_it_is():
+    assert not cluster.is_stop_entity("GB") and not cluster.is_stop_entity("Hz fps")
+    assert cluster.is_stop_entity("5 GB") and cluster.is_stop_entity("5 GB MB")
+
+
+def test_only_storage_frequency_and_timing_units_count():
+    assert cluster._MEASURE_UNITS == {"gb", "mb", "tb", "kb", "gib", "mib", "tib", "ghz", "mhz", "khz", "hz", "fps", "ms", "mah", "nm"}
+    assert not cluster.is_stop_entity("2K") and not cluster.is_stop_entity("4K") and not cluster.is_stop_entity("5M")
+
+
+def test_file_sizes_in_the_real_nier_headlines_are_no_longer_the_stories_entities():
+    import facts
+
+    title = "Nier: Automata developer is currently investigating a bizarre update bug that drastically inflated the game's file size from 50GB to 366GB"
+    titles = [title, "Square Enix responds after Nier Automata update triggers massive 366GB storage requirement",
+              "Nier Automata's latest patch somehow requires 366GB of free space"]
+    canonical = facts.canonical_entities(title=title, source_titles=titles)
+    primary = facts.primary_entities(title=title, source_titles=titles)
+    assert "Nier: Automata" in canonical and "nier: automata" in primary
+    for entity in canonical + primary:
+        assert "gb" not in entity.lower(), entity
