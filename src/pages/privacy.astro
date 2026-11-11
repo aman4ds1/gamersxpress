@@ -3,9 +3,9 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 import { CONTACT_EMAIL } from '../data/site';
 
 const description =
-  'How GamersXpress handles data: anonymous, aggregate visit statistics via cookieless Cloudflare Web Analytics, no accounts, no personal data.';
+  'How GamersXpress handles data: visit statistics through Google Tag Manager and Google Analytics, no accounts, no personal data.';
 
-const lastUpdated = new Date('2026-11-10');
+const lastUpdated = new Date('2026-11-11');
 const lastUpdatedDisplay = lastUpdated.toLocaleDateString('en-US', {
   year: 'numeric',
   month: 'long',
@@ -44,16 +44,19 @@ const lastUpdatedIso = lastUpdated.toISOString().slice(0, 10);
 
     <h2 class="mt-8 text-xl font-bold tracking-tight">Analytics</h2>
     <p class="mt-3 text-ink-muted">
-      The site uses Cloudflare Web Analytics. It is cookieless — it does not
-      set cookies and does not identify individual visitors. The numbers it
-      reports are anonymous and aggregate.
+      The site uses Google Tag Manager (container GTM-K377WGXG) to load
+      Google Analytics. Google Analytics measures visits and sets cookies to
+      tell visits apart. The numbers it reports are aggregate, and they are
+      processed by Google under its own privacy policy, which applies to the
+      data Google receives from this site.
     </p>
 
     <h2 class="mt-8 text-xl font-bold tracking-tight">Cookies</h2>
     <p class="mt-3 text-ink-muted">
-      This site does not currently set any cookies. If advertising or other
-      tracking cookies are ever added, this page will be updated before they
-      are enabled, and the date above will change.
+      Google Analytics sets its own cookies (names beginning with _ga) when
+      it measures visits. The site sets no cookies of its own. If advertising
+      cookies are ever added, this page will be updated before they are
+      enabled, and the date above will change.
     </p>
 
     <h2 class="mt-8 text-xl font-bold tracking-tight">Fonts and pictures</h2>

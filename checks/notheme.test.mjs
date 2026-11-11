@@ -8,8 +8,15 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(ROOT, path), 'utf8');
 const header = read('src/components/Header.astro');
 const layout = read('src/layouts/BaseLayout.astro');
+// The pre-paint script is the inline script that sets data-js. Find it by content: the Google snippet is also inline now.
+const prePaint = (() => {
+  const at = layout.indexOf("setAttribute('data-js'");
+  const start = layout.lastIndexOf('<script is:inline>', at);
+  return layout.slice(start, layout.indexOf('</script>', at));
+})();
 const global = read('src/styles/global.css');
 const gx = read('src/styles/gx.css');
+
 
 function sourceFiles(dir) {
   const found = [];
@@ -47,7 +54,7 @@ test('nothing in the site sets or styles a chosen theme any more', () => {
 test('a theme saved by the old toggle is forgotten, and no saved theme is ever applied', () => {
   assert.match(layout, /localStorage\.removeItem\('gx-theme'\);/);
   assert.doesNotMatch(layout, /localStorage\.getItem\('gx-theme'\)|dataset\.theme/);
-  const pre = layout.slice(layout.indexOf('<script is:inline>'), layout.indexOf('</script>'));
+  const pre = prePaint;
   assert.ok(pre.indexOf("removeItem('gx-theme')") < pre.indexOf("getItem('gx-scene')"));
   assert.match(pre, /try \{[\s\S]*removeItem\('gx-theme'\)[\s\S]*\} catch \(e\)/);          // storage can be blocked; the page must still load
 });

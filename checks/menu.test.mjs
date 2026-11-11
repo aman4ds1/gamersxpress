@@ -9,7 +9,14 @@ const read = (path) => readFileSync(join(ROOT, path), 'utf8');
 const header = read('src/components/Header.astro');
 const css = read('src/styles/menu.css');
 const gx = read('src/styles/gx.css');
+
 const layout = read('src/layouts/BaseLayout.astro');
+// The pre-paint script is the inline script that sets data-js. Find it by content: the Google snippet is also inline now.
+const prePaint = (() => {
+  const at = layout.indexOf("setAttribute('data-js'");
+  const start = layout.lastIndexOf('<script is:inline>', at);
+  return layout.slice(start, layout.indexOf('</script>', at));
+})();
 const search = read('src/components/SearchPopup.astro');
 const script = header.slice(header.indexOf('<script>'));
 const narrowBlock = css.slice(css.indexOf('@media (max-width: 1059px)'), css.indexOf('@media (prefers-reduced-motion: no-preference)'));
@@ -43,7 +50,7 @@ test('nothing hides a link unless JavaScript is on (every collapsing rule is sco
 });
 
 test('the data-js flag is set before the page first paints, in the pre-paint script', () => {
-  const pre = layout.slice(layout.indexOf('<script is:inline>'), layout.indexOf('</script>'));
+  const pre = prePaint;
   assert.match(pre, /document\.documentElement\.setAttribute\('data-js', ''\);/);
   assert.ok(pre.indexOf("setAttribute('data-js'") < pre.indexOf('localStorage'));
 });

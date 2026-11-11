@@ -35,6 +35,8 @@ for (const file of files) {
     errors.push(`${rel}: expected exactly 1 canonical tag, found ${canonicalCount}`);
 
   errors.push(...sceneProblems(rel, html));
+  const tagCount = (html.match(/googletagmanager\.com\/gtm\.js\?id=GTM-K377WGXG/g) ?? []).length;
+  if (tagCount !== 1) errors.push(`${rel}: expected exactly 1 Google Tag Manager snippet, found ${tagCount}`);
 
   const jsonLdBlocks = [
     ...html.matchAll(
@@ -56,4 +58,4 @@ if (errors.length > 0) {
   console.error(`seo-dist: ${errors.length} problem(s) in ${files.length} page(s)`);
   process.exit(1);
 }
-console.log(`seo-dist: ${files.length} page(s) OK — 1 H1, 1 canonical, parseable JSON-LD, the right background scene`);
+console.log(`seo-dist: ${files.length} page(s) OK — 1 H1, 1 canonical, parseable JSON-LD, the right background scene, one Google tag`);
