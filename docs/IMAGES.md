@@ -192,3 +192,19 @@ python -m pipeline.images add --article src\content\articles\<slug>.md --file ph
   --title "PlayStation 5 Pro console" --license-url https://creativecommons.org/licenses/by-sa/4.0/ `
   --source-url https://commons.wikimedia.org/wiki/File:Example.jpg
 ```
+
+## Automatic pictures for every article
+
+Each new article gets a picture, in this order, and the first one that passes its checks is used:
+
+1. **Steam key art** when the headline names a PC game on Steam (see below).
+2. **A Wikimedia Commons photo of the product.** First the product's own Commons category (hardware and
+   tech), then a Commons search for the product name. Every photo must be freely licensed, at least 1200 px
+   wide, and its own title or description must name the product. Settings: `images.commons` and
+   `images.commons.search` in `pipeline/config.yaml`.
+3. **GamersXpress's own picture for the article's category** (PC, PlayStation, Hardware and so on). These
+   nine pictures are made by `python -m pipeline.default_images` and committed in `public/images/`, so
+   they need no download. Their licence is "Own work". To change their look, edit that script, run it,
+   and commit the new files.
+
+A picture that fails its check is skipped, never a reason to hold back an article.

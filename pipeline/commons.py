@@ -112,6 +112,11 @@ DEFAULTS: dict[str, Any] = {
     "max_queries": 3,
     "max_subcategories": 3,
     "timeout_seconds": 10,
+    # When no product category has a usable photo, search Commons file names and descriptions for the product name.
+    # Only these categories are searched (esports and India stories name people and events, not products).
+    "search_enabled": True,
+    "search_categories": ["gaming-news", "pc", "playstation", "xbox", "nintendo", "hardware", "tech"],
+    "search_limit": 12,
     # Products that are plainly hardware: their category needs no parent check. The category must still
     # be named exactly like the product, and every photo still has to pass its own checks.
     "trusted_products": [
@@ -149,6 +154,16 @@ def load_commons_config(path: str | Path | None = None) -> dict[str, Any]:
             value = section.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 settings[key] = value
+        search = section.get("search")
+        if isinstance(search, dict):
+            if isinstance(search.get("enabled"), bool):
+                settings["search_enabled"] = search["enabled"]
+            names = search.get("categories")
+            if isinstance(names, list):
+                settings["search_categories"] = [str(item) for item in names]
+            limit = search.get("limit")
+            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                settings["search_limit"] = limit
     return settings
 
 
@@ -441,12 +456,8 @@ def _meta(metadata: dict, key: str) -> str:
     return clean_text(value.get("value") if isinstance(value, dict) else value)
 
 
-def list_files(category_title: str, fetch: Fetch, limit: int) -> list[dict]:
-    """The category's direct file members with their picture links and license data."""
-    data = _api(
-        fetch, action="query", generator="categorymembers", gcmtitle=category_title, gcmtype="file", gcmlimit=str(limit),
-        prop="imageinfo", iiprop="url|size|mime|extmetadata", iiurlwidth=str(THUMB_WIDTH),
-    )
+def _file_infos(data: dict) -> list[dict]:
+    """File pages from an API answer, with their picture links and license data."""
     results: list[dict] = []
     for page in (data.get("query") or {}).get("pages") or []:
         infos = page.get("imageinfo") if isinstance(page, dict) else None
@@ -469,6 +480,35 @@ def list_files(category_title: str, fetch: Fetch, limit: int) -> list[dict]:
     return results
 
 
+def list_files(category_title: str, fetch: Fetch, limit: int) -> list[dict]:
+    """The category's direct file members with their picture links and license data."""
+    data = _api(
+        fetch, action="query", generator="categorymembers", gcmtitle=category_title, gcmtype="file", gcmlimit=str(limit),
+        prop="imageinfo", iiprop="url|size|mime|extmetadata", iiurlwidth=str(THUMB_WIDTH),
+    )
+    return _file_infos(data)
+
+
+def search_titles(phrase: str, fetch: Fetch, limit: int) -> list[str]:
+    """Names of Commons bitmap files whose title or description contains the product name."""
+    data = _api(fetch, action="query", list="search", srnamespace="6", srsearch=f'"{phrase}" filetype:bitmap', srlimit=str(limit))
+    items = (data.get("query") or {}).get("search") or []
+    return [str(item["title"]) for item in items if isinstance(item, dict) and item.get("title")]
+
+
+def file_infos(titles: list[str], fetch: Fetch) -> list[dict]:
+    """The file information for named files (fifty at a time, the most one request allows)."""
+    results: list[dict] = []
+    for start in range(0, len(titles), 50):
+        batch = titles[start:start + 50]
+        data = _api(
+            fetch, action="query", titles="|".join(batch), prop="imageinfo",
+            iiprop="url|size|mime|extmetadata", iiurlwidth=str(THUMB_WIDTH),
+        )
+        results.extend(_file_infos(data))
+    return results
+
+
 def find_hero(
     *,
     title: str,
@@ -481,45 +521,79 @@ def find_hero(
     image_settings: dict | None = None,
     trace: Callable[[str], None] | None = None,
 ) -> dict | None:
-    """Look for a freely licensed photo of the product in the headline; return ``{"hero", "path", ...}`` or None."""
+    """Look for a freely licensed photo of the product in the headline; return ``{"hero", "path", ...}`` or None.
+
+    For each product name: first its own Commons category (hardware and tech stories), then a search of Commons
+    file names and descriptions for that name. Every photo passes the same checks either way.
+    """
     say = images_stage.guarded_trace(trace or logger.info, logger)
     cfg = settings or load_commons_config()
     if not cfg["enabled"]:
         return None
-    if category is not None and category not in cfg["categories"]:
-        say(f"commons: skipped, the article category {category!r} is not one of {cfg['categories']}")
-        return None
     fetch = fetch or (lambda url: default_fetch(url, timeout=cfg["timeout_seconds"]))
+    categories_ok = category is None or category in cfg["categories"]
+    search_ok = cfg["search_enabled"] and (category is None or category in cfg["search_categories"])
+    if not categories_ok and not search_ok:
+        say(f"commons: skipped, the article category {category!r} is not one of {cfg['categories']} or {cfg['search_categories']}")
+        return None
     try:
         phrases = product_phrases(title, entities, cfg["max_queries"])
         say(f"commons: looking for a product category among {phrases}")
         for phrase in phrases:
-            found = find_category(phrase, fetch, cfg["trusted_products"])
-            if found is None:
-                say(f"commons: no category named exactly {phrase!r}")
-                continue
-            say(f"commons: {found['title']}: {found['files']} files, {found['subcats']} subcategories; "
-                f"parents: {', '.join(found['parents'][:6]) or 'none'}"
-                + (f"; grandparents: {', '.join(found['ancestors'][:6])}" if found["ancestors"] else ""))
-            if not found["hardware"]:
-                say(f"commons: not used, {found['reason']}")
-                continue
-            say(f"commons: hardware category ({found['reason']})")
-            usable = _usable_photos(list_files(found["title"], fetch, cfg["max_files"]), phrase, cfg, say)
-            if not usable:
-                subs = eligible_subcategories(list_subcategories(found["title"], fetch), phrase, cfg["max_subcategories"])
-                say(f"commons: no usable photo in the category itself; trying subcategories {subs}")
-                for sub in subs:
-                    usable += _usable_photos(list_files(sub, fetch, cfg["max_files"]), phrase, cfg, say)
-            for info in sorted(usable, key=lambda item: rank(item, phrase))[: cfg["max_candidates"]]:
-                hero = _try_photo(info, phrase, slug, public_dir, fetch, image_settings, say, cfg)
-                if hero:
-                    return hero
+            hero = None
+            if categories_ok:
+                hero = _category_hero(phrase, slug, public_dir, fetch, image_settings, say, cfg)
+            if hero is None and search_ok:
+                hero = _search_hero(phrase, slug, public_dir, fetch, image_settings, say, cfg)
+            if hero:
+                return hero
         say(f"commons: no usable photo for {title!r}")
     except CommonsError as error:
         images_stage.guarded_trace(trace or logger.warning, logger)(f"commons: {error}")
     except Exception:  # an image must never stop a story from publishing
         logger.exception("commons: unexpected error")
+    return None
+
+
+def _category_hero(phrase, slug, public_dir, fetch, image_settings, say, cfg) -> dict | None:
+    found = find_category(phrase, fetch, cfg["trusted_products"])
+    if found is None:
+        say(f"commons: no category named exactly {phrase!r}")
+        return None
+    say(f"commons: {found['title']}: {found['files']} files, {found['subcats']} subcategories; "
+        f"parents: {', '.join(found['parents'][:6]) or 'none'}"
+        + (f"; grandparents: {', '.join(found['ancestors'][:6])}" if found["ancestors"] else ""))
+    if not found["hardware"]:
+        say(f"commons: not used, {found['reason']}")
+        return None
+    say(f"commons: hardware category ({found['reason']})")
+    usable = _usable_photos(list_files(found["title"], fetch, cfg["max_files"]), phrase, cfg, say)
+    if not usable:
+        subs = eligible_subcategories(list_subcategories(found["title"], fetch), phrase, cfg["max_subcategories"])
+        say(f"commons: no usable photo in the category itself; trying subcategories {subs}")
+        for sub in subs:
+            usable += _usable_photos(list_files(sub, fetch, cfg["max_files"]), phrase, cfg, say)
+    return _first_working(usable, phrase, slug, public_dir, fetch, image_settings, say, cfg)
+
+
+def _search_hero(phrase, slug, public_dir, fetch, image_settings, say, cfg) -> dict | None:
+    try:
+        titles = search_titles(phrase, fetch, cfg["search_limit"])
+        say(f"commons: search for {phrase!r} found {len(titles)} files")
+        if not titles:
+            return None
+        usable = _usable_photos(file_infos(titles, fetch), phrase, cfg, say)
+    except CommonsError as error:  # a failed search skips only this search; the next product name is still tried
+        say(f"commons: search for {phrase!r} failed: {error}")
+        return None
+    return _first_working(usable, phrase, slug, public_dir, fetch, image_settings, say, cfg)
+
+
+def _first_working(usable, phrase, slug, public_dir, fetch, image_settings, say, cfg) -> dict | None:
+    for info in sorted(usable, key=lambda item: rank(item, phrase))[: cfg["max_candidates"]]:
+        hero = _try_photo(info, phrase, slug, public_dir, fetch, image_settings, say, cfg)
+        if hero:
+            return hero
     return None
 
 

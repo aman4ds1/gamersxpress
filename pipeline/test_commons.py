@@ -452,7 +452,7 @@ def test_a_product_of_another_generation_never_finds_the_wrong_photos(tmp_path):
 
 def test_the_article_category_must_be_one_of_the_configured_ones(tmp_path):
     fake = happy()
-    assert find(fake, tmp_path, category="playstation") is None and fake.calls == []
+    assert find(fake, tmp_path, category="esports") is None and fake.calls == []
     assert find(happy(), tmp_path, category="tech") is not None
     assert find(happy(), tmp_path, category=None) is not None
 
@@ -957,3 +957,92 @@ def test_a_photo_that_passes_the_listing_but_is_an_absurd_shape_once_downloaded_
                 {listed_ok["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg(900, 2400))})
     result, lines = traced(fake, tmp_path)
     assert result is None and any("that picture is unusable" in line and "too tall and narrow" in line for line in lines)
+
+
+# --- the search step: a Commons search for the product name, when no product category has a photo ------------
+
+class SearchFake(Fake):
+    """Commons search results by query, file information by title, and the picture downloads."""
+
+    def __init__(self, hits=None, files=None, pictures=None, failures=()):
+        super().__init__(pictures=pictures)
+        self.hits, self.by_title, self.failures = hits or {}, files or {}, set(failures)
+
+    def __call__(self, url):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        if query.get("list") == ["search"]:
+            self.calls.append(url)
+            text = query["srsearch"][0]
+            if text in self.failures:
+                return (500, "text/html", b"")
+            names = self.hits.get(text, [])
+            return api({"batchcomplete": True, "query": {"search": [{"title": n, "ns": 6} for n in names]}})
+        if "titles" in query and "imageinfo" in (query.get("prop") or [""])[0]:
+            self.calls.append(url)
+            pages = [self.by_title[t] for t in query["titles"][0].split("|") if t in self.by_title]
+            return api({"batchcomplete": True, "query": {"pages": pages}})
+        return super().__call__(url)
+
+
+def search_fake(**kwargs):
+    files = kwargs.pop("files", None) or [file_page("Nintendo Switch 2 in a dock.jpg", description="The Nintendo Switch 2 console in its dock",
+                                                  width=4000, height=2250)]
+    return SearchFake(
+        hits={'"Nintendo Switch 2" filetype:bitmap': [f["title"] for f in files]},
+        files={f["title"]: f for f in files},
+        pictures={f["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg()) for f in files},
+        **kwargs,
+    )
+
+
+def find_search(fake, tmp_path, **kwargs):
+    kwargs.setdefault("title", "Nintendo Switch 2 price rises in Europe")
+    kwargs.setdefault("entities", ["Nintendo Switch 2"])
+    kwargs.setdefault("category", "nintendo")
+    return commons.find_hero(slug="switch-2", public_dir=tmp_path, fetch=fake, **kwargs)
+
+
+def test_with_no_product_category_a_named_photo_from_a_search_is_used(tmp_path):
+    fake = search_fake()
+    result = find_search(fake, tmp_path)
+    assert result is not None and result["name"] == "Nintendo Switch 2"
+    assert result["hero"]["alt"] == "Photo of the Nintendo Switch 2"
+    assert result["hero"]["credit"] == "Jane Doe" and result["hero"]["license"] == "CC BY-SA 4.0"
+    assert any("list=search" in call for call in fake.calls)
+
+
+def test_a_search_hit_that_does_not_name_the_product_is_refused(tmp_path):
+    files = [file_page("Some games console.jpg", description="A grey console on a desk", width=4000, height=2250)]
+    fake = search_fake(files=files)
+    assert find_search(fake, tmp_path) is None
+    assert any("list=search" in call for call in fake.calls)
+
+
+def test_the_search_can_be_switched_off_and_then_nothing_is_searched(tmp_path):
+    fake = search_fake()
+    settings = commons.load_commons_config()
+    settings["search_enabled"] = False
+    assert find_search(fake, tmp_path, settings=settings) is None
+    assert not any("list=search" in call for call in fake.calls)
+
+
+def test_a_failed_search_skips_only_itself(tmp_path):
+    files = [file_page("Joy-Con 2 pair.jpg", description="A pair of Joy-Con 2 controllers", width=4000, height=2250)]
+    fake = SearchFake(
+        hits={'"Joy-Con 2" filetype:bitmap': [f["title"] for f in files]},
+        files={f["title"]: f for f in files},
+        pictures={f["imageinfo"][0]["thumburl"]: (200, "image/jpeg", jpg()) for f in files},
+        failures={'"Nintendo Switch 2" filetype:bitmap'},
+    )
+    result = find_search(fake, tmp_path, title="Nintendo Switch 2 and Joy-Con 2 prices rise", entities=["Nintendo Switch 2", "Joy-Con 2"])
+    assert result is not None and result["name"] == "Joy-Con 2"
+
+
+def test_the_search_settings_come_from_config(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("images:\n  commons:\n    search:\n      enabled: false\n      categories: [hardware]\n      limit: 4\n", encoding="utf-8")
+    settings = commons.load_commons_config(config)
+    assert settings["search_enabled"] is False
+    assert settings["search_categories"] == ["hardware"]
+    assert settings["search_limit"] == 4
+    assert commons.load_commons_config()["search_enabled"] is True

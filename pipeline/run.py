@@ -61,6 +61,7 @@ if str(_PIPELINE_DIR) not in sys.path:
 import cluster
 import cover as cover_stage
 import commons as commons_stage
+import images as images_stage
 import steam as steam_stage
 import dryrun as dryrun_stage
 import facts as facts_stage
@@ -424,13 +425,17 @@ def _no_image(**_kwargs: Any) -> None:
 def find_any_hero(
     *, title: str, entities: list[str], slug: str, public_dir: Path, category: str | None = None,
 ) -> dict | None:
-    """A picture for the story: Steam key art when it is about a PC game, else a Wikimedia Commons
-    photo when it is about a hardware product. Each step is strict and returns None when unsure."""
+    """A picture for the story: Steam key art when it is about a PC game, else a Wikimedia Commons photo of the
+    product (its category, then a search), else GamersXpress's own picture for the article's category.
+    Each photo step is strict and returns None when unsure."""
     hero = steam_stage.find_hero(title=title, entities=entities, slug=slug, public_dir=public_dir)
     if hero is None:
         hero = commons_stage.find_hero(
             title=title, entities=entities, slug=slug, public_dir=public_dir, category=category,
         )
+    if hero is None:
+        # no photo of the story: GamersXpress's own picture for its category, so every article has one
+        hero = images_stage.default_hero(category=category, slug=slug, public_dir=public_dir)
     return hero
 
 

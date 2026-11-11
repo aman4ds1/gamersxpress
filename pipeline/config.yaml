@@ -1480,6 +1480,13 @@ images:
     max_queries: 3
     max_subcategories: 3
     timeout_seconds: 10
+    # When no product category has a usable photo, search Commons file names and descriptions for the product
+    # name. The same strict checks apply: the photo's own title or description must name the product.
+    # Esports and India stories are not searched (they name people and events, not products).
+    search:
+      enabled: true
+      categories: [gaming-news, pc, playstation, xbox, nintendo, hardware, tech]
+      limit: 12
     # Products that are plainly hardware: their Commons category needs no parent check. The category
     # must still be named exactly like the product, and every photo still has to pass its own checks.
     # Add more here once you have confirmed their category exists on Commons.

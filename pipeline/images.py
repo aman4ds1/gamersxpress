@@ -334,3 +334,36 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# --- a default picture when a story has no photo of its own ----------------------------------------------------------
+
+#: the category used when an article has none (the pipeline's own default)
+DEFAULT_PICTURE_CATEGORY = "gaming-news"
+
+
+def default_hero(*, category: str | None, slug: str, public_dir: str | Path) -> dict[str, Any] | None:
+    """GamersXpress's own picture for the article's category, for a story with no photo of its own.
+
+    It is our own artwork (see pipeline/default_images.py), so its licence is "Own work" and no one needs to be
+    credited beyond the site. Returns the same shape as the Steam and Commons lookups, or None if the file is missing.
+    """
+    name = category or DEFAULT_PICTURE_CATEGORY
+    source = Path(public_dir) / "images" / f"default-{name}.webp"
+    if not source.is_file():
+        source = Path(public_dir) / "images" / f"default-{DEFAULT_PICTURE_CATEGORY}.webp"
+    try:
+        with Image.open(source) as picture:
+            width, height = picture.size
+    except (OSError, ValueError):
+        return None
+    label = name.replace("-", " ")
+    hero: dict[str, Any] = {
+        "src": f"/images/{slug}.webp",
+        "alt": f"GamersXpress illustration for {label} news",
+        "credit": "GamersXpress",
+        "license": "Own work",
+        "width": width,
+        "height": height,
+    }
+    return {"hero": hero, "path": source, "name": name, "file": source.name}
