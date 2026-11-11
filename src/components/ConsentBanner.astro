@@ -1,0 +1,54 @@
+---
+// The cookie choice for Google Analytics. Shown until the visitor accepts or rejects; the choice is kept on this
+// device (localStorage, not a cookie) and can be changed any time from "Cookie settings" in the footer.
+---
+
+<div class="gx-consent" id="gx-consent" role="region" aria-label="Cookie choice" hidden>
+  <p class="gx-consent-text">
+    We use Google Analytics to count visits. It sets cookies only if you accept.
+    <a href="/privacy">Privacy details</a>
+  </p>
+  <div class="gx-consent-actions">
+    <button type="button" class="gx-consent-btn" data-choice="denied">Reject</button>
+    <button type="button" class="gx-consent-btn" data-choice="granted">Accept</button>
+  </div>
+</div>
+
+<script>
+  const KEY = 'gx-consent';
+  const banner = document.getElementById('gx-consent');
+  const settings = document.getElementById('cookie-settings');
+  const gtagFn = (window as unknown as { gtag?: (...args: unknown[]) => void }).gtag;
+
+  const saved = (): string | null => {
+    try {
+      return localStorage.getItem(KEY);
+    } catch (e) {
+      return null;
+    }
+  };
+  const show = () => banner?.removeAttribute('hidden');
+  const hide = () => banner?.setAttribute('hidden', '');
+
+  // Accept or reject: remember it, tell Google, and close the banner.
+  banner?.querySelectorAll<HTMLButtonElement>('[data-choice]').forEach((button) =>
+    button.addEventListener('click', () => {
+      const choice = button.dataset.choice === 'granted' ? 'granted' : 'denied';
+      try {
+        localStorage.setItem(KEY, choice);
+      } catch (e) {}
+      gtagFn?.('consent', 'update', { analytics_storage: choice });
+      hide();
+      settings?.focus();
+    }),
+  );
+
+  // Footer link: reopen the choice at any time.
+  settings?.addEventListener('click', () => {
+    show();
+    banner?.querySelector<HTMLButtonElement>('[data-choice="granted"]')?.focus();
+  });
+
+  // Only ask on a first visit: once the visitor has chosen, the banner stays hidden.
+  if (saved() !== 'granted' && saved() !== 'denied') show();
+</script>

@@ -4,6 +4,7 @@
 @import "./scenes.css";
 @import "./searchpopup.css";
 @import "./menu.css";
+@import "./consent.css";
 
 @theme inline {
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;

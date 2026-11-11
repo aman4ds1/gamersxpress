@@ -11,6 +11,7 @@
 - Articles are Markdown in src/content/articles/ and must match the Zod schema.
 - Never commit secrets. API keys come from environment variables only; keep .env gitignored.
 - Do not add ad scripts, analytics cookies, or tracking. Ad slots stay behind ADS_ENABLED=false until the owner turns them on.
+  - Exception (owner-approved, 2026-11-11): Google Tag Manager container GTM-K377WGXG loads Google Analytics. Analytics cookies are set only after a visitor accepts the consent banner (src/components/ConsentBanner.astro). Consent Mode defaults to denied in src/layouts/BaseLayout.astro. Do not load Google tags or set analytics cookies without that consent. Ad scripts remain forbidden.
 - After every change: run `npm run build` and `npm run check`, and fix errors before finishing.
 - Hosting is Cloudflare Workers static assets (not Pages). Deploy with `npm run deploy` (builds the site, then `wrangler deploy` of `dist/`). The publish workflow must build and deploy itself using the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` GitHub secrets.
 - Keep changes small: one task per session, no unrelated refactors.

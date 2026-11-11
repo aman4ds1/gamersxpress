@@ -35,6 +35,10 @@ for (const file of files) {
     errors.push(`${rel}: expected exactly 1 canonical tag, found ${canonicalCount}`);
 
   errors.push(...sceneProblems(rel, html));
+  const consentDefaults = (html.match(/gtag\('consent', 'default'/g) ?? []).length;
+  if (consentDefaults !== 1) errors.push(`${rel}: expected exactly 1 consent default, found ${consentDefaults}`);
+  const bannerCount = (html.match(/id="gx-consent"/g) ?? []).length;
+  if (bannerCount !== 1) errors.push(`${rel}: expected exactly 1 cookie banner, found ${bannerCount}`);
   const tagCount = (html.match(/googletagmanager\.com\/gtm\.js\?id=GTM-K377WGXG/g) ?? []).length;
   if (tagCount !== 1) errors.push(`${rel}: expected exactly 1 Google Tag Manager snippet, found ${tagCount}`);
 
@@ -58,4 +62,4 @@ if (errors.length > 0) {
   console.error(`seo-dist: ${errors.length} problem(s) in ${files.length} page(s)`);
   process.exit(1);
 }
-console.log(`seo-dist: ${files.length} page(s) OK — 1 H1, 1 canonical, parseable JSON-LD, the right background scene, one Google tag`);
+console.log(`seo-dist: ${files.length} page(s) OK — 1 H1, 1 canonical, parseable JSON-LD, the right background scene, one Google tag, one consent default and one cookie banner`);

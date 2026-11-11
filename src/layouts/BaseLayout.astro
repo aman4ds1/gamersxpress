@@ -7,6 +7,7 @@ import SEO from '../components/SEO.astro';
 import JsonLd from '../components/JsonLd.astro';
 import { SITE_NAME, SITE_DESCRIPTION } from '../data/site';
 import { sceneForPath } from '../data/scenes.mjs';
+import ConsentBanner from '../components/ConsentBanner.astro';
 
 interface Props {
   title?: string;
@@ -35,7 +36,22 @@ const scene = sceneForPath(Astro.url.pathname);
 <!doctype html>
 <html lang="en" data-page-scene={scene}>
   <head>
-    <!-- Google Tag Manager (container GTM-K377WGXG). Load once per page, directly after <head>. -->
+    <!-- Google Consent Mode: until the visitor chooses, Google Analytics may not set cookies. A choice saved on
+         this device (gx-consent in localStorage) is applied at once, before the tag loads. -->
+    <script is:inline>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      var gxConsent = null;
+      try { gxConsent = localStorage.getItem('gx-consent'); } catch (e) {}
+      gtag('consent', 'default', {
+        ad_storage: 'denied',
+        ad_user_data: 'denied',
+        ad_personalization: 'denied',
+        analytics_storage: gxConsent === 'granted' ? 'granted' : 'denied',
+        wait_for_update: 500
+      });
+    </script>
+    <!-- Google Tag Manager (container GTM-K377WGXG). Load once per page, directly after the consent defaults. -->
     <script async src="https://www.googletagmanager.com/gtm.js?id=GTM-K377WGXG"></script>
     <script is:inline>
       window.dataLayer = window.dataLayer || [];
@@ -96,5 +112,6 @@ const scene = sceneForPath(Astro.url.pathname);
       <slot />
     </main>
     <Footer />
+    <ConsentBanner />
   </body>
 </html>

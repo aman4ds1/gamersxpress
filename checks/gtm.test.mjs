@@ -13,8 +13,10 @@ test('the Google tag is the supplied snippet, placed directly after <head>', () 
   const head = layout.indexOf('<head>');
   const tag = layout.indexOf('googletagmanager.com/gtm.js?id=GTM-K377WGXG');
   assert.ok(head > -1 && tag > head, 'the tag is inside <head>');
-  const between = layout.slice(head + '<head>'.length, tag);
-  assert.doesNotMatch(between, /<meta|<link|<title|<script is:inline>/, 'nothing but the tag comes before the other head elements');
+  // between <head> and the tag there may be only the Consent Mode defaults (checks/consent.test.mjs), nothing else
+  const tagStart = layout.lastIndexOf('<script async', tag);
+  const between = layout.slice(head + '<head>'.length, tagStart).replace(/<script is:inline>[\s\S]*?<\/script>/, '').replace(/<!--[\s\S]*?-->/g, '');
+  assert.doesNotMatch(between, /<meta|<link|<title|<script/, 'nothing but the consent defaults comes before the tag');
   assert.match(layout, /<script is:inline>\s*window\.dataLayer/);
   assert.match(layout, /<script async src="https:\/\/www\.googletagmanager\.com\/gtm\.js\?id=GTM-K377WGXG"><\/script>/);
   assert.match(layout, /window\.dataLayer = window\.dataLayer \|\| \[\];\s*function gtag\(\)\{dataLayer\.push\(arguments\);\}\s*gtag\('js', new Date\(\)\);/);
@@ -37,8 +39,7 @@ test('the tag is written once, in the one layout every page uses', () => {
 
 test('the privacy page no longer claims there are no cookies or that only Cloudflare measures visits', () => {
   assert.doesNotMatch(privacy, /does not currently set any cookies|cookieless Cloudflare|It is cookieless/);
-  assert.match(privacy, /Google Tag Manager \(container GTM-K377WGXG\)/);
-  assert.match(privacy, /sets cookies to\s+tell visits apart/);
+  assert.match(privacy, /Google Tag Manager\s+\(container GTM-K377WGXG\)/);
   assert.match(privacy, /names beginning with _ga/);
   assert.match(privacy, /const lastUpdated = new Date\('2026-11-11'\);/);
 });

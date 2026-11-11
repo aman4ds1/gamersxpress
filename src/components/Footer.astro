@@ -21,6 +21,7 @@ const footerLinks = [
     <nav aria-label="Footer">
       <ul class="flex flex-wrap gap-x-5 gap-y-2">
         {footerLinks.map((item) => <li><a href={item.href} class="hover:text-ink">{item.label}</a></li>)}
+        <li><button type="button" id="cookie-settings" class="hover:text-ink">Cookie settings</button></li>
       </ul>
     </nav>
     <span>&copy; {year} GamersXpress</span>
