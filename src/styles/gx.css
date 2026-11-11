@@ -88,7 +88,10 @@ main.gx-reading {
   width: min(1040px, calc(100% - 24px));
   margin: 20px auto;
   padding: 24px clamp(16px, 3vw, 36px);
-  background: var(--surface);
+  /* frosted glass: mostly opaque, with the background softly blurred behind it */
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(115%);
+  backdrop-filter: blur(14px) saturate(115%);
   border: 1px solid var(--line);
   border-radius: 18px;
   box-shadow: 0 24px 60px -30px rgba(8, 9, 14, 0.35);
