@@ -141,7 +141,7 @@ test('the popup opens right under the search button, lined up with its right edg
 });
 
 test('focus goes into the box on opening and back to the button on Escape, and the state is announced', () => {
-  assert.match(script, /opener\.setAttribute\('aria-expanded', 'true'\);\s*input\.focus\(\);\s*input\.select\(\);/);
+  assert.match(script, /opener\.setAttribute\('aria-expanded', 'true'\);\s*document\.dispatchEvent\(new CustomEvent\('gx-overlay', \{ detail: 'search' \}\)\);\s*input\.focus\(\);\s*input\.select\(\);/);
   assert.match(script, /opener\.setAttribute\('aria-expanded', 'false'\);\s*if \(returnFocus\) opener\.focus\(\);/);
   assert.match(script, /backdrop\.addEventListener\('pointerdown', \(\) => close\(false\)\);/);
   assert.match(script, /input\.setAttribute\('aria-activedescendant', `gx-sp-opt-\$\{index\}`\)/);

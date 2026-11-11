@@ -3,6 +3,7 @@
 @import "./gx.css";
 @import "./scenes.css";
 @import "./searchpopup.css";
+@import "./menu.css";
 
 @theme inline {
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -69,43 +70,8 @@
   --a3: #be185d;
 }
 
-:root[data-theme='dark'] {
-  color-scheme: dark;
-  --surface: #0b0c10;
-  --surface-raised: #14161b;
-  --surface-hover: #1c1f26;
-  --ink: #f3f4f6;
-  --ink-strong: #e6e7ec;
-  --ink-brand: #ffffff;
-  --ink-muted: #a9aeb8;
-  --ink-subtle: #9ca1ac;
-  --ink-faint: #8a8f9a;
-  --line: #262a31;
-  --line-strong: #343943;
-  --line-hover: #c9ced6;
-  --line-elevated: #2c3038;
-  --accent: #a78bfa;
-  --accent-hover: #22d3ee;
-  --link: #a78bfa;
-  --focus-ring: #c9ced6;
-  --gold: #c9ced6;
-  --l1: #2b2f37;
-  --l2: #c9ced6;
-  --l3: #f7f8fa;
-  --card: #14161b;
-  --bar: rgba(20, 22, 27, 0.78);
-  --glow: rgba(201, 206, 214, 0.16);
-  --c1: rgba(124, 58, 237, 0.42);
-  --c2: rgba(6, 182, 212, 0.32);
-  --c3: rgba(236, 72, 153, 0.28);
-  --gc: rgba(255, 255, 255, 0.05);
-  --a1: #a78bfa;
-  --a2: #22d3ee;
-  --a3: #f472b6;
-}
-
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
+  :root {
     color-scheme: dark;
     --surface: #0b0c10;
     --surface-raised: #14161b;

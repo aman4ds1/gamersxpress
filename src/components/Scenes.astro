@@ -1,8 +1,13 @@
 ---
-// The page background: two pixel-art scenes, one shown at a time (the switch in the header sets
-// data-scene on <html>; see src/styles/scenes.css). Every sprite is original artwork drawn here as
-// SVG rectangles, so there are no image files and no network requests.
+// The page background: one of two pixel-art scenes, chosen by the page (see src/data/scenes.mjs): the sky for the
+// home page and the information pages, the maze for everything else. Only the page's own scene is rendered. The
+// switch in the header can turn it off (data-scene="plain" on <html>; see src/styles/scenes.css). Every sprite is
+// original artwork drawn here as SVG rectangles, so there are no image files and no network requests.
 type Rect = [number, number, number, number, string?];
+interface Props {
+  scene: 'sky' | 'maze';
+}
+const { scene } = Astro.props;
 
 const cloud: Rect[] = [[5, 0, 5, 1], [11, 0, 4, 1], [4, 1, 13, 1], [2, 2, 16, 1], [1, 3, 18, 1], [0, 4, 20, 1], [1, 5, 18, 1], [3, 6, 14, 1]];
 const sun: Rect[] = [[4, 0, 4, 1], [2, 1, 8, 1], [1, 2, 10, 1], [0, 3, 12, 6], [1, 9, 10, 1], [2, 10, 8, 1], [4, 11, 4, 1]];
@@ -20,11 +25,8 @@ const coin: Rect[] = [
 const ghostBody: Rect[] = [[4, 0, 6, 1], [2, 1, 10, 1], [1, 2, 12, 1], [0, 3, 14, 7]];
 const ghostFeetA: Rect[] = [[0, 10, 4, 3], [5, 10, 4, 3], [10, 10, 4, 3]];
 const ghostFeetB: Rect[] = [[0, 10, 2, 2], [3, 10, 3, 3], [7, 10, 3, 3], [11, 10, 3, 2]];
-// Frightened ghosts: small pale eyes and a zigzag mouth. They run away from the chomper, never after it.
-const ghostFace: Rect[] = [
-  [4, 4, 2, 2, '#fde68a'], [8, 4, 2, 2, '#fde68a'],
-  [2, 8, 2, 1, '#fde68a'], [4, 7, 2, 1, '#fde68a'], [6, 8, 2, 1, '#fde68a'], [8, 7, 2, 1, '#fde68a'], [10, 8, 2, 1, '#fde68a'],
-];
+// Colourful ghosts with big eyes looking the way they run. They run away from the chomper, never after it.
+const ghostEyes: Rect[] = [[3, 4, 3, 4, '#ffffff'], [8, 4, 3, 4, '#ffffff'], [5, 6, 2, 2, '#1e3a8a'], [10, 6, 2, 2, '#1e3a8a']];
 
 const clouds = ['gx-cl1', 'gx-cl2', 'gx-cl3', 'gx-cl4'];
 const blocks = ['gx-q1', 'gx-q2', 'gx-q3'];
@@ -38,7 +40,8 @@ const lanes = [
 ---
 
 <div class="gx-bg" aria-hidden="true">
-  <!-- Scene 1: a pixel sky with drifting clouds, scrolling hills and bricks, and bobbing blocks. -->
+  <!-- The sky: drifting clouds, scrolling hills and bricks, and bobbing blocks. -->
+  {scene === 'sky' && (
   <div class="gx-scene gx-skyscene">
     <span class="gx-sky"></span>
     <span class="gx-stars"></span>
@@ -70,8 +73,10 @@ const lanes = [
       ))
     }
   </div>
+  )}
 
-  <!-- Scene 2: a maze with rows of pellets. A chomper eats the pellets and then the frightened ghosts running ahead of it. -->
+  <!-- The maze: rows of pellets. A yellow chomper eats the pellets and then the colourful ghosts running ahead of it. -->
+  {scene === 'maze' && (
   <div class="gx-scene gx-mazescene">
     <span class="gx-maze"></span>
     <span class="gx-mazefade"></span>
@@ -92,7 +97,7 @@ const lanes = [
                   {ghostBody.map(([x, y, w, h]) => <rect x={x} y={y} width={w} height={h} fill="currentColor" />)}
                   <g class="gx-feet-a">{ghostFeetA.map(([x, y, w, h]) => <rect x={x} y={y} width={w} height={h} fill="currentColor" />)}</g>
                   <g class="gx-feet-b">{ghostFeetB.map(([x, y, w, h]) => <rect x={x} y={y} width={w} height={h} fill="currentColor" />)}</g>
-                  {ghostFace.map(([x, y, w, h, fill]) => <rect x={x} y={y} width={w} height={h} fill={fill} />)}
+                  {ghostEyes.map(([x, y, w, h, fill]) => <rect x={x} y={y} width={w} height={h} fill={fill} />)}
                 </svg>
               </i>
             ))
@@ -101,4 +106,5 @@ const lanes = [
       ))
     }
   </div>
+  )}
 </div>

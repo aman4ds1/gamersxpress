@@ -16,16 +16,16 @@ const path = Astro.url.pathname.replace(/\/+$/, '') || '/';
 
 <header class="gx-bar">
   <div class="gx-wrap flex min-h-[76px] flex-wrap items-center justify-between gap-4">
-    <a href="/" aria-label="GamersXpress home" class="flex items-center gap-3 no-underline">
+    <a href="/" aria-label="GamersXpress home" class="gx-logo flex items-center gap-3 no-underline">
       <PixelLogo width={52} />
       <span class="flex flex-col gap-2 leading-none">
-        <span class="gx-pixel text-[14px] text-ink">GAMERS<span style="color: var(--gold)">X</span>PRESS</span>
-        <span class="gx-pixel text-[8px] tracking-[0.2em] text-ink-muted">
+        <span class="gx-pixel gx-logo-name text-[14px] text-ink">GAMERS<span style="color: var(--gold)">X</span>PRESS</span>
+        <span class="gx-pixel gx-logo-tag text-[8px] tracking-[0.2em] text-ink-muted">
           PRESS START<span class="gx-blink ml-1.5 inline-block h-2 w-1.5 align-[-1px]" style="background: var(--gold)"></span>
         </span>
       </span>
     </a>
-    <nav class="gx-nav flex flex-wrap gap-x-6 gap-y-1 text-sm font-semibold text-ink-muted" aria-label="Main">
+    <nav id="gx-menu" class="gx-nav flex flex-wrap gap-x-6 gap-y-1 text-sm font-semibold text-ink-muted" aria-label="Main">
       {
         navItems.map((item) => (
           <a href={item.href} aria-current={path === item.href ? 'page' : undefined}>
@@ -33,8 +33,14 @@ const path = Astro.url.pathname.replace(/\/+$/, '') || '/';
           </a>
         ))
       }
+      <div class="gx-menu-extras">
+        <button type="button" class="gx-scenebtn gx-menu-scene" data-scene-toggle aria-label="Change the background">
+          <span class="gx-menu-scene-icon"><svg class="ic-sky" width="18" height="18" viewBox="0 0 20 7" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true"><rect x="5" y="0" width="5" height="1" /><rect x="11" y="0" width="4" height="1" /><rect x="4" y="1" width="13" height="1" /><rect x="2" y="2" width="16" height="1" /><rect x="1" y="3" width="18" height="1" /><rect x="0" y="4" width="20" height="1" /><rect x="1" y="5" width="18" height="1" /><rect x="3" y="6" width="14" height="1" /></svg><svg class="ic-maze" width="18" height="18" viewBox="0 0 28 28" fill="currentColor" aria-hidden="true"><path d="M14 14L28 8A14 14 0 1 0 28 20Z" /></svg><svg class="ic-plain" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" /></svg></span>
+          <span>Background: <strong data-scene-name>on</strong></span>
+        </button>
+      </div>
     </nav>
-    <div class="flex items-center gap-2.5">
+    <div class="gx-actions flex items-center gap-2.5">
       <button type="button" class="gx-iconbtn" id="search-open" aria-label="Search" aria-haspopup="dialog" aria-expanded="false" aria-controls="gx-sp" title="Search ( / )">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
       </button>
@@ -44,14 +50,13 @@ const path = Astro.url.pathname.replace(/\/+$/, '') || '/';
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
         </a>
       </noscript>
-      <button type="button" class="gx-iconbtn gx-scenebtn" id="scene-toggle" aria-label="Change the background">
+      <button type="button" class="gx-iconbtn gx-scenebtn" id="scene-toggle" data-scene-toggle aria-label="Change the background">
         <svg class="ic-sky" width="18" height="18" viewBox="0 0 20 7" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true"><rect x="5" y="0" width="5" height="1" /><rect x="11" y="0" width="4" height="1" /><rect x="4" y="1" width="13" height="1" /><rect x="2" y="2" width="16" height="1" /><rect x="1" y="3" width="18" height="1" /><rect x="0" y="4" width="20" height="1" /><rect x="1" y="5" width="18" height="1" /><rect x="3" y="6" width="14" height="1" /></svg>
         <svg class="ic-maze" width="18" height="18" viewBox="0 0 28 28" fill="currentColor" aria-hidden="true"><path d="M14 14L28 8A14 14 0 1 0 28 20Z" /></svg>
         <svg class="ic-plain" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
       </button>
-      <button type="button" class="gx-iconbtn gx-theme" id="theme-toggle" aria-label="Switch theme">
-        <svg class="gx-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path></svg>
-        <svg class="gx-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+      <button type="button" class="gx-iconbtn gx-burger" id="menu-toggle" aria-label="Menu" aria-expanded="false" aria-controls="gx-menu">
+        <span class="gx-burger-bars" aria-hidden="true"><i></i><i></i><i></i></span>
       </button>
     </div>
   </div>
@@ -60,58 +65,65 @@ const path = Astro.url.pathname.replace(/\/+$/, '') || '/';
 <SearchPopup />
 
 <script>
-  const button = document.getElementById('theme-toggle');
-  const media = window.matchMedia('(prefers-color-scheme: dark)');
-  const calm = window.matchMedia('(prefers-reduced-motion: reduce)');
-  const current = () => document.documentElement.dataset.theme ?? (media.matches ? 'dark' : 'light');
-  const label = () => button?.setAttribute('aria-label', `Switch to ${current() === 'dark' ? 'light' : 'dark'} mode`);
-  const apply = (next: string) => {
-    document.documentElement.dataset.theme = next;
-    try {
-      localStorage.setItem('gx-theme', next);
-    } catch (e) {}
-    label();
+  // The background switch: the page decides which scene it gets (sky or maze); this only turns it off and on again.
+  // "Off" is remembered; "on" simply forgets it, so a page always starts with its own scene.
+  const sceneButtons = document.querySelectorAll<HTMLElement>('[data-scene-toggle]');
+  const backgroundOn = () => document.documentElement.dataset.scene !== 'plain';
+  const sceneLabel = () => {
+    const text = `Background: ${backgroundOn() ? 'on' : 'off'}. Turn it ${backgroundOn() ? 'off' : 'on'}`;
+    sceneButtons.forEach((button) => button.setAttribute('aria-label', text));
+    document.querySelectorAll('[data-scene-name]').forEach((name) => (name.textContent = backgroundOn() ? 'on' : 'off'));
   };
-  button?.addEventListener('click', () => {
-    const next = current() === 'dark' ? 'light' : 'dark';
-    if (!document.startViewTransition || calm.matches) {
-      apply(next);
-      return;
-    }
-    // A circle of the new theme grows out of the button until it covers the page.
-    const box = button.getBoundingClientRect();
-    const x = box.left + box.width / 2;
-    const y = box.top + box.height / 2;
-    const end = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
-    // The color fade would run inside the wipe and blur it, so it is off while the wipe plays.
-    document.documentElement.classList.add('gx-switching');
-    const transition = document.startViewTransition(() => apply(next));
-    transition.finished.finally(() => document.documentElement.classList.remove('gx-switching'));
-    transition.ready.then(() => {
-      document.documentElement.animate(
-        { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${end}px at ${x}px ${y}px)`] },
-        { duration: 600, easing: 'cubic-bezier(.4, 0, .2, 1)', pseudoElement: '::view-transition-new(root)' },
-      );
-    });
-  });
-  media.addEventListener('change', label);
-  label();
-
-  // The background switch: sky -> maze -> plain -> sky. The choice is remembered like the theme.
-  const sceneButton = document.getElementById('scene-toggle');
-  const scenes = ['sky', 'maze', 'plain'];
-  const sceneNames: Record<string, string> = { sky: 'sky scene', maze: 'maze scene', plain: 'plain background' };
-  const currentScene = () => document.documentElement.dataset.scene ?? 'sky';
-  const nextScene = () => scenes[(scenes.indexOf(currentScene()) + 1) % scenes.length];
-  const sceneLabel = () =>
-    sceneButton?.setAttribute('aria-label', `Background: ${sceneNames[currentScene()]}. Switch to the ${sceneNames[nextScene()]}`);
-  sceneButton?.addEventListener('click', () => {
-    const next = nextScene();
-    document.documentElement.dataset.scene = next;
-    try {
-      localStorage.setItem('gx-scene', next);
-    } catch (e) {}
-    sceneLabel();
-  });
+  sceneButtons.forEach((button) =>
+    button.addEventListener('click', () => {
+      const next = backgroundOn() ? 'plain' : (document.documentElement.dataset.pageScene ?? 'sky');
+      document.documentElement.dataset.scene = next;
+      try {
+        if (next === 'plain') localStorage.setItem('gx-scene', 'plain');
+        else localStorage.removeItem('gx-scene');
+      } catch (e) {}
+      sceneLabel();
+    }),
+  );
   sceneLabel();
+
+  // The menu: below 1060px the links collapse behind the burger button (CSS decides; this only opens and closes it).
+  const bar = document.querySelector<HTMLElement>('header.gx-bar');
+  const menuButton = document.getElementById('menu-toggle');
+  const menu = document.getElementById('gx-menu');
+  if (bar && menuButton && menu) {
+    const narrow = window.matchMedia('(max-width: 1059px)');
+    const menuOpen = () => bar.hasAttribute('data-menu-open');
+    const setMenu = (open: boolean) => {
+      bar.toggleAttribute('data-menu-open', open);
+      menuButton.setAttribute('aria-expanded', String(open));
+      menuButton.setAttribute('aria-label', open ? 'Close menu' : 'Menu');
+      // Only one panel at a time: the search popup closes when the menu opens.
+      if (open) document.dispatchEvent(new CustomEvent('gx-overlay', { detail: 'menu' }));
+    };
+    menuButton.addEventListener('click', (event) => {
+      setMenu(!menuOpen());
+      // Opened from the keyboard (the click has no pointer): move into the menu. With a pointer, leave focus alone.
+      if (menuOpen() && (event as MouseEvent).detail === 0) menu.querySelector<HTMLElement>('a')?.focus();
+    });
+    menu.addEventListener('click', (event) => {
+      if ((event.target as HTMLElement).closest('a')) setMenu(false);
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && menuOpen()) {
+        setMenu(false);
+        menuButton.focus();
+      }
+    });
+    document.addEventListener('pointerdown', (event) => {
+      if (menuOpen() && !bar.contains(event.target as Node)) setMenu(false);
+    });
+    document.addEventListener('gx-overlay', (event) => {
+      if ((event as CustomEvent).detail !== 'menu' && menuOpen()) setMenu(false);
+    });
+    // Growing the window past the breakpoint (a rotated tablet) puts the links back in the bar: close the menu.
+    narrow.addEventListener('change', () => {
+      if (!narrow.matches) setMenu(false);
+    });
+  }
 </script>

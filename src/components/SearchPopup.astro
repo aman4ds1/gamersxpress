@@ -203,6 +203,7 @@
       panel.hidden = false;
       backdrop.hidden = false;
       opener.setAttribute('aria-expanded', 'true');
+      document.dispatchEvent(new CustomEvent('gx-overlay', { detail: 'search' }));
       input.focus();
       input.select();
       void run(input.value.trim());
@@ -216,6 +217,10 @@
       if (returnFocus) opener.focus();
     };
 
+    // Only one panel at a time: opening the menu closes the search popup.
+    document.addEventListener('gx-overlay', (event) => {
+      if ((event as CustomEvent).detail !== 'search') close(false);
+    });
     opener.addEventListener('click', () => (isOpen() ? close() : open()));
     closeButton.addEventListener('click', () => close());
     backdrop.addEventListener('pointerdown', () => close(false));

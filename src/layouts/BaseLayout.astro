@@ -6,6 +6,7 @@ import Scenes from '../components/Scenes.astro';
 import SEO from '../components/SEO.astro';
 import JsonLd from '../components/JsonLd.astro';
 import { SITE_NAME, SITE_DESCRIPTION } from '../data/site';
+import { sceneForPath } from '../data/scenes.mjs';
 
 interface Props {
   title?: string;
@@ -28,10 +29,11 @@ const {
   dateModified,
   breadcrumbs,
 } = Astro.props;
+const scene = sceneForPath(Astro.url.pathname);
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" data-page-scene={scene}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width" />
@@ -43,13 +45,17 @@ const {
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0b0c10" media="(prefers-color-scheme: dark)" />
     <script is:inline>
+      // Lets the styles tell "JavaScript is on" (the menu collapses into a burger) from "off" (every link stays visible).
+      document.documentElement.setAttribute('data-js', '');
       try {
-        const saved = localStorage.getItem('gx-theme');
-        if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
-        const scene = localStorage.getItem('gx-scene');
-        document.documentElement.dataset.scene = scene === 'maze' || scene === 'plain' ? scene : 'sky';
+        // The site follows the device's light/dark setting. A theme saved by the old toggle is forgotten, so nobody
+        // stays stuck on a choice they can no longer change.
+        localStorage.removeItem('gx-theme');
+        // The page decides which scene it gets; a visitor can only switch the background off (saved as 'plain').
+        const page = document.documentElement.dataset.pageScene;
+        document.documentElement.dataset.scene = localStorage.getItem('gx-scene') === 'plain' ? 'plain' : page;
       } catch (e) {
-        document.documentElement.dataset.scene = 'sky';
+        document.documentElement.dataset.scene = document.documentElement.dataset.pageScene;
       }
     </script>
     <!-- Fonts are served from this site (see public/fonts), never from a font service. -->
@@ -77,7 +83,7 @@ const {
   <body
     class="flex min-h-screen flex-col bg-surface text-ink antialiased"
   >
-    <Scenes />
+    <Scenes scene={scene} />
     <Header />
     <main class="flex-1" data-pagefind-body>
       <slot />

@@ -23,14 +23,13 @@ test('the scenes load nothing from the network', () => {
   assert.doesNotMatch(scenes, /<img|src=|href=|<image/);
 });
 
-test('there is a sky scene, a maze scene and a plain option, chosen by data-scene', () => {
-  assert.match(scenes, /class="gx-scene gx-skyscene"/);
-  assert.match(scenes, /class="gx-scene gx-mazescene"/);
-  assert.match(css, /:root\[data-scene='sky'\] \.gx-skyscene/);
-  assert.match(css, /:root:not\(\[data-scene\]\) \.gx-skyscene/);       // the sky is the default without JavaScript
-  assert.match(css, /:root\[data-scene='maze'\] \.gx-mazescene/);
-  assert.match(css, /\.gx-scene \{ position: absolute; inset: 0; display: none; \}/);
-  assert.match(header, /const scenes = \['sky', 'maze', 'plain'\];/);
+test('the page picks its scene and only that scene is drawn; the background can be switched off', () => {
+  assert.match(scenes, /interface Props \{\s*scene: 'sky' \| 'maze';\s*\}/);
+  assert.match(scenes, /\{scene === 'sky' && \(\s*<div class="gx-scene gx-skyscene">/);
+  assert.match(scenes, /\{scene === 'maze' && \(\s*<div class="gx-scene gx-mazescene">/);
+  assert.match(css, /\.gx-scene \{ position: absolute; inset: 0; \}/);
+  assert.match(css, /:root\[data-scene='plain'\] \.gx-bg \{ display: none; \}/);
+  assert.doesNotMatch(css, /\.gx-scene \{[^}]*display: none/);                      // no scene starts hidden: the page only renders its own
 });
 
 test('every animation the scenes use has its keyframes', () => {
@@ -48,37 +47,38 @@ test('reduced motion switches every scene animation off and leaves the sprites i
   assert.match(block, /\.gx-cl1 \{ transform: translateX\(/);
 });
 
-test('the scenes never restyle the theme button icons (a real bug caught in review)', () => {
-  assert.doesNotMatch(css, /\.gx-sun\b|\.gx-moon\b/);
-  assert.doesNotMatch(scenes, /class="gx-sun"|class="gx-moon"/);
-  assert.match(header, /class="gx-moon"/);
-  assert.match(header, /class="gx-sun"/);
-});
-
 test('the old gradient-blob and grid background is gone and the layout uses the scenes', () => {
   const gx = read('src/styles/gx.css');
   for (const text of [layout, gx]) assert.doesNotMatch(text, /gx-blob|gx-gridlines|gx-shape|gx-drift|gx-gridmove/);
-  assert.match(layout, /<Scenes \/>/);
+  assert.match(layout, /<Scenes scene=\{scene\} \/>/);
   assert.match(read('src/styles/global.css'), /@import "\.\/scenes\.css";/);
 });
 
-test('the choice is saved and applied before the page paints, defaulting to the sky', () => {
-  assert.match(layout, /localStorage\.getItem\('gx-scene'\)/);
-  assert.match(layout, /scene === 'maze' \|\| scene === 'plain' \? scene : 'sky'/);
-  assert.match(layout, /catch \(e\) \{\s*document\.documentElement\.dataset\.scene = 'sky';/);
-  assert.match(header, /localStorage\.setItem\('gx-scene', next\)/);
-  assert.ok(layout.indexOf("localStorage.getItem('gx-scene')") < layout.indexOf('<Scenes />'));
+test('before the page paints it gets its own scene, unless the visitor switched the background off', () => {
+  assert.match(layout, /const scene = sceneForPath\(Astro\.url\.pathname\);/);
+  assert.match(layout, /<html lang="en" data-page-scene=\{scene\}>/);
+  assert.match(layout, /const page = document\.documentElement\.dataset\.pageScene;/);
+  assert.match(layout, /document\.documentElement\.dataset\.scene = localStorage\.getItem\('gx-scene'\) === 'plain' \? 'plain' : page;/);
+  assert.match(layout, /catch \(e\) \{\s*document\.documentElement\.dataset\.scene = document\.documentElement\.dataset\.pageScene;/);
+  assert.ok(layout.indexOf("localStorage.getItem('gx-scene')") < layout.indexOf('<Scenes'));
+  // only "off" is remembered: turning it on forgets the setting so each page starts with its own scene
+  assert.match(header, /if \(next === 'plain'\) localStorage\.setItem\('gx-scene', 'plain'\);\s*else localStorage\.removeItem\('gx-scene'\);/);
+  assert.match(header, /const next = backgroundOn\(\) \? 'plain' : \(document\.documentElement\.dataset\.pageScene \?\? 'sky'\);/);
 });
 
-test('the switch is a labelled button with an icon for every scene', () => {
-  assert.match(header, /<button type="button" class="gx-iconbtn gx-scenebtn" id="scene-toggle" aria-label="[^"]+">/);
-  for (const icon of ['ic-sky', 'ic-maze', 'ic-plain']) assert.match(header, new RegExp(`class="${icon}"`));
-  assert.match(header, /aria-label', `Background: \$\{sceneNames\[currentScene\(\)\]\}\. Switch to the \$\{sceneNames\[nextScene\(\)\]\}`/);
+test('the background switch is a labelled on/off button with an icon for each state', () => {
+  // there are two of these buttons: one in the bar (wide screens) and one inside the menu (small screens)
+  assert.match(header, /<button type="button" class="gx-iconbtn gx-scenebtn" id="scene-toggle" data-scene-toggle aria-label="[^"]+">/);
+  assert.match(header, /<button type="button" class="gx-scenebtn gx-menu-scene" data-scene-toggle aria-label="[^"]+">/);
+  for (const icon of ['ic-sky', 'ic-maze', 'ic-plain']) assert.equal((header.match(new RegExp(`class="${icon}"`, 'g')) || []).length, 2, icon);
+  assert.match(header, /const text = `Background: \$\{backgroundOn\(\) \? 'on' : 'off'\}\. Turn it \$\{backgroundOn\(\) \? 'off' : 'on'\}`;\s*sceneButtons\.forEach\(\(button\) => button\.setAttribute\('aria-label', text\)\);/);
+  // the icon shows the state: the page's scene while it is on, the plain square while it is off
+  assert.match(css, /:root\[data-scene='sky'\] \.gx-scenebtn \.ic-sky,\s*:root:not\(\[data-scene\]\) \.gx-scenebtn \.ic-sky,\s*:root\[data-scene='maze'\] \.gx-scenebtn \.ic-maze,\s*:root\[data-scene='plain'\] \.gx-scenebtn \.ic-plain \{ display: block; \}/);
   assert.match(scenes, /aria-hidden="true"/);
 });
 
 test('the shipped scene code carries no trademarked names', () => {
-  const sceneScript = header.slice(header.indexOf('The background switch'));
+  const sceneScript = header.slice(header.indexOf('The background switch'), header.indexOf('The menu:'));
   for (const text of [scenes, css, layout.slice(layout.indexOf('<script is:inline>'), layout.indexOf('</script>')), sceneScript]) {
     assert.doesNotMatch(text, /mario|pac-?man|luigi|goomba|bowser|blinky|pinky|inky|clyde/i);
   }
@@ -193,15 +193,29 @@ test('two ghosts in one lane never cross, so the first caught is always the one 
   }
 });
 
-test('the ghosts are frightened blue ones with no delay of their own, so they stay on the chomper\'s clock', () => {
-  assert.match(css, /--fright: #3b6df0;/);
-  assert.equal((css.match(/--fright: #5b8cff;/g) || []).length, 2);
-  assert.match(css, /\.gx-ghost \{ color: var\(--fright\); \}/);
-  assert.doesNotMatch(css, /--g[123]|\.gx-gh\d|animation-delay: 1\.5s|animation-delay: 2\.6s/);
+test('Pac-Man is bright yellow in both themes, with an outline only on the pale page', () => {
+  assert.equal((css.match(/--chomp: #ffd500;/g) || []).length, 2);                     // light, and the device's dark setting
+  assert.doesNotMatch(css, /--chomp: #(?!ffd500)/);
+  assert.match(css, /--chomp-edge: drop-shadow\(1px 0 0 #6b5000\) drop-shadow\(-1px 0 0 #6b5000\) drop-shadow\(0 1px 0 #6b5000\) drop-shadow\(0 -1px 0 #6b5000\);/);
+  assert.equal((css.match(/--chomp-edge: none;/g) || []).length, 1);
+  assert.match(css, /\.gx-chomper \{[^}]*color: var\(--chomp\); filter: var\(--chomp-edge\);/);
+});
+
+test('the ghosts are colourful, each its own colour, and run on the chomper\'s clock with no delay of their own', () => {
+  assert.match(css, /--g-pink: #ff5fa2; --g-aqua: #22d3ee; --g-orange: #ff9a3c; --g-violet: #a78bfa;/);
+  assert.match(css, /\.gx-ghost \{ color: var\(--ghost, var\(--g-pink\)\); \}/);
+  const used = {};
+  for (const { name } of lanes.flatMap((lane) => lane.ghosts)) {
+    const colour = /--ghost: var\((--g-[a-z]+)\);/.exec(new RegExp(`\\.(?:gx-rev )?\\.?${name} \\{([^}]*)\\}`).exec(css)?.[1] ?? '')?.[1];
+    assert.ok(colour, `${name} needs its own --ghost colour`);
+    used[colour] = (used[colour] || 0) + 1;
+  }
+  assert.deepEqual(Object.keys(used).sort(), ['--g-aqua', '--g-orange', '--g-pink', '--g-violet']);   // four colours across the ghosts
+  assert.doesNotMatch(css, /--fright|--g[123]\b|\.gx-gh\d|#3b6df0|#5b8cff/);                         // no all-blue frightened ghosts any more
   const ghostRules = [...css.matchAll(/\.gx-(?:rev )?\.?gx-f\d+ \{[^}]*\}/g)].map(([rule]) => rule).join('\n');
   assert.doesNotMatch(ghostRules, /animation-delay/);
-  assert.match(scenes, /const ghostFace: Rect\[\]/);
-  assert.doesNotMatch(scenes, /#1e3a8a|ghostEyes/);                // the old chasing ghosts had pupils
+  assert.match(scenes, /const ghostEyes: Rect\[\] = \[\[3, 4, 3, 4, '#ffffff'\], \[8, 4, 3, 4, '#ffffff'\], \[5, 6, 2, 2, '#1e3a8a'\], \[10, 6, 2, 2, '#1e3a8a'\]\];/);
+  assert.doesNotMatch(scenes, /ghostFace|#fde68a/);
 });
 
 test('only cheap properties are animated', () => {
@@ -217,10 +231,14 @@ test('phones drop the heavier pieces and the maze gets quieter; print shows no s
   assert.match(css, /@media print \{\s*\.gx-bg \{ display: none; \}/);
 });
 
-test('the colours follow the theme: light by default, dark when chosen or when the system is dark', () => {
-  assert.match(css, /:root\[data-theme='dark'\] \.gx-scene \{/);
-  assert.match(css, /@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme='light'\]\) \.gx-scene \{/);
-  const dark = css.match(/:root\[data-theme='dark'\] \.gx-scene \{([\s\S]*?)\n\}/)[1].replace(/\s+/g, ' ').trim();
-  const system = css.match(/:root:not\(\[data-theme='light'\]\) \.gx-scene \{([\s\S]*?)\n  \}/)[1].replace(/\s+/g, ' ').trim();
-  assert.equal(dark, system, 'the explicit dark colours and the system-dark colours must be identical');
+test('the colours follow the device: light by default, dark when the device is set to dark', () => {
+  assert.equal((css.match(/@media \(prefers-color-scheme: dark\) \{\s*\.gx-scene \{/g) || []).length, 1);
+  assert.doesNotMatch(css, /data-theme/);
+  const dark = /@media \(prefers-color-scheme: dark\) \{\s*\.gx-scene \{([\s\S]*?)\r?\n  \}\r?\n\}/.exec(css)[1];
+  const light = /\.gx-scene \{\s*--sky-top[\s\S]*?\n\}/.exec(css)[0];
+  for (const token of dark.match(/--[a-z-]+(?=:)/g)) assert.ok(light.includes(`${token}:`), `${token} is overridden in dark but has no light value`);
+  assert.ok(dark.includes('--sky-top: #070b2a;'));
+  // night: stars and a moon, no sun; day: a sun, no stars or moon
+  assert.match(dark, /--sun-on: 0; --moon-on: 1; --stars-on: 1;/);
+  assert.match(light, /--sun-on: 1; --moon-on: 0; --stars-on: 0;/);
 });

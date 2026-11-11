@@ -1,0 +1,62 @@
+/* The header's menu (src/components/Header.astro). Wide screens show the links inline. Below 1060px, where the bar
+   no longer fits on one row, the links collapse behind a burger button and open as a panel under the header.
+   Everything that hides the links is scoped to :root[data-js], so with JavaScript off all links stay visible. */
+
+.gx-burger { display: none; }
+.gx-burger-bars { position: relative; display: block; width: 18px; height: 14px; }
+.gx-burger-bars i { position: absolute; left: 0; width: 18px; height: 2px; border-radius: 2px; background: currentColor; transition: transform 0.18s ease, opacity 0.18s ease, top 0.18s ease; }
+.gx-burger-bars i:nth-child(1) { top: 0; }
+.gx-burger-bars i:nth-child(2) { top: 6px; }
+.gx-burger-bars i:nth-child(3) { top: 12px; }
+.gx-burger[aria-expanded='true'] .gx-burger-bars i:nth-child(1) { top: 6px; transform: rotate(45deg); }
+.gx-burger[aria-expanded='true'] .gx-burger-bars i:nth-child(2) { opacity: 0; }
+.gx-burger[aria-expanded='true'] .gx-burger-bars i:nth-child(3) { top: 6px; transform: rotate(-45deg); }
+.gx-burger[aria-expanded='true'] { border-color: var(--gold); }
+
+.gx-menu-extras { display: none; }
+.gx-menu-scene { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 0 14px; border: 0; border-radius: 10px; background: transparent; color: var(--ink-muted); font: inherit; font-size: 15px; text-align: left; cursor: pointer; }
+.gx-menu-scene:hover { background: var(--surface-hover); color: var(--ink); }
+.gx-menu-scene strong { color: var(--ink); font-weight: 600; }
+.gx-menu-scene-icon { display: inline-flex; width: 18px; justify-content: center; }
+
+@media (max-width: 1059px) {
+  :root[data-js] .gx-bar .gx-wrap { flex-wrap: nowrap; }
+  :root[data-js] .gx-burger { display: inline-flex; }
+  /* the background switch moves into the menu */
+  :root[data-js] .gx-iconbtn.gx-scenebtn { display: none; }
+  :root[data-js] .gx-bar .gx-nav { display: none; }
+  :root[data-js] .gx-bar[data-menu-open] .gx-nav { display: flex; position: absolute; left: 0; right: 0; top: 100%; z-index: 35; flex-direction: column; flex-wrap: nowrap; gap: 2px; max-height: calc(100vh - 80px); overflow-y: auto; padding: 10px 12px 14px; background: var(--card); border-bottom: 1px solid var(--line-strong); box-shadow: 0 28px 40px -24px rgba(8, 9, 14, 0.5); font-size: 16px; }
+  :root[data-js] .gx-bar .gx-nav a { display: flex; align-items: center; min-height: 48px; padding: 0 14px; border-bottom: 0; border-radius: 10px; color: var(--ink); }
+  :root[data-js] .gx-bar .gx-nav a:hover { background: var(--surface-hover); }
+  :root[data-js] .gx-bar .gx-nav a[aria-current='page'] { background: color-mix(in srgb, var(--a1) 12%, transparent); box-shadow: inset 3px 0 0 var(--a1); font-weight: 700; }
+  :root[data-js] .gx-bar .gx-menu-extras { display: block; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes gx-menu-in { from { opacity: 0; transform: translateY(-6px); } }
+  :root[data-js] .gx-bar[data-menu-open] .gx-nav { animation: gx-menu-in 0.16s ease-out; }
+}
+@media (prefers-reduced-motion: reduce) { .gx-burger-bars i { transition: none; } }
+
+/* phones: the logo and the buttons get a little smaller so they always fit on one row. The buttons get an explicit
+   width and no side padding: the base style gives them min-width 44px, 12px padding and, for the theme button, width 44px. */
+@media (max-width: 480px) {
+  .gx-bar .gx-wrap { gap: 8px; min-height: 68px; }
+  .gx-bar .gx-actions { gap: 6px; }
+  .gx-bar .gx-iconbtn { width: 40px; min-width: 40px; height: 40px; padding: 0; }
+  .gx-logo { gap: 9px; }
+  .gx-logo svg { width: 38px; height: auto; }
+  .gx-logo-name { font-size: 11px; }
+  .gx-logo-tag { font-size: 7px; }
+}
+@media (max-width: 380px) {
+  .gx-logo-name { font-size: 10px; }
+}
+@media (max-width: 350px) {
+  .gx-bar .gx-actions { gap: 4px; }
+  .gx-bar .gx-iconbtn { width: 36px; min-width: 36px; height: 36px; }
+  .gx-logo { gap: 8px; }
+  .gx-logo svg { width: 32px; }
+  .gx-logo-name { font-size: 9px; }
+  .gx-logo-tag { display: none; }
+}
+@media print { .gx-burger, .gx-menu-extras { display: none; } }

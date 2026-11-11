@@ -1,35 +1,33 @@
-/* Background scenes (src/components/Scenes.astro). One scene is shown at a time: the header switch sets
-   data-scene on <html> to "sky" (a pixel sky), "maze" (a pellet maze) or "plain" (no scene).
-   Everything is original pixel artwork made of SVG rectangles; the repeating tiles below are small inline
-   SVG masks, so the page loads no image files for its background. Animations only move or clip elements
-   (transform / clip-path / opacity) and are all switched off for visitors who prefer reduced motion. */
+/* Background scenes (src/components/Scenes.astro). The page decides which scene it gets (src/data/scenes.mjs sets
+   data-page-scene on <html>): the sky for the home page and the information pages, the maze for everything else, and
+   only that scene is rendered. A visitor can switch the background off with the header button, which sets
+   data-scene="plain" on <html> (and nothing else changes, so there is no way to land on the "wrong" scene).
+   Everything is original pixel artwork made of SVG rectangles; the repeating tiles below are small inline SVG masks,
+   so the page loads no image files for its background. Animations only move or clip elements (transform / clip-path /
+   opacity) and are all switched off for visitors who prefer reduced motion. */
 
 .gx-bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; contain: layout paint; }
-.gx-scene { position: absolute; inset: 0; display: none; }
-:root[data-scene='sky'] .gx-skyscene,
-:root:not([data-scene]) .gx-skyscene,
-:root[data-scene='maze'] .gx-mazescene { display: block; }
+.gx-scene { position: absolute; inset: 0; }
+:root[data-scene='plain'] .gx-bg { display: none; }
 
-/* colours: light by default, dark when the theme is dark (explicitly, or by the system when not chosen) */
+/* colours: light by default, dark when the device is set to dark */
 .gx-scene {
   --sky-top: #b9dfff; --sky-mid: rgba(224, 242, 255, 0.55); --cloud: rgba(255, 255, 255, 0.96);
   --hill: rgba(74, 196, 110, 0.4); --brick: rgba(217, 119, 6, 0.32);
   --sun-on: 1; --moon-on: 0; --stars-on: 0; --sun: #f59e0b; --moon: #e5e7ff;
-  --maze: rgba(37, 99, 235, 0.3); --dot: #c99a1d; --chomp: #e0a800;
-  --fright: #3b6df0;
-}
-:root[data-theme='dark'] .gx-scene {
-  --sky-top: #070b2a; --sky-mid: rgba(25, 30, 76, 0.55); --cloud: rgba(180, 190, 255, 0.16);
-  --hill: rgba(20, 83, 45, 0.62); --brick: rgba(124, 45, 18, 0.5);
-  --sun-on: 0; --moon-on: 1; --stars-on: 1;
-  --maze: rgba(96, 165, 250, 0.42); --dot: #f5d77a; --chomp: #facc15; --fright: #5b8cff;
+  --maze: rgba(37, 99, 235, 0.3); --dot: #c99a1d;
+  /* the chomper is always bright yellow; on the pale page it gets a thin dark outline so it stays easy to see */
+  --chomp: #ffd500;
+  --chomp-edge: drop-shadow(1px 0 0 #6b5000) drop-shadow(-1px 0 0 #6b5000) drop-shadow(0 1px 0 #6b5000) drop-shadow(0 -1px 0 #6b5000);
+  /* the ghosts, one colour each */
+  --g-pink: #ff5fa2; --g-aqua: #22d3ee; --g-orange: #ff9a3c; --g-violet: #a78bfa;
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) .gx-scene {
+  .gx-scene {
     --sky-top: #070b2a; --sky-mid: rgba(25, 30, 76, 0.55); --cloud: rgba(180, 190, 255, 0.16);
     --hill: rgba(20, 83, 45, 0.62); --brick: rgba(124, 45, 18, 0.5);
     --sun-on: 0; --moon-on: 1; --stars-on: 1;
-    --maze: rgba(96, 165, 250, 0.42); --dot: #f5d77a; --chomp: #facc15; --fright: #5b8cff;
+    --maze: rgba(96, 165, 250, 0.42); --dot: #f5d77a; --chomp: #ffd500; --chomp-edge: none;
   }
 }
 
@@ -75,23 +73,23 @@
 .gx-runner { position: absolute; left: 0; top: 0; width: 28px; height: 28px; will-change: transform; animation: gx-run var(--t) linear infinite; }
 .gx-rev .gx-chomper-run { animation-name: gx-run-rev; }
 .gx-rev .gx-chomper, .gx-rev .gx-ghost { transform: scaleX(-1); }
-.gx-chomper { display: block; width: 28px; height: 28px; color: var(--chomp); }
+.gx-chomper { display: block; width: 28px; height: 28px; color: var(--chomp); filter: var(--chomp-edge); }
 .gx-jaw-top, .gx-jaw-bottom { transform-box: view-box; transform-origin: 14px 14px; }
 .gx-jaw-top { animation: gx-jaw-top 0.44s ease-in-out infinite; }
 .gx-jaw-bottom { animation: gx-jaw-bottom 0.44s ease-in-out infinite; }
 .gx-ghost-run { width: 26px; height: 24px; }
 .gx-ghost { display: block; width: 26px; height: 24px; }
 .gx-ghost-run { animation: none; }
-.gx-ghost { color: var(--fright); }
-/* The ghosts run AHEAD of the chomper, slower than it, and are caught. A class gx-fNN is a ghost the chomper
+.gx-ghost { color: var(--ghost, var(--g-pink)); }
+/* The ghosts are colourful, run AHEAD of the chomper, slower than it, and are caught. A class gx-fNN is a ghost the chomper
    catches NN% of the way along the lane: it starts --x0 ahead and flees to --end (a little ahead of the
    chomper's front, 15px, so it vanishes as the mouth reaches it). All on the same clock (--t) as the chomper. */
-.gx-f48 { --x0: 18vw; --end: calc(124vw * 0.48 + 15px); animation: gx-flee-48 var(--t) linear infinite; }
-.gx-f56 { --x0: 22vw; --end: calc(124vw * 0.56 + 15px); animation: gx-flee-56 var(--t) linear infinite; }
-.gx-f78 { --x0: 40vw; --end: calc(124vw * 0.78 + 15px); animation: gx-flee-78 var(--t) linear infinite; }
-.gx-f84 { --x0: 34vw; --end: calc(124vw * 0.84 + 15px); animation: gx-flee-84 var(--t) linear infinite; }
+.gx-f48 { --ghost: var(--g-violet); --x0: 18vw; --end: calc(124vw * 0.48 + 15px); animation: gx-flee-48 var(--t) linear infinite; }
+.gx-f56 { --ghost: var(--g-pink); --x0: 22vw; --end: calc(124vw * 0.56 + 15px); animation: gx-flee-56 var(--t) linear infinite; }
+.gx-f78 { --ghost: var(--g-aqua); --x0: 40vw; --end: calc(124vw * 0.78 + 15px); animation: gx-flee-78 var(--t) linear infinite; }
+.gx-f84 { --ghost: var(--g-aqua); --x0: 34vw; --end: calc(124vw * 0.84 + 15px); animation: gx-flee-84 var(--t) linear infinite; }
 /* running the other way: it starts 26vw from the right end of the lane and is caught 13px ahead of the chomper's front */
-.gx-rev .gx-f66 { --x0: calc(124vw - 26vw); --end: calc(124vw * 0.34 - 13px); animation: gx-flee-66 var(--t) linear infinite; }
+.gx-rev .gx-f66 { --ghost: var(--g-orange); --x0: calc(124vw - 26vw); --end: calc(124vw * 0.34 - 13px); animation: gx-flee-66 var(--t) linear infinite; }
 .gx-feet-a { animation: gx-feet-a 0.5s steps(1) infinite; }
 .gx-feet-b { animation: gx-feet-b 0.5s steps(1) infinite; }
 

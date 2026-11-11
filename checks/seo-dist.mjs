@@ -1,6 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { sceneProblems } from './scenes-dist.mjs';
 
 const distDir = fileURLToPath(new URL('../dist', import.meta.url));
 
@@ -33,6 +34,8 @@ for (const file of files) {
   if (canonicalCount !== 1)
     errors.push(`${rel}: expected exactly 1 canonical tag, found ${canonicalCount}`);
 
+  errors.push(...sceneProblems(rel, html));
+
   const jsonLdBlocks = [
     ...html.matchAll(
       /<script\b[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/g,
@@ -53,4 +56,4 @@ if (errors.length > 0) {
   console.error(`seo-dist: ${errors.length} problem(s) in ${files.length} page(s)`);
   process.exit(1);
 }
-console.log(`seo-dist: ${files.length} page(s) OK — 1 H1, 1 canonical, parseable JSON-LD`);
+console.log(`seo-dist: ${files.length} page(s) OK — 1 H1, 1 canonical, parseable JSON-LD, the right background scene`);
