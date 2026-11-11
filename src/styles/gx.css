@@ -23,8 +23,23 @@ body { font-family: var(--font-sans); }
 .gx-blink { animation: gx-blink 1s steps(1) infinite; }
 .gx-footer { position: relative; border-top: 1px solid var(--line); background: var(--bar); backdrop-filter: blur(12px); }
 
-/* when the device switches between light and dark, the colours fade */
+/* theme toggle: moon in light mode, sun in dark mode; they spin and swap */
+.gx-theme { position: relative; width: 44px; padding: 0; }
+.gx-theme svg { position: absolute; transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease; }
+.gx-theme:hover svg { color: var(--gold); }
+.gx-moon { opacity: 1; transform: rotate(0) scale(1); }
+.gx-sun { opacity: 0; transform: rotate(-120deg) scale(0.4); }
+:root[data-theme='dark'] .gx-moon { opacity: 0; transform: rotate(120deg) scale(0.4); }
+:root[data-theme='dark'] .gx-sun { opacity: 1; transform: rotate(0) scale(1); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .gx-moon { opacity: 0; transform: rotate(120deg) scale(0.4); }
+  :root:not([data-theme='light']) .gx-sun { opacity: 1; transform: rotate(0) scale(1); }
+}
+/* page switch: the circular wipe is drawn by the script; without it, colors fade */
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+/* colours fade when the theme changes */
 body { transition: background-color 0.35s ease, color 0.35s ease; }
+.gx-switching body { transition: none; }
 
 /* pictures: a thumbnail on a card, a wide banner on the top story */
 .gx-thumb { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); }
@@ -62,5 +77,21 @@ body { transition: background-color 0.35s ease, color 0.35s ease; }
 @media (prefers-reduced-motion: reduce) {
   .gx-grad, .gx-gradbar, .gx-px, .gx-blink, .gx-lined { animation: none; }
   .gx-lined:hover, .gx-lined:focus-visible { transform: none; }
-  body { transition: none; }
+  .gx-theme svg, body { transition: none; }
 }
+
+/* Article pages only (BaseLayout's reading prop): the text sits on a solid panel, so the moving background never runs
+   behind it. The sides and top of the page still show the animation. Home, category and other pages are unchanged. */
+main.gx-reading {
+  position: relative;
+  z-index: 1;
+  width: min(1040px, calc(100% - 24px));
+  margin: 20px auto;
+  padding: 24px clamp(16px, 3vw, 36px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 24px 60px -30px rgba(8, 9, 14, 0.35);
+}
+@media (max-width: 480px) { main.gx-reading { margin: 12px auto; } }
+@media print { main.gx-reading { border: 0; box-shadow: none; } }

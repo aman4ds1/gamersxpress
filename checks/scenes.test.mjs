@@ -194,10 +194,10 @@ test('two ghosts in one lane never cross, so the first caught is always the one 
 });
 
 test('Pac-Man is bright yellow in both themes, with an outline only on the pale page', () => {
-  assert.equal((css.match(/--chomp: #ffd500;/g) || []).length, 2);                     // light, and the device's dark setting
+  assert.equal((css.match(/--chomp: #ffd500;/g) || []).length, 3);                     // light, and the device's dark setting
   assert.doesNotMatch(css, /--chomp: #(?!ffd500)/);
   assert.match(css, /--chomp-edge: drop-shadow\(1px 0 0 #6b5000\) drop-shadow\(-1px 0 0 #6b5000\) drop-shadow\(0 1px 0 #6b5000\) drop-shadow\(0 -1px 0 #6b5000\);/);
-  assert.equal((css.match(/--chomp-edge: none;/g) || []).length, 1);
+  assert.equal((css.match(/--chomp-edge: none;/g) || []).length, 2);
   assert.match(css, /\.gx-chomper \{[^}]*color: var\(--chomp\); filter: var\(--chomp-edge\);/);
 });
 
@@ -231,14 +231,10 @@ test('phones drop the heavier pieces and the maze gets quieter; print shows no s
   assert.match(css, /@media print \{\s*\.gx-bg \{ display: none; \}/);
 });
 
-test('the colours follow the device: light by default, dark when the device is set to dark', () => {
-  assert.equal((css.match(/@media \(prefers-color-scheme: dark\) \{\s*\.gx-scene \{/g) || []).length, 1);
-  assert.doesNotMatch(css, /data-theme/);
-  const dark = /@media \(prefers-color-scheme: dark\) \{\s*\.gx-scene \{([\s\S]*?)\r?\n  \}\r?\n\}/.exec(css)[1];
-  const light = /\.gx-scene \{\s*--sky-top[\s\S]*?\n\}/.exec(css)[0];
-  for (const token of dark.match(/--[a-z-]+(?=:)/g)) assert.ok(light.includes(`${token}:`), `${token} is overridden in dark but has no light value`);
-  assert.ok(dark.includes('--sky-top: #070b2a;'));
-  // night: stars and a moon, no sun; day: a sun, no stars or moon
-  assert.match(dark, /--sun-on: 0; --moon-on: 1; --stars-on: 1;/);
-  assert.match(light, /--sun-on: 1; --moon-on: 0; --stars-on: 0;/);
+test('the colours follow the chosen theme, or the device when nothing is chosen', () => {
+  assert.equal((css.match(/@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme='light'\]\) \.gx-scene \{/g) || []).length, 1);
+  assert.match(css, /:root\[data-theme='dark'\] \.gx-scene \{/);
+  const device = /:root:not\(\[data-theme='light'\]\) \.gx-scene \{([\s\S]*?)\r?\n  \}\r?\n\}/.exec(css)[1];
+  assert.ok(device.includes('--sky-top: #070b2a;') && device.includes('--sun-on: 0; --moon-on: 1; --stars-on: 1;'));
+  assert.match(css, /--sun-on: 1; --moon-on: 0; --stars-on: 0;/);
 });

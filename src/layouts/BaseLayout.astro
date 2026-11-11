@@ -18,6 +18,8 @@ interface Props {
   datePublished?: Date;
   dateModified?: Date;
   breadcrumbs?: { name: string; path: string }[];
+  /** Article pages only: the text sits on a solid panel so the background never runs behind it. */
+  reading?: boolean;
 }
 
 const {
@@ -29,6 +31,7 @@ const {
   datePublished,
   dateModified,
   breadcrumbs,
+  reading = false,
 } = Astro.props;
 const scene = sceneForPath(Astro.url.pathname);
 ---
@@ -71,9 +74,9 @@ const scene = sceneForPath(Astro.url.pathname);
       // Lets the styles tell "JavaScript is on" (the menu collapses into a burger) from "off" (every link stays visible).
       document.documentElement.setAttribute('data-js', '');
       try {
-        // The site follows the device's light/dark setting. A theme saved by the old toggle is forgotten, so nobody
-        // stays stuck on a choice they can no longer change.
-        localStorage.removeItem('gx-theme');
+        // A light or dark choice saved by the switch is applied before the first paint; with no choice, the device decides.
+        const theme = localStorage.getItem('gx-theme');
+        if (theme === 'dark' || theme === 'light') document.documentElement.dataset.theme = theme;
         // The page decides which scene it gets; a visitor can only switch the background off (saved as 'plain').
         const page = document.documentElement.dataset.pageScene;
         document.documentElement.dataset.scene = localStorage.getItem('gx-scene') === 'plain' ? 'plain' : page;
@@ -108,7 +111,7 @@ const scene = sceneForPath(Astro.url.pathname);
   >
     <Scenes scene={scene} />
     <Header />
-    <main class="flex-1" data-pagefind-body>
+    <main class:list={["flex-1", { "gx-reading": reading }]} data-pagefind-body>
       <slot />
     </main>
     <Footer />

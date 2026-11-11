@@ -10,7 +10,7 @@
 .gx-scene { position: absolute; inset: 0; }
 :root[data-scene='plain'] .gx-bg { display: none; }
 
-/* colours: light by default, dark when the device is set to dark */
+/* colours: light by default; dark when the visitor chooses dark, or when no choice is saved and the device is dark */
 .gx-scene {
   --sky-top: #b9dfff; --sky-mid: rgba(224, 242, 255, 0.55); --cloud: rgba(255, 255, 255, 0.96);
   --hill: rgba(74, 196, 110, 0.4); --brick: rgba(217, 119, 6, 0.32);
@@ -22,8 +22,14 @@
   /* the ghosts, one colour each */
   --g-pink: #ff5fa2; --g-aqua: #22d3ee; --g-orange: #ff9a3c; --g-violet: #a78bfa;
 }
+:root[data-theme='dark'] .gx-scene {
+    --sky-top: #070b2a; --sky-mid: rgba(25, 30, 76, 0.55); --cloud: rgba(180, 190, 255, 0.16);
+    --hill: rgba(20, 83, 45, 0.62); --brick: rgba(124, 45, 18, 0.5);
+    --sun-on: 0; --moon-on: 1; --stars-on: 1;
+    --maze: rgba(96, 165, 250, 0.42); --dot: #f5d77a; --chomp: #ffd500; --chomp-edge: none;
+}
 @media (prefers-color-scheme: dark) {
-  .gx-scene {
+  :root:not([data-theme='light']) .gx-scene {
     --sky-top: #070b2a; --sky-mid: rgba(25, 30, 76, 0.55); --cloud: rgba(180, 190, 255, 0.16);
     --hill: rgba(20, 83, 45, 0.62); --brick: rgba(124, 45, 18, 0.5);
     --sun-on: 0; --moon-on: 1; --stars-on: 1;

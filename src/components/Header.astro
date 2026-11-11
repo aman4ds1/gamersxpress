@@ -55,6 +55,10 @@ const path = Astro.url.pathname.replace(/\/+$/, '') || '/';
         <svg class="ic-maze" width="18" height="18" viewBox="0 0 28 28" fill="currentColor" aria-hidden="true"><path d="M14 14L28 8A14 14 0 1 0 28 20Z" /></svg>
         <svg class="ic-plain" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
       </button>
+      <button type="button" class="gx-iconbtn gx-theme" id="theme-toggle" aria-label="Switch theme">
+        <svg class="gx-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path></svg>
+        <svg class="gx-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+      </button>
       <button type="button" class="gx-iconbtn gx-burger" id="menu-toggle" aria-label="Menu" aria-expanded="false" aria-controls="gx-menu">
         <span class="gx-burger-bars" aria-hidden="true"><i></i><i></i><i></i></span>
       </button>
@@ -65,6 +69,43 @@ const path = Astro.url.pathname.replace(/\/+$/, '') || '/';
 <SearchPopup />
 
 <script>
+  const button = document.getElementById('theme-toggle');
+  const media = window.matchMedia('(prefers-color-scheme: dark)');
+  const calm = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const current = () => document.documentElement.dataset.theme ?? (media.matches ? 'dark' : 'light');
+  const label = () => button?.setAttribute('aria-label', `Switch to ${current() === 'dark' ? 'light' : 'dark'} mode`);
+  const apply = (next: string) => {
+    document.documentElement.dataset.theme = next;
+    try {
+      localStorage.setItem('gx-theme', next);
+    } catch (e) {}
+    label();
+  };
+  button?.addEventListener('click', () => {
+    const next = current() === 'dark' ? 'light' : 'dark';
+    if (!document.startViewTransition || calm.matches) {
+      apply(next);
+      return;
+    }
+    // A circle of the new theme grows out of the button until it covers the page.
+    const box = button.getBoundingClientRect();
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const end = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+    // The color fade would run inside the wipe and blur it, so it is off while the wipe plays.
+    document.documentElement.classList.add('gx-switching');
+    const transition = document.startViewTransition(() => apply(next));
+    transition.finished.finally(() => document.documentElement.classList.remove('gx-switching'));
+    transition.ready.then(() => {
+      document.documentElement.animate(
+        { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${end}px at ${x}px ${y}px)`] },
+        { duration: 600, easing: 'cubic-bezier(.4, 0, .2, 1)', pseudoElement: '::view-transition-new(root)' },
+      );
+    });
+  });
+  media.addEventListener('change', label);
+  label();
+
   // The background switch: the page decides which scene it gets (sky or maze); this only turns it off and on again.
   // "Off" is remembered; "on" simply forgets it, so a page always starts with its own scene.
   const sceneButtons = document.querySelectorAll<HTMLElement>('[data-scene-toggle]');

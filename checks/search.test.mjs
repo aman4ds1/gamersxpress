@@ -36,7 +36,7 @@ test('the popup is rendered after the header, outside it and outside the indexed
   // inside the header it would be positioned against the header's backdrop-filter instead of the screen
   assert.ok(header.indexOf('<SearchPopup />') > header.indexOf('</header>'));
   assert.ok(layout.indexOf('<Header />') < layout.indexOf('<main'));
-  assert.match(layout, /<main class="flex-1" data-pagefind-body>/);
+  assert.match(layout, /<main class:list=\{\["flex-1", \{ "gx-reading": reading \}\]\} data-pagefind-body>/);
   assert.match(header, /import SearchPopup from '\.\/SearchPopup\.astro';/);
 });
 
