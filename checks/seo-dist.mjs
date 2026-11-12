@@ -39,8 +39,11 @@ for (const file of files) {
   if (consentDefaults !== 1) errors.push(`${rel}: expected exactly 1 consent default, found ${consentDefaults}`);
   const bannerCount = (html.match(/id="gx-consent"/g) ?? []).length;
   if (bannerCount !== 1) errors.push(`${rel}: expected exactly 1 cookie banner, found ${bannerCount}`);
-  const tagCount = (html.match(/googletagmanager\.com\/gtm\.js\?id=GTM-K377WGXG/g) ?? []).length;
-  if (tagCount !== 1) errors.push(`${rel}: expected exactly 1 Google Tag Manager snippet, found ${tagCount}`);
+  const tagCount = (html.match(/googletagmanager\.com\/gtag\/js\?id=G-NC7DCQ7KT1/g) ?? []).length;
+  if (tagCount !== 1) errors.push(`${rel}: expected exactly 1 Google Analytics script, found ${tagCount}`);
+  const configCount = (html.match(/gtag\('config', 'G-NC7DCQ7KT1'\)/g) ?? []).length;
+  if (configCount !== 1) errors.push(`${rel}: expected exactly 1 Google Analytics config call, found ${configCount}`);
+  if (/GTM-|gtm\.js/.test(html)) errors.push(`${rel}: the old Tag Manager code is still on the page`);
 
   const jsonLdBlocks = [
     ...html.matchAll(

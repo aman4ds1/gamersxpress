@@ -54,12 +54,12 @@ const scene = sceneForPath(Astro.url.pathname);
         wait_for_update: 500
       });
     </script>
-    <!-- Google Tag Manager (container GTM-K377WGXG). Load once per page, directly after the consent defaults. -->
-    <script async src="https://www.googletagmanager.com/gtm.js?id=GTM-K377WGXG"></script>
+    <!-- Google Analytics 4 (measurement ID G-NC7DCQ7KT1), loaded directly. It must stay after the consent defaults above,
+         so that analytics cookies stay off until the visitor accepts. Load it once per page. -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-NC7DCQ7KT1"></script>
     <script is:inline>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
+      gtag('config', 'G-NC7DCQ7KT1');
     </script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width" />

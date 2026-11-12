@@ -16,7 +16,7 @@ const css = read('src/styles/consent.css');
 test('consent defaults to denied before anything loads, and comes directly after <head>', () => {
   const head = layout.indexOf('<head>');
   const defaults = layout.indexOf("gtag('consent', 'default', {");
-  const tag = layout.indexOf('googletagmanager.com/gtm.js?id=GTM-K377WGXG');
+  const tag = layout.indexOf('googletagmanager.com/gtag/js?id=G-NC7DCQ7KT1');
   assert.ok(head > -1 && head < defaults && defaults < tag, 'head, then consent defaults, then the tag');
   const block = layout.slice(defaults, layout.indexOf('});', defaults));
   for (const key of ['ad_storage', 'ad_user_data', 'ad_personalization']) assert.match(block, new RegExp(`${key}: 'denied'`));
@@ -29,9 +29,10 @@ test('a choice saved on the device is applied before the tag loads, and read saf
   assert.doesNotMatch(layout, /'granted'\s*:\s*'denied',\s*ad_/);     // ads are never granted by the saved choice
 });
 
-test('the tag itself is the supplied snippet, unchanged, after the defaults', () => {
-  assert.match(layout, /<script async src="https:\/\/www\.googletagmanager\.com\/gtm\.js\?id=GTM-K377WGXG"><\/script>/);
-  assert.match(layout, /window\.dataLayer = window\.dataLayer \|\| \[\];\s*function gtag\(\)\{dataLayer\.push\(arguments\);\}\s*gtag\('js', new Date\(\)\);/);
+test('the analytics tag comes after the defaults, and its config call comes after them too', () => {
+  assert.match(layout, /<script async src="https:\/\/www\.googletagmanager\.com\/gtag\/js\?id=G-NC7DCQ7KT1"><\/script>/);
+  assert.match(layout, /gtag\('js', new Date\(\)\);\s*gtag\('config', 'G-NC7DCQ7KT1'\);/);
+  assert.ok(layout.indexOf("gtag('consent', 'default'") < layout.indexOf("gtag('config'"), 'the config call must not run before consent is set');
 });
 
 test('the banner is shown on a first visit only, and never pre-selects a choice', () => {
@@ -78,7 +79,7 @@ test('the privacy page describes the choice accurately', () => {
 
 test('the owner\'s exception is recorded next to the rule it overrides, and ad scripts stay forbidden', () => {
   assert.match(agents, /Do not add ad scripts, analytics cookies, or tracking\./);
-  assert.match(agents, /Exception \(owner-approved, 2026-11-11\): Google Tag Manager container GTM-K377WGXG/);
+  assert.match(agents, /Exception \(owner-approved, 2026-11-11; changed from Tag Manager to a direct tag on 2026-11-12\): Google Analytics 4, measurement ID G-NC7DCQ7KT1/);
   assert.match(agents, /Analytics cookies are set only after a visitor accepts the consent banner/);
   assert.match(agents, /Ad scripts remain forbidden/);
 });
