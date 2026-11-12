@@ -208,3 +208,32 @@ Each new article gets a picture, in this order, and the first one that passes it
    and commit the new files.
 
 A picture that fails its check is skipped, never a reason to hold back an article.
+
+## Pictures for articles that were published without one
+
+Articles published before the automatic picture steps have no picture. One command fixes them, using the same
+steps a new article gets (Steam key art, then a Wikimedia Commons photo, then the category picture). Run it
+on a computer with internet access, because Steam and Wikimedia are contacted:
+
+```
+python -m pipeline.backfill                  # look only: shows what each article would get, changes nothing
+python -m pipeline.backfill --apply          # write the pictures and update the articles
+```
+
+Then check and publish the result:
+
+```
+npm run check
+git add src\content\articles public\images
+git commit -m "Add pictures to older articles"
+git push origin main
+```
+
+- An article that already has a picture is never touched.
+- `--upgrade` also looks again at articles that only have the category picture, in case a real photo can now be
+  found. Use it after adding a game or product the lookup could not find before.
+- `--slug <file name without .md>` limits it to one article (repeat it for several).
+- `--verbose` shows every Steam and Commons step, which helps when a picture you expected is not chosen.
+- A preview writes nothing into the site, and running `--apply` twice changes nothing the second time.
+- If Steam or Wikimedia cannot be reached, every article gets its category picture. Run it again with
+  `--apply --upgrade` once you are online.

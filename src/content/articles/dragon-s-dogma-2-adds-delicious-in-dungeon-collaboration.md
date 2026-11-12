@@ -26,6 +26,14 @@ sources:
     url: https://eurogamer.net/dragons-dogma-2-dungeon-meshi-collaboration-out-now
 image: /covers/dragon-s-dogma-2-adds-delicious-in-dungeon-collaboration.webp
 imageAlt: GamersXpress cover image for "Dragon's Dogma 2 adds Delicious in Dungeon collaboration" with the Gaming News label.
+hero:
+  src: /images/dragon-s-dogma-2-adds-delicious-in-dungeon-collaboration.webp
+  alt: Key art for Dragon's Dogma 2 from its Steam store page
+  credit: CAPCOM Co., Ltd.
+  license: Steam store
+  sourceUrl: https://store.steampowered.com/app/2054970/
+  width: 1600
+  height: 517
 ---
 ## What happened
 

@@ -121,3 +121,16 @@ def test_steam_art_is_still_first(monkeypatch, tmp_path):
 
 def test_the_category_picture_is_not_used_in_a_dry_run():
     assert run_module.default_image_fn(True) is run_module._no_image
+
+
+@pytest.mark.parametrize("category, label", sorted((name, look[0]) for name, look in default_images.LOOK.items()))
+def test_the_alt_text_uses_the_category_label_and_never_doubles_a_word(category, label):
+    alt = images.default_hero(category=category, slug="s", public_dir=ROOT / "public")["hero"]["alt"]
+    assert alt == f"GamersXpress illustration for {label} coverage"
+    words = alt.lower().split()
+    assert all(a != b for a, b in zip(words, words[1:])), f"a word is repeated in {alt!r}"
+
+
+def test_the_alt_text_for_an_unknown_category_is_still_readable():
+    alt = images.default_hero(category="made-up", slug="s", public_dir=ROOT / "public")["hero"]["alt"]
+    assert alt == "GamersXpress illustration for Made Up coverage"

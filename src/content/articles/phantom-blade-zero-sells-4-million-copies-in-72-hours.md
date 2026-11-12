@@ -25,6 +25,14 @@ sources:
     url: https://www.kitguru.net/tech-news/mustafa-mahmoud/phantom-blade-zero-officially-sells-4-million-copies-in-3-days/
   - name: TweakTown
     url: https://www.tweaktown.com/news/114451/phantom-blade-zero-sells-4-million-copies-in-just-3-days-following-record-breaking-steam-launch/index.html
+hero:
+  src: /images/phantom-blade-zero-sells-4-million-copies-in-72-hours.webp
+  alt: Key art for Phantom Blade Zero from its Steam store page
+  credit: S-GAME Studio
+  license: Steam store
+  sourceUrl: https://store.steampowered.com/app/4115450/
+  width: 1600
+  height: 900
 ---
 ## What happened
 

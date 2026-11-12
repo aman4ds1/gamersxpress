@@ -23,6 +23,14 @@ sources:
     url: https://pcgamer.com/games/rpg/heres-whats-in-path-of-exile-2s-huge-1-0-release-coming-in-december/
 image: /covers/path-of-exile-2-launches-on-december-11-2026.webp
 imageAlt: GamersXpress cover image for "Path of Exile 2 launches on December 11, 2026" with the Gaming News label.
+hero:
+  src: /images/path-of-exile-2-launches-on-december-11-2026.webp
+  alt: Key art for Path of Exile 2 from its Steam store page
+  credit: Grinding Gear Games
+  license: Steam store
+  sourceUrl: https://store.steampowered.com/app/2694490/
+  width: 1600
+  height: 517
 ---
 ## What happened
 

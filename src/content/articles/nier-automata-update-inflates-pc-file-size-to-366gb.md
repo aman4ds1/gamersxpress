@@ -22,6 +22,14 @@ sources:
     url: https://dexerto.com/gaming/square-enix-responds-after-nier-automata-update-triggers-massive-366gb-storage-requirement-3425350/
 image: /covers/nier-automata-update-inflates-pc-file-size-to-366gb.webp
 imageAlt: 'GamersXpress cover image for "Nier: Automata Update Inflates PC File Size to 366GB" with the PC label.'
+hero:
+  src: /images/nier-automata-update-inflates-pc-file-size-to-366gb.webp
+  alt: Key art for NieR:Automata™ from its Steam store page
+  credit: Square Enix, PlatinumGames Inc.
+  license: Steam store
+  sourceUrl: https://store.steampowered.com/app/524220/
+  width: 1600
+  height: 517
 ---
 ## What happened
 

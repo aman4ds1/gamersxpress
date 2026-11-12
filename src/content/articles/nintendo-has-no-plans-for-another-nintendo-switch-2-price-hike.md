@@ -20,6 +20,13 @@ sources:
     url: https://eurogamer.net/nintendo-switch-2-no-plans-for-more-price-hikes
 image: /covers/nintendo-has-no-plans-for-another-nintendo-switch-2-price-hike.webp
 imageAlt: GamersXpress cover image for "Nintendo has no plans for another Nintendo Switch 2 price hike" with the Gaming News label.
+hero:
+  src: /images/nintendo-has-no-plans-for-another-nintendo-switch-2-price-hike.webp
+  alt: GamersXpress illustration for Gaming News coverage
+  credit: GamersXpress
+  license: Own work
+  width: 1200
+  height: 675
 ---
 ## What happened
 

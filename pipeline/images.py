@@ -29,6 +29,13 @@ from typing import Any
 import yaml
 from PIL import Image, ImageOps
 
+# Support `python -m pipeline.images` (namespace package): make sibling modules importable by their top-level names.
+_PIPELINE_DIR = Path(__file__).resolve().parent
+if str(_PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE_DIR))
+
+from default_images import LOOK as CATEGORY_LOOK
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_DIR = PROJECT_ROOT / "public"
 CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
@@ -357,10 +364,10 @@ def default_hero(*, category: str | None, slug: str, public_dir: str | Path) -> 
             width, height = picture.size
     except (OSError, ValueError):
         return None
-    label = name.replace("-", " ")
+    label = CATEGORY_LOOK[name][0] if name in CATEGORY_LOOK else name.replace("-", " ").title()
     hero: dict[str, Any] = {
         "src": f"/images/{slug}.webp",
-        "alt": f"GamersXpress illustration for {label} news",
+        "alt": f"GamersXpress illustration for {label} coverage",
         "credit": "GamersXpress",
         "license": "Own work",
         "width": width,
