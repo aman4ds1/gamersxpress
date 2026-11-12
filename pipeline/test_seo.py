@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 import seo
+import verify
 from providers import Generation
 
 CATEGORIES_TS = Path(__file__).resolve().parent.parent / "src" / "data" / "categories.ts"
@@ -955,3 +956,74 @@ def test_completing_tags_is_logged(tmp_path, caplog):
         result, _generate = generate_for(tmp_path, seo_data(tags=["gpu"]))
     assert any(message.startswith("seo completed tags: ['gpu'] -> ['gpu', ") and "rtx-5090" in message for message in caplog.messages)
     assert result["tags"][0] == "gpu"
+
+
+# --- code repairs the title before validation, so these never cost a model retry ---------------------------------
+
+def test_a_long_title_with_a_subtitle_keeps_its_main_part():
+    assert seo.fit_title("Nintendo Switch 2 price rises in Europe: what it means for buyers and rivals now", 65) == \
+        "Nintendo Switch 2 price rises in Europe"
+
+
+def test_a_long_title_without_a_subtitle_is_cut_at_a_whole_word():
+    text = "Phantom Blade Zero sells four million copies in the first seventy two hours of release"
+    fitted = seo.fit_title(text, 65)
+    assert len(fitted) <= 65 and text.startswith(fitted)
+    assert text[len(fitted)] == " "                       # the cut falls between words, never inside one
+
+
+def test_a_title_within_the_limit_is_only_tidied():
+    assert seo.fit_title("  Nintendo   Switch 2 price rises  ", 65) == "Nintendo Switch 2 price rises"
+
+
+def test_a_date_the_body_and_sheet_do_not_state_is_removed_from_the_title():
+    article = ARTICLE.replace("Draft description.", "Draft description.") + "\n\nThe update is out now."
+    repaired = seo.repair_title(
+        "Path of Exile 2 launches on December 2 with a new league",
+        article=article, facts=make_facts(), entities=[], config=verify.load_verify_config(),
+    )
+    assert "December 2" not in repaired and repaired.startswith("Path of Exile 2 launches")
+
+
+def test_a_date_the_body_states_is_kept():
+    article = "---\ntitle: x\n---\n\nThe game launches on December 11."
+    repaired = seo.repair_title(
+        "Path of Exile 2 launches December 11",
+        article=article, facts=make_facts("Path of Exile 2 launches December 11.", "December 11"),
+        entities=[], config=verify.load_verify_config(),
+    )
+    assert repaired == "Path of Exile 2 launches December 11"
+
+
+def test_numbers_that_are_not_dates_are_left_for_the_model():
+    repaired = seo.repair_title(
+        "Nintendo Switch 2 price rises", article="---\ntitle: x\n---\n\nThe price rises.",
+        facts=make_facts(), entities=[], config=verify.load_verify_config(),
+    )
+    assert repaired == "Nintendo Switch 2 price rises"
+
+
+def test_generate_seo_shortens_a_long_title_without_a_retry(tmp_path):
+    articles, drafts = tmp_path / "articles", tmp_path / "drafts"
+    articles.mkdir()
+    drafts.mkdir()
+    too_long = seo_data(title="NVIDIA launches GeForce RTX 5090 at $1,999 with more memory for high-end gaming PCs and creators")
+    generate = make_generate([too_long, seo_data()])
+    result = seo.generate_seo(
+        ARTICLE, make_facts(), generate=generate, entities_path=tmp_path / "entities.json",
+        articles_dir=articles, drafts_dir=drafts,
+    )
+    assert len(result["title"]) <= 65 and len(generate.calls) == 1
+
+
+def test_generate_seo_removes_an_unsupported_date_without_a_retry(tmp_path):
+    articles, drafts = tmp_path / "articles", tmp_path / "drafts"
+    articles.mkdir()
+    drafts.mkdir()
+    dated = seo_data(title="NVIDIA launches GeForce RTX 5090 at $1,999 on December 2")
+    generate = make_generate([dated, seo_data()])
+    result = seo.generate_seo(
+        ARTICLE, make_facts(), generate=generate, entities_path=tmp_path / "entities.json",
+        articles_dir=articles, drafts_dir=drafts,
+    )
+    assert "December" not in result["title"] and len(generate.calls) == 1

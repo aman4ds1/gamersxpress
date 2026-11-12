@@ -577,6 +577,65 @@ def _mask_entities(text: str, entities: list[dict]) -> str:
     return text
 
 
+#: Subtitle breaks: a title cut at one of these keeps its main part, which is a whole title on its own.
+_TITLE_SUBTITLES = (": ", " - ", " \u2014 ", " \u2013 ", " | ")
+#: The shortest main part a title may keep when a subtitle is dropped.
+MIN_TITLE_KEEP = 20
+
+
+def fit_title(title: object, limit: int) -> str:
+    """Shorten an over-long title in code, never mid-word: drop the subtitle when the main part is still a title,
+    otherwise keep the whole words that fit. A title within the limit is returned unchanged (only spaces tidied)."""
+    text = " ".join(str(title or "").split())
+    if len(text) <= limit:
+        return text
+    for separator in _TITLE_SUBTITLES:
+        head = text.split(separator, 1)[0].rstrip(" ,:;-\u2013\u2014|")
+        if MIN_TITLE_KEEP <= len(head) <= limit:
+            return head
+    kept = ""
+    for word in text.split(" "):
+        candidate = f"{kept} {word}".strip()
+        if len(candidate) > limit:
+            break
+        kept = candidate
+    return kept.rstrip(" ,:;-\u2013\u2014|") or text[:limit].rstrip()
+
+
+_DANGLING_WORDS_RE = re.compile(r"\s+(?:on|in|by|from|until|for|at|of|the|a|an|this|next)$", re.IGNORECASE)
+
+
+def _without_value(text: str, raw: str) -> str:
+    cut = re.sub(re.escape(raw), " ", text, count=1, flags=re.IGNORECASE)
+    cut = " ".join(cut.split()).strip(" ,:;-\u2013\u2014|")
+    while _DANGLING_WORDS_RE.search(cut):
+        cut = _DANGLING_WORDS_RE.sub("", cut)
+    return cut
+
+
+def repair_title(title: object, *, article: Any, facts: dict, entities: list[dict], config: dict) -> str:
+    """The title, repaired in code before validation so a fixable slip costs no model retry.
+
+    A date the title gives that the article body or the facts sheet does not state is removed (the sheet's
+    value stays the authority). Dates are the only values removed: a model number such as the "2" in a title
+    may be part of the product name, so it is left for the model to fix. Then the title is fitted to its limit.
+    """
+    if not isinstance(title, str) or not title.strip():
+        return title if isinstance(title, str) else ""
+    limit = content_limits()["max_title"]
+    text = " ".join(title.split())
+    body_tokens = {value["token"] for value in _values_in(_front_matter_body(article), config, entities)}
+    facts_tokens = {value["token"] for value in _values_in(_facts_text(facts), config, entities)}
+    for value in _values_in(text, config, entities):
+        if not value["token"].startswith("D:"):
+            continue
+        if value["token"] not in body_tokens or value["token"] not in facts_tokens:
+            cut = _without_value(text, value["raw"])
+            if cut:
+                text = cut
+    return fit_title(text, limit)
+
+
 def _values_in(text: str, config: dict, entities: list[dict]) -> list[dict]:
     return verify.extract_values(_mask_entities(text, entities), config)
 
@@ -809,6 +868,12 @@ def generate_seo(
                 if normalized != data[field]:
                     logger.info("seo normalized %s entity names: %r -> %r", field, data[field], normalized)
                 data[field] = normalized
+
+        # Repair the title in code (too long, or a date the body does not state) before the slug and validation.
+        repaired = repair_title(data.get("title"), article=article, facts=sheet, entities=entities, config=config)
+        if repaired != data.get("title"):
+            logger.info("seo repaired title: %r -> %r", data.get("title"), repaired)
+            data["title"] = repaired
 
         # Build the slug in code from the final title, cut to length and made
         # unique here so a long title or a collision never costs a model retry.
