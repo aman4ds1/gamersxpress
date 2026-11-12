@@ -1240,15 +1240,6 @@ sources:
     region: global
     categories: [hardware, pc, tech]
     # UNVERIFIED: test from Actions
-  - name: Intel Newsroom
-    site: https://newsroom.intel.com
-    feed_url: https://newsroom.intel.com/feed/
-    topic: mixed
-    tier: 1
-    owner: intel
-    region: global
-    categories: [hardware, pc, tech]
-    fetch: false
     # UNVERIFIED: test from Actions
 
   # Tier 2: reputable outlets
@@ -1302,14 +1293,6 @@ sources:
     region: uk
     categories: [pc, gaming-news]
     # verify owner
-  - name: VG247
-    site: https://www.vg247.com
-    feed_url: https://www.vg247.com/feed
-    topic: gaming
-    tier: 2
-    owner: ign-entertainment
-    region: uk
-    categories: [gaming-news]
     # verify owner
   - name: Push Square
     site: https://www.pushsquare.com
@@ -1331,15 +1314,6 @@ sources:
     categories: [gaming-news]
     fetch: false
     # verify owner
-  - name: Dot Esports
-    site: https://dotesports.com
-    feed_url: https://dotesports.com/feed
-    topic: gaming
-    tier: 2
-    owner: dot-esports
-    region: us
-    categories: [esports]
-    fetch: false
     # verify owner
   - name: Esports News UK
     site: https://esports-news.co.uk
@@ -1464,6 +1438,39 @@ sources:
 # Real images (pipeline/images.py). An article may carry a `hero` picture with a credit; it is
 # resized to our own WebP file and must come from one of these license kinds. A picture from
 # another outlet is never allowed. `min_width` keeps it sharp; `max_bytes` keeps pages fast.
+  # Disabled November 2026. None of these has supplied a single story: the pipeline's saved pool of 2,605
+  # stories (23 sources) holds none from them. They are kept here, commented out, with the reason, so one can be
+  # put back by removing the leading `# ` once a working feed address is found. Dot Esports is the one most
+  # worth replacing (an esports outlet); Intel Newsroom is a tier-1 official source.
+  # Intel Newsroom: answers HTTP 200 with a web page, not a feed (blocked), in all 8 GitHub runs and when tested by hand.
+  # - name: Intel Newsroom
+  #   site: https://newsroom.intel.com
+  #   feed_url: https://newsroom.intel.com/feed/
+  #   topic: mixed
+  #   tier: 1
+  #   owner: intel
+  #   region: global
+  #   categories: [hardware, pc, tech]
+  #   fetch: false
+  # Dot Esports: HTTP 403 in 5 of 8 GitHub runs, a blocked page in 2 and 'not modified' once; 403 when tested by hand.
+  # - name: Dot Esports
+  #   site: https://dotesports.com
+  #   feed_url: https://dotesports.com/feed
+  #   topic: gaming
+  #   tier: 2
+  #   owner: dot-esports
+  #   region: us
+  #   categories: [esports]
+  #   fetch: false
+  # VG247: its feed is stale: the newest story is from 2 June 2026 (tested by hand on 12 November); it also shares the owner of Eurogamer and Rock Paper Shotgun, so it never added an independent voice.
+  # - name: VG247
+  #   site: https://www.vg247.com
+  #   feed_url: https://www.vg247.com/feed
+  #   topic: gaming
+  #   tier: 2
+  #   owner: ign-entertainment
+  #   region: uk
+  #   categories: [gaming-news]
 images:
   allowed_licenses:
     - Public domain

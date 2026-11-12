@@ -191,7 +191,7 @@ def test_shipped_sources_never_give_one_site_two_owners():
 # outlet's reporting, so every group below must share a single `owner`.
 KNOWN_OWNERS = {
     "future": ["PC Gamer", "Tom's Hardware"],
-    "ign-entertainment": ["Eurogamer", "Rock Paper Shotgun", "VG247"],
+    "ign-entertainment": ["Eurogamer", "Rock Paper Shotgun"],
     "keleops": ["Kotaku"],
     "valnet": ["Polygon"],
     "1981-media": ["VGC"],
@@ -876,9 +876,9 @@ def test_the_november_esports_sources_are_present_and_set_up_as_tier_two_gaming_
 def test_the_esports_sources_are_all_different_voices():
     esports = [s for s in ingest.load_sources() if "esports" in s["categories"]]
     owners = [s["owner"] for s in esports]
-    assert len(esports) >= 7
+    assert len(esports) >= 6
     assert len(owners) == len(set(owners)), "two esports outlets must not share an owner unless they share a parent"
-    assert {"talkesport", "vlr-gg", "efuse", "dot-esports", "esports-news-uk", "the-bridge", "outlook-india"} <= set(owners)
+    assert {"talkesport", "vlr-gg", "efuse", "esports-news-uk", "the-bridge", "outlook-india"} <= set(owners)
 
 
 def test_india_has_more_than_one_outlet_so_an_indian_story_can_be_confirmed():
@@ -935,3 +935,51 @@ def test_a_link_on_a_new_esports_site_is_recognised_as_that_outlet_even_in_a_poo
     ingest.reattribute_item(item, by_domain=ingest._source_index(sources)[0], by_name=ingest._source_index(sources)[1])
     expected = next(s for s in sources if s["name"] == name)
     assert item["source_name"] == name and item["owner"] == expected["owner"]
+
+
+# --- feeds that were switched off because they never delivered ---------------------------------------------------------
+
+_DISABLED = {"Intel Newsroom": "intel", "Dot Esports": "dot-esports", "VG247": "ign-entertainment"}
+
+
+def _disabled_block() -> str:
+    text = (_Path(__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8")
+    start = text.index("# Disabled November 2026.")
+    return text[start: text.index("\nimages:", start)]
+
+
+def test_the_three_dead_feeds_are_no_longer_fetched():
+    active = {s["name"] for s in ingest.load_sources()}
+    assert not (set(_DISABLED) & active)
+    feeds = {ingest.normalize_url(s["feed_url"]) for s in ingest.load_sources()}
+    for url in ("https://newsroom.intel.com/feed/", "https://dotesports.com/feed", "https://www.vg247.com/feed"):
+        assert ingest.normalize_url(url) not in feeds
+
+
+def test_the_disabled_block_says_why_for_each_feed_and_keeps_its_evidence():
+    block = _disabled_block()
+    assert "None of these has supplied a single story" in block and "2,605" in block
+    assert "Intel Newsroom: answers HTTP 200 with a web page, not a feed (blocked)" in block
+    assert "Dot Esports: HTTP 403 in 5 of 8 GitHub runs" in block
+    assert "VG247: its feed is stale: the newest story is from 2 June 2026" in block
+    assert "shares the owner of Eurogamer and Rock Paper Shotgun" in block
+
+
+def test_removing_the_leading_hash_puts_each_disabled_feed_back_as_a_valid_source(tmp_path):
+    import yaml
+
+    entry_lines = [line for line in _disabled_block().split("\n") if _re.match(r"  # (- name:|  +[a-z_]+:)", line)]
+    restored = yaml.safe_load("sources:\n" + "\n".join(line.replace("# ", "", 1) for line in entry_lines))["sources"]
+    assert {e["name"]: e["owner"] for e in restored} == _DISABLED
+    original = (_Path(__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8")
+    start = original.index("\nsources:\n") + 1      # not the "sources:" inside min_first_party_sources:
+    path = tmp_path / "config.yaml"
+    path.write_text(original[start: original.index("\n  # Disabled November 2026.")] + "\n" + "\n".join(line.replace("# ", "", 1) for line in entry_lines) + "\n", encoding="utf-8")
+    back = {s["name"] for s in ingest.load_sources(path)}
+    assert set(_DISABLED) <= back, "the loader accepts the restored entries"
+
+
+def test_nothing_that_is_left_depends_on_the_disabled_feeds():
+    owners = {s["owner"] for s in ingest.load_sources()}
+    assert "dot-esports" not in owners and "intel" not in owners
+    assert {"ign-entertainment"} <= owners, "Eurogamer and Rock Paper Shotgun still carry that owner"
