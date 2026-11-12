@@ -1027,3 +1027,163 @@ def test_generate_seo_removes_an_unsupported_date_without_a_retry(tmp_path):
         articles_dir=articles, drafts_dir=drafts,
     )
     assert "December" not in result["title"] and len(generate.calls) == 1
+
+
+# --- code repairs a description that is a few characters too long, so it never costs a model retry -----------------
+
+LO, HI = 70, 160
+ORDER_TO = "Square Enix has asked affected PC players to verify their game files on Steam in order to restore the original 50GB install size after an update bug in Nier: Automata."
+A_TOTAL_OF = "The studio says Phantom Blade Zero sold more than 4 million copies across PC and PlayStation 5 in 72 hours, a total of three days after its October 29 launch worldwide."
+FILLER = "Square Enix is also investigating a very large install size bug in a Nier: Automata update that really inflated the PC download from about 50GB to 366GB for players."
+APPROXIMATELY = "Phantom Blade Zero peaked at approximately 833,921 concurrent players on Steam as well as selling over 4 million copies across PC and PlayStation 5 in its first 72 hours."
+TWO_SENTENCES = "Phantom Blade Zero sold over 4 million copies in its first 72 hours on PC and PlayStation 5, the studio said. Steam peaked at 833,921 concurrent players, a record for a launch this year."
+WITH_CLAUSE = "Nintendo says it has no plans for another Switch 2 price increase in the near term, with prices staying where they are across all of its regions and retailers worldwide."
+BUT_ONLY = "Sony will launch the game on PC later this year, but only after the console release has been out for several months in every region of the world, a company spokesperson said."
+NOT_CONFIRMED = "Sony says the game launches on PC in March across all major stores worldwide with full controller support. The company has not confirmed pricing, regions or a precise date yet."
+MAIN_VERB_LAST = "S-GAME, the Chinese studio behind the action RPG released on PC and PlayStation 5 late last month in several regions, announced that it has now sold more than 4 million copies."
+
+
+def fit(text):
+    return seo.fit_description(text, min_length=LO, max_length=HI)
+
+
+def test_the_sample_descriptions_really_are_over_the_limit():
+    for text in (ORDER_TO, A_TOTAL_OF, FILLER, APPROXIMATELY, TWO_SENTENCES, WITH_CLAUSE, BUT_ONLY, NOT_CONFIRMED, MAIN_VERB_LAST):
+        assert len(text) > HI, text[:40]
+
+
+def test_a_description_within_the_limit_is_only_put_on_one_line():
+    assert fit("A short but valid description of an article that is long enough to pass the minimum check.") == \
+        "A short but valid description of an article that is long enough to pass the minimum check."
+    assert fit("First line of a valid description,\n  second line   of it that makes it long enough to pass.") == \
+        "First line of a valid description, second line of it that makes it long enough to pass."
+
+
+@pytest.mark.parametrize("text", [ORDER_TO, A_TOTAL_OF, FILLER, APPROXIMATELY])
+def test_wording_that_says_the_same_in_fewer_characters_brings_it_inside_the_limit(text):
+    fitted = fit(text)
+    assert LO <= len(fitted) <= HI
+    assert fitted.endswith(".") and "  " not in fitted and " ," not in fitted
+    added = set(re.findall(r"[a-z']+", fitted.lower())) - set(re.findall(r"[a-z']+", text.lower()))
+    assert added <= {"to", "about", "and", "several", "many", "that"}, f"new words appeared: {added}"
+
+
+def test_each_wording_repair_does_what_it_says():
+    assert "in order to" not in fit(ORDER_TO) and " to restore" in fit(ORDER_TO)
+    assert "a total of" not in fit(A_TOTAL_OF)
+    assert not re.search(r"\b(also|really|very)\b", fit(FILLER))
+    assert "approximately" not in fit(APPROXIMATELY) and "about 833,921" in fit(APPROXIMATELY)
+
+
+def test_a_whole_trailing_sentence_is_dropped_when_that_is_enough():
+    assert fit(TWO_SENTENCES) == "Phantom Blade Zero sold over 4 million copies in its first 72 hours on PC and PlayStation 5, the studio said."
+
+
+def test_a_trailing_clause_that_only_adds_context_is_dropped_and_the_sentence_is_closed():
+    fitted = fit(WITH_CLAUSE)
+    assert fitted == "Nintendo says it has no plans for another Switch 2 price increase in the near term."
+    assert WITH_CLAUSE.startswith(fitted[:-1])                       # what is left is the start of the original, nothing new
+
+
+@pytest.mark.parametrize("text", [BUT_ONLY, NOT_CONFIRMED, MAIN_VERB_LAST])
+def test_anything_that_could_carry_a_qualifier_or_the_main_verb_is_never_cut_off(text):
+    assert fit(text) == " ".join(text.split())                       # unchanged: the model's retry handles it, as before
+
+
+def test_a_cut_that_would_leave_less_than_the_minimum_is_not_made():
+    text = "Short opening sentence here. " + "A second sentence that is much longer than the limit allows for any description at all, " * 2
+    assert fit(text) == " ".join(text.split())
+
+
+def test_only_a_repair_that_fully_fits_is_used_otherwise_nothing_is_half_changed():
+    # one long sentence: the wording fix saves 8 characters but cannot save the 50 that are needed, so it is not applied
+    one_long_sentence = ORDER_TO[:-1] + " and several other Square Enix titles that were also changed by the same update across many regions."
+    assert len(one_long_sentence) > HI + 40 and "in order to" in one_long_sentence
+    assert fit(one_long_sentence) == " ".join(one_long_sentence.split())
+    assert "in order to" in fit(one_long_sentence)
+
+
+def test_two_safe_repairs_may_combine_when_together_they_fit():
+    still_long = ORDER_TO + " " + "The update also affects a great many other players across several regions around the world."
+    fitted = fit(still_long)
+    assert LO <= len(fitted) <= HI and fitted.endswith("Nier: Automata.") and "in order to" not in fitted
+
+
+def test_a_description_below_the_minimum_is_left_for_the_model():
+    assert fit("Too short.") == "Too short."
+    assert fit("") == "" and fit(None) == ""
+
+
+@pytest.mark.parametrize("text", [ORDER_TO, A_TOTAL_OF, FILLER, APPROXIMATELY, TWO_SENTENCES, WITH_CLAUSE, BUT_ONLY, NOT_CONFIRMED, MAIN_VERB_LAST])
+def test_the_result_is_either_the_original_on_one_line_or_inside_the_limit(text):
+    fitted = fit(text)
+    assert fitted == " ".join(text.split()) or LO <= len(fitted) <= HI
+    assert "\n" not in fitted and not fitted.endswith((", ", ","))
+
+
+def test_the_qualifier_list_catches_denials_and_hedges():
+    for word in ("but", "not", "no", "never", "unless", "only", "reportedly", "may", "rumored", "expected", "doesn't", "without"):
+        assert seo._QUALIFIER_RE.search(f"the game {word} launch"), word
+    assert not seo._QUALIFIER_RE.search("the studio said the game sold four million copies")
+
+
+def test_generate_seo_fixes_a_description_that_is_a_few_characters_too_long_without_a_retry(tmp_path):
+    articles, drafts = tmp_path / "articles", tmp_path / "drafts"
+    articles.mkdir()
+    drafts.mkdir()
+    over = "NVIDIA's flagship graphics card arrives with more memory and a higher price for high-end gaming PCs and creators in order to give buyers a faster option for games."
+    assert len(over) == 163
+    generate = make_generate([seo_data(description=over), seo_data()])
+    result = seo.generate_seo(
+        ARTICLE, make_facts(), generate=generate, entities_path=tmp_path / "entities.json",
+        articles_dir=articles, drafts_dir=drafts,
+    )
+    assert result["description"] == over.replace(" in order to ", " to ") and len(result["description"]) == 154
+    assert len(generate.calls) == 1
+
+
+def test_generate_seo_puts_a_two_line_description_on_one_line_without_a_retry(tmp_path):
+    articles, drafts = tmp_path / "articles", tmp_path / "drafts"
+    articles.mkdir()
+    drafts.mkdir()
+    two_lines = "NVIDIA confirms the RTX 5090 launches at $1,999 with more memory.\nIt goes on sale to gamers and creators."
+    generate = make_generate([seo_data(description=two_lines), seo_data()])
+    result = seo.generate_seo(
+        ARTICLE, make_facts(), generate=generate, entities_path=tmp_path / "entities.json",
+        articles_dir=articles, drafts_dir=drafts,
+    )
+    assert "\n" not in result["description"] and len(generate.calls) == 1
+
+
+def test_generate_seo_still_retries_when_the_description_cannot_be_fixed_safely(tmp_path):
+    articles, drafts = tmp_path / "articles", tmp_path / "drafts"
+    articles.mkdir()
+    drafts.mkdir()
+    generate = make_generate([seo_data(description=BUT_ONLY), seo_data()])
+    result = seo.generate_seo(
+        ARTICLE, make_facts(), generate=generate, entities_path=tmp_path / "entities.json",
+        articles_dir=articles, drafts_dir=drafts,
+    )
+    assert len(generate.calls) == 2 and LO <= len(result["description"]) <= HI
+
+
+def test_a_clause_after_a_safe_connecting_word_is_still_kept_when_it_carries_a_qualifier():
+    text = "Nintendo says it has no plans for another Switch 2 price increase in the near term across every region and every retailer that it sells to, and only for the console."
+    assert len(text) > HI and len(text[: text.rfind(", ")]) <= HI, "dropping the clause would fit, so only the qualifier check stops it"
+    assert fit(text) == text                                          # "and" is a safe starter, but "only" and "not" are not
+
+
+def test_a_cut_is_not_made_when_what_would_be_left_is_shorter_than_the_minimum():
+    text = "Short start, with a long continuation that goes on describing many more details of the story for readers who want them all in one place and well beyond the limit here."
+    assert len(text) > HI and text.index(", ") < LO
+    assert fit(text) == text
+
+
+def test_time_words_are_never_dropped_as_filler():
+    text = "Square Enix is currently investigating an update bug that recently inflated the Nier: Automata PC download from about 50GB to 366GB and players now see it."
+    padded = text + " Check the Steam page for more."
+    assert len(padded) > HI
+    fitted = fit(padded)
+    for word in ("currently", "recently", "now"):
+        assert word in fitted or fitted == " ".join(padded.split()), word
+    assert fitted == " ".join(padded.split()) or all(word in fitted for word in ("currently", "recently"))

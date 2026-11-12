@@ -602,6 +602,78 @@ def fit_title(title: object, limit: int) -> str:
     return kept.rstrip(" ,:;-\u2013\u2014|") or text[:limit].rstrip()
 
 
+#: Wording that says the same in fewer characters. Used only on a description that is over its limit.
+_SAFE_SHORTENINGS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"\bin order to\b", re.IGNORECASE), "to"),
+    (re.compile(r"\ba total of\s+", re.IGNORECASE), ""),
+    (re.compile(r"\bapproximately\b", re.IGNORECASE), "about"),
+    (re.compile(r"\bas well as\b", re.IGNORECASE), "and"),
+    (re.compile(r"\bthe fact that\b", re.IGNORECASE), "that"),
+    (re.compile(r"\ba number of\b", re.IGNORECASE), "several"),
+    (re.compile(r"\bnumerous\b", re.IGNORECASE), "many"),
+    # filler that carries no fact (never a time word such as "now" or "recently", which the checks forbid anyway)
+    (re.compile(r"\b(?:also|really|very|quite|simply|actually)\s+", re.IGNORECASE), ""),
+)
+#: Words that may carry a qualifier or a denial. Text containing one is never cut off a description: dropping
+#: "but only after launch" or "not confirmed" would change what the description says.
+_QUALIFIER_RE = re.compile(
+    r"\b(?:but|however|although|though|unless|except|despite|only|yet|whereas|if|until|pending|subject|"
+    r"not|no|never|without|rather|instead|unconfirmed|rumou?red?|reportedly|allegedly|expected|may|might|could)\b|n't",
+    re.IGNORECASE,
+)
+#: A trailing clause may be dropped only if it starts with one of these: they add context to a finished main clause,
+#: so what is left is still a complete statement.
+_TAIL_STARTERS = (
+    "with", "including", "and", "as", "after", "before", "following", "alongside", "featuring", "adding",
+    "bringing", "marking", "plus", "ahead of", "ending", "giving", "making",
+)
+
+
+def _one_line(text: object) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _tidy_spaces(text: str) -> str:
+    return re.sub(r"\s+([,.;:!?])", r"\1", re.sub(r"\s{2,}", " ", text)).strip()
+
+
+def fit_description(description: object, *, min_length: int, max_length: int) -> str:
+    """Bring an over-long description inside its limit in code, or return it unchanged (on one line).
+
+    Only a repair that fully fits is used. In order: wording that says the same in fewer characters; whole trailing
+    sentences; a trailing clause that starts with a connecting word such as "with" or "including". Nothing that
+    contains a qualifier or a denial is ever dropped, and a clause is never cut off the main sentence, so the
+    description never says more, or something different. A description that is short enough, or that cannot be fixed
+    this safely, goes on to the model's retry exactly as before.
+    """
+    original = _one_line(description)
+    if len(original) <= max_length or len(original) < min_length:
+        return original
+    text = original
+    for pattern, replacement in _SAFE_SHORTENINGS:
+        text = _tidy_spaces(pattern.sub(replacement, text))
+        if min_length <= len(text) <= max_length:
+            return text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    while len(sentences) > 1 and len(" ".join(sentences)) > max_length:
+        if _QUALIFIER_RE.search(sentences[-1]) or len(" ".join(sentences[:-1])) < min_length:
+            break
+        sentences.pop()
+    text = " ".join(sentences)
+    if min_length <= len(text) <= max_length:
+        return text
+    while len(text) > max_length:
+        cut = text.rfind(", ")
+        if cut < min_length:
+            break
+        tail = text[cut + 2:]
+        starter = tail.lower()
+        if not any(starter == word or starter.startswith(word + " ") for word in _TAIL_STARTERS) or _QUALIFIER_RE.search(tail):
+            break
+        text = text[:cut].rstrip(" ,;:") + "."
+    return text if min_length <= len(text) <= max_length else original
+
+
 _DANGLING_WORDS_RE = re.compile(r"\s+(?:on|in|by|from|until|for|at|of|the|a|an|this|next)$", re.IGNORECASE)
 
 
@@ -874,6 +946,13 @@ def generate_seo(
         if repaired != data.get("title"):
             logger.info("seo repaired title: %r -> %r", data.get("title"), repaired)
             data["title"] = repaired
+
+        # Repair the description's length in code too (a model that is told "162, max 160" often answers 162 again).
+        limits = content_limits()
+        fitted = fit_description(data.get("description"), min_length=limits["min_description"], max_length=limits["max_description"])
+        if fitted != data.get("description") and isinstance(data.get("description"), str):
+            logger.info("seo repaired description: %r -> %r", data.get("description"), fitted)
+            data["description"] = fitted
 
         # Build the slug in code from the final title, cut to length and made
         # unique here so a long title or a collision never costs a model retry.
