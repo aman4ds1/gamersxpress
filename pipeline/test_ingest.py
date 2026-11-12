@@ -199,6 +199,11 @@ KNOWN_OWNERS = {
     "insider-gaming": ["Insider Gaming"],
     "dexerto": ["Dexerto"],
     "kitguru": ["KitGuru"],
+    # Esports outlets, checked November 2026: TalkEsport is independent (Mumbai); VLR.gg has no parent company
+    # that could be found; esports.gg was acquired by eFuse, so it carries its parent's owner string.
+    "talkesport": ["TalkEsport"],
+    "vlr-gg": ["VLR.gg"],
+    "efuse": ["esports.gg"],
 }
 
 
@@ -833,3 +838,100 @@ def test_process_feed_keeps_full_content_alongside_the_summary():
 def test_process_feed_content_is_empty_when_the_feed_carries_none():
     candidates = ingest.process_feed(base_source(), rss(item_xml("Meta", "https://news.xbox.com/m", "Thu, 09 Oct 2026 09:00:00 +0000")), NOW)
     assert candidates.items[0]["content"] == ""
+
+
+# --- the esports sources ---------------------------------------------------------------------------------------------
+
+import re as _re
+from pathlib import Path as _Path
+
+_SITE_CATEGORIES = set(
+    _re.findall(r"^\s*'?([a-z-]+)'?: '#[0-9A-Fa-f]{6}'", (_Path(__file__).resolve().parent.parent / "src" / "data" / "categories.ts").read_text(encoding="utf-8"), _re.M)
+)
+_NEW_ESPORTS_SOURCES = {
+    "TalkEsport": ("https://www.talkesport.com", "talkesport", "india", ["india", "esports"]),
+    "VLR.gg": ("https://www.vlr.gg", "vlr-gg", "global", ["esports"]),
+    "esports.gg": ("https://esports.gg", "efuse", "us", ["esports"]),
+}
+
+
+def test_every_source_uses_only_categories_and_regions_the_site_knows():
+    assert len(_SITE_CATEGORIES) == 9
+    for source in ingest.load_sources():
+        assert set(source["categories"]) <= _SITE_CATEGORIES, source["name"]
+        assert source["region"] in {"global", "us", "uk", "india"}, source["name"]
+
+
+def test_the_november_esports_sources_are_present_and_set_up_as_tier_two_gaming_feeds():
+    by_name = {s["name"]: s for s in ingest.load_sources()}
+    for name, (site, owner, region, categories) in _NEW_ESPORTS_SOURCES.items():
+        source = by_name[name]
+        assert (source["site"], source["owner"], source["region"], source["categories"]) == (site, owner, region, categories)
+        assert source["tier"] == 2 and source["topic"] == "gaming"
+        assert source["feed_url"].startswith("https://")
+        assert ingest.registered_domain(source["feed_url"]) == ingest.registered_domain(source["site"]), "a feed on another site is a typo"
+        assert source.get("fetch", True) is True
+
+
+def test_the_esports_sources_are_all_different_voices():
+    esports = [s for s in ingest.load_sources() if "esports" in s["categories"]]
+    owners = [s["owner"] for s in esports]
+    assert len(esports) >= 7
+    assert len(owners) == len(set(owners)), "two esports outlets must not share an owner unless they share a parent"
+    assert {"talkesport", "vlr-gg", "efuse", "dot-esports", "esports-news-uk", "the-bridge", "outlook-india"} <= set(owners)
+
+
+def test_india_has_more_than_one_outlet_so_an_indian_story_can_be_confirmed():
+    indian = {s["owner"] for s in ingest.load_sources() if "india" in s["categories"]}
+    assert {"talkesport", "the-bridge", "outlook-india"} <= indian
+
+
+def test_the_new_feeds_are_marked_untested_until_someone_runs_them():
+    text = (_Path(__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8")
+    block = text[text.index("# Added November 2026: esports news."): text.index("# Added October 2026")]
+    assert "UNVERIFIED" in block and "python -m pipeline.ingest" in block and "fetch: false" in block
+    for name in _NEW_ESPORTS_SOURCES:
+        assert f"- name: {name}" in block
+
+
+
+def _sample_feed(link: str, title: str, hours_ago: int = 2) -> bytes:
+    import datetime as _dt
+    published = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=hours_ago)).strftime("%a, %d %b %Y %H:%M:%S +0000")
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>t</title>'
+        f"<item><title>{title}</title><link>{link}</link><guid>{link}</guid><pubDate>{published}</pubDate>"
+        "<description>A short summary of the story.</description></item></channel></rss>"
+    ).encode()
+
+
+@pytest.mark.parametrize("name, link", [
+    ("TalkEsport", "https://www.talkesport.com/news/bgmi-masters-series-finals-announced/"),
+    ("VLR.gg", "https://www.vlr.gg/123456/team-announces-new-roster"),
+    ("esports.gg", "https://esports.gg/news/valorant/champions-update/"),
+])
+def test_an_item_from_each_new_esports_feed_is_tagged_with_its_outlet(name, link):
+    import datetime as _dt
+    source = next(s for s in ingest.load_sources() if s["name"] == name)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    candidates = ingest.process_feed(source, _sample_feed(link, f"A story from {name}"), now)
+    assert candidates.total_entries == 1 and len(candidates.items) == 1
+    item = candidates.items[0]
+    assert item["source_name"] == name and item["discovered_via"] == name and item["tier"] == 2
+    assert item["owner"] == source["owner"] and item["region"] == source["region"]
+    assert item["source_domain"] == ingest.registered_domain(source["site"])
+    assert item["link"] == ingest.normalize_url(link)
+    assert item["fetchable"] is True, "article text is downloaded for these outlets (no fetch: false)"
+
+
+@pytest.mark.parametrize("name, link", [
+    ("TalkEsport", "https://www.talkesport.com/news/some-story/"),
+    ("VLR.gg", "https://www.vlr.gg/999/some-story"),
+    ("esports.gg", "https://esports.gg/news/some-story/"),
+])
+def test_a_link_on_a_new_esports_site_is_recognised_as_that_outlet_even_in_a_pool_from_another_feed(name, link):
+    sources = ingest.load_sources()
+    item = {"link": link, "source_name": "Dexerto", "source_tier": 2, "owner": "dexerto"}
+    ingest.reattribute_item(item, by_domain=ingest._source_index(sources)[0], by_name=ingest._source_index(sources)[1])
+    expected = next(s for s in sources if s["name"] == name)
+    assert item["source_name"] == name and item["owner"] == expected["owner"]

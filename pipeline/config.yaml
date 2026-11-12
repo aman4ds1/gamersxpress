@@ -1365,6 +1365,36 @@ sources:
     owner: outlook-india
     region: india
     categories: [india, gaming-news, esports]
+  # Added November 2026: esports news. Owners were checked against each outlet's own pages or press
+  # coverage: TalkEsport is independent (Mumbai); VLR.gg has no parent company that could be found;
+  # esports.gg was acquired by eFuse, so its owner is `efuse`. Sites with one parent share one owner string.
+  # UNVERIFIED: the feed addresses were not tested (no network where this was written). Run
+  # `python -m pipeline.ingest` and read the table: HTTP 200 with an "ok" outcome and some entries means the
+  # feed works. If an outlet blocks article downloads (HTTP 403), add `fetch: false` to make it headline-only.
+  - name: TalkEsport
+    site: https://www.talkesport.com
+    feed_url: https://www.talkesport.com/feed/
+    topic: gaming
+    tier: 2
+    owner: talkesport
+    region: india
+    categories: [india, esports]
+  - name: VLR.gg
+    site: https://www.vlr.gg
+    feed_url: https://www.vlr.gg/rss
+    topic: gaming
+    tier: 2
+    owner: vlr-gg
+    region: global
+    categories: [esports]
+  - name: esports.gg
+    site: https://esports.gg
+    feed_url: https://esports.gg/feed/
+    topic: gaming
+    tier: 2
+    owner: efuse
+    region: us
+    categories: [esports]
   # Added October 2026 so a story is covered by two different owners more often.
   # Owners were checked against each outlet's own pages or press coverage; two
   # sites with one owner must share one `owner` string (Polygon, Game Rant and
