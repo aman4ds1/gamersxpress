@@ -7,6 +7,7 @@
 > file is present.
 
 - Stack: Astro (static output), TypeScript, Tailwind. No database, no server code, no SSR.
+  - Exception (owner-approved, 2026-11-12): `workers/pipeline-trigger/` is a Cloudflare Worker that only starts the Pipeline workflow on a cron schedule, because GitHub's own schedule skips most runs. It serves no pages and handles no site requests, so the site itself still has no server code.
 - Site URL: https://gamersxpress.com. Keep `site` in astro.config set to it.
 - Articles are Markdown in src/content/articles/ and must match the Zod schema.
 - Never commit secrets. API keys come from environment variables only; keep .env gitignored.

@@ -146,7 +146,9 @@ at the files. Deleting the branch starts the pipeline from a clean slate.
   snippets in the facts sheets, and reports. They are deleted after 7 days.
 - **Schedules can run late**, and GitHub may switch scheduled workflows off in a public
   repository after about 60 days without activity. If runs stop, re-enable the workflow on
-  the Actions tab.
+  the Actions tab. In practice GitHub started only about 4 of the 24 hourly runs it was asked
+  for. `workers/pipeline-trigger/` is a small Cloudflare Worker that starts the workflow on time
+  (every 3 hours); its README has the setup.
 - **Spend.** The Gemini and Groq free tiers are used by default. Set a budget alert in each
   provider's console before moving to a paid tier.
 

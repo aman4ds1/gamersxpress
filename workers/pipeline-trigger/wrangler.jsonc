@@ -1,0 +1,8 @@
+{
+  "name": "gamersxpress-pipeline-trigger",
+  "main": "index.mjs",
+  "compatibility_date": "2026-10-09",
+  "workers_dev": false,
+  "triggers": { "crons": ["7 */3 * * *"] },
+  "observability": { "enabled": true }
+}
