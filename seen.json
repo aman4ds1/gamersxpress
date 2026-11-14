@@ -1,0 +1,102 @@
+{
+  "clusters": {
+    "4fa80a82eb65": {
+      "member_urls": [
+        "https://eurogamer.net/god-of-war-laufey-delayed-may-three-months",
+        "https://gamespot.com/articles/god-of-war-laufey-delayed/",
+        "https://gematsu.com/2026/11/god-of-war-laufey-delayed-to-may-20-2027",
+        "https://kotaku.com/god-of-war-laufey-delay-ps5-new-release-date-santa-monica-2000753374",
+        "https://polygon.com/god-of-war-laufey-delayed-ps5-2027/",
+        "https://pushsquare.com/news/2026/11/ps5-exclusive-god-of-war-laufey-has-officially-been-delayed-by-three-months",
+        "https://techpowerup.com/354471/god-of-war-laufey-delayed-to-may",
+        "https://videogameschronicle.com/news/god-of-war-laufey-has-officially-been-delayed/"
+      ],
+      "primary_entities": [
+        "big",
+        "god of war laufey",
+        "god of war laufey hit",
+        "officially been",
+        "ps5 exclusive god of war laufey",
+        "sony santa monica",
+        "three-month"
+      ],
+      "story_type": "delay",
+      "first_seen": "2026-11-05T03:33:08.237155+00:00",
+      "last_seen": "2026-11-05T03:33:08.237155+00:00"
+    },
+    "0a6e18587217": {
+      "member_urls": [
+        "https://dexerto.com/gaming/dragons-dogma-2-wins-fans-over-with-free-delicious-in-dungeon-crossover-3424633/",
+        "https://eurogamer.net/dragons-dogma-2-dungeon-meshi-collaboration-out-now",
+        "https://gematsu.com/2026/11/dragons-dogma-ii-dark-arisen-x-delicious-in-dungeon-collaboration-announced",
+        "https://kotaku.com/dragons-dogma-2-drops-surprise-delicious-in-dungeon-collab-2000753287",
+        "https://polygon.com/capcom-dragons-dogma-2-delicious-in-dungeon-collaboration-announced/"
+      ],
+      "primary_entities": [
+        "capcom officially",
+        "delicious",
+        "dragon's dogma 2",
+        "dragon’s dogma",
+        "dragon’s dogma 2",
+        "dragon’s dogma 2 drops surprise delicious",
+        "dragon’s dogma ii dark arisen",
+        "dungeon",
+        "dungeon collab",
+        "next collaboration delicious",
+        "pc playstation and xbox"
+      ],
+      "story_type": "announcement",
+      "first_seen": "2026-11-06T01:37:11.438636+00:00",
+      "last_seen": "2026-11-06T01:37:11.438636+00:00"
+    },
+    "31a7b22eeba9": {
+      "member_urls": [
+        "https://gematsu.com/2026/11/halo-campaign-evolved-firefight-update-announced",
+        "https://insider-gaming.com/halo-campaign-evolved-firefight-update-adds-4-player-pve-mode/",
+        "https://kotaku.com/halo-campaign-evolveds-next-big-update-will-add-a-free-horde-mode-2000756326",
+        "https://news.xbox.com/en-us/2026/11/12/halo-campaign-evolved-firefight-free-update-this-winter/",
+        "https://videogameschronicle.com/news/halo-campaign-evolved-is-getting-firefight-in-a-free-update/"
+      ],
+      "primary_entities": [
+        "adds 4-player pve mode",
+        "can jump into firefight for free",
+        "firefight",
+        "halo campaign evolved",
+        "halo campaign evolved firefight",
+        "halo campaign evolved’s next big",
+        "will add a free horde mode",
+        "winter"
+      ],
+      "story_type": "announcement",
+      "first_seen": "2026-11-12T20:04:25.673208+00:00",
+      "last_seen": "2026-11-12T20:04:25.673208+00:00"
+    },
+    "b761681674f3": {
+      "member_urls": [
+        "https://eurogamer.net/id-software-doing-great-losing-half-the-studio",
+        "https://insider-gaming.com/wolfenstein-3-confirmed-xbox-asha-sharma/",
+        "https://news.xbox.com/en-us/2026/11/12/xbox-25th-anniversary-news-recap/",
+        "https://pcgamer.com/games/fps/id-software-co-director-says-the-doom-developer-is-working-more-closely-with-machinegames-than-ever-after-xbox-laid-off-about-half-of-our-studio/",
+        "https://rockpapershotgun.com/wolfenstein-3-and-new-id-software-game-confirmed-as-xbox-boss-somehow-unrelatedly-shouts-about-one-person-soon-wieldling-capabilities-that-once-required-entire-nations"
+      ],
+      "primary_entities": [
+        "classic xbox games",
+        "doom",
+        "machinegames",
+        "pc everything",
+        "software",
+        "thanks for 25 years xbox",
+        "today",
+        "we're",
+        "wolfenstein 3",
+        "wolfenstein 3 and halo firefight",
+        "wolfenstein 3 officially",
+        "xbox",
+        "xbox ceo asha sharma"
+      ],
+      "story_type": "announcement",
+      "first_seen": "2026-11-13T12:07:59.273844+00:00",
+      "last_seen": "2026-11-13T12:07:59.273844+00:00"
+    }
+  }
+}

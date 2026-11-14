@@ -1,0 +1,88 @@
+{
+  "feeds": {
+    "https://nvidianews.nvidia.com/cats/gaming.xml": {
+      "etag": "\"6af8a433-11c02\"",
+      "last_modified": "Sat, 14 Nov 2026 18:10:59 GMT"
+    },
+    "https://feeds.feedburner.com/nvidiablog": {
+      "last_modified": "Sat, 14 Nov 2026 21:18:25 GMT"
+    },
+    "http://feeds.feedburner.com/psblog": {
+      "last_modified": "Sat, 14 Nov 2026 02:35:19 GMT"
+    },
+    "https://news.xbox.com/en-us/feed/": {
+      "etag": "\"21200b672583c2883175a9b96c73bc78\"",
+      "last_modified": "Fri, 13 Nov 2026 22:08:29 GMT"
+    },
+    "https://newsroom.amd.com/rss.xml": {},
+    "https://newsroom.intel.com/feed/": {
+      "etag": "\"8bcdb-65fecb8e2d4e7-gzip\""
+    },
+    "https://www.tomshardware.com/feeds.xml": {},
+    "https://www.techpowerup.com/rss/news": {},
+    "https://gamersnexus.net/rss.xml": {
+      "etag": "\"1794685908\"",
+      "last_modified": "Sat, 14 Nov 2026 19:51:48 GMT"
+    },
+    "https://www.pcgamer.com/feeds.xml": {},
+    "https://www.eurogamer.net/feed": {
+      "last_modified": "Sat, 14 Nov 2026 12:19:50 GMT"
+    },
+    "https://www.rockpapershotgun.com/feed": {
+      "last_modified": "Sat, 14 Nov 2026 21:31:00 GMT"
+    },
+    "https://www.vg247.com/feed": {
+      "last_modified": "Tue, 02 Jun 2026 08:41:21 GMT"
+    },
+    "https://www.pushsquare.com/feeds/latest": {},
+    "https://www.gamespot.com/feeds/mashup/": {},
+    "https://dotesports.com/feed": {
+      "last_modified": "Thu, 05 Nov 2026 19:28:24 GMT"
+    },
+    "https://esports-news.co.uk/feed": {
+      "etag": "W/\"9cffe08a1182e593a62fbd7eb1e6319f\"",
+      "last_modified": "Sat, 14 Nov 2026 16:25:05 GMT"
+    },
+    "https://thebridge.in/category/esports/google_feeds.xml": {
+      "etag": "\"4887-1794412935222\"",
+      "last_modified": "Wed, 11 Nov 2026 16:02:15 GMT"
+    },
+    "https://respawn.outlookindia.com/rss/gaming": {
+      "last_modified": "Sat, 14 Nov 2026 21:34:25 GMT"
+    },
+    "https://insider-gaming.com/feed/": {
+      "etag": "\"7310389257de0ae0f6bcf160fafb4f2b\"",
+      "last_modified": "Sat, 14 Nov 2026 21:05:16 GMT"
+    },
+    "https://www.dexerto.com/feed/": {
+      "last_modified": "Sat, 14 Nov 2026 21:34:22 GMT"
+    },
+    "https://kotaku.com/rss": {
+      "etag": "\"a051b0d530ece08012139b771a280c2d\"",
+      "last_modified": "Sat, 14 Nov 2026 19:33:27 GMT"
+    },
+    "https://www.polygon.com/rss/index.xml": {},
+    "https://www.kitguru.net/feed/": {
+      "etag": "\"54627ef65966442c0f8fe90426b34f26\"",
+      "last_modified": "Fri, 13 Nov 2026 16:55:04 GMT"
+    },
+    "https://www.videogameschronicle.com/feed/": {
+      "etag": "W/\"6af8d2f9-a93\"",
+      "last_modified": "Sat, 14 Nov 2026 21:30:33 GMT"
+    },
+    "https://www.gematsu.com/feed": {
+      "etag": "W/\"6af7f6b7-1395\"",
+      "last_modified": "Sat, 14 Nov 2026 05:50:47 GMT"
+    },
+    "https://www.talkesport.com/feed/": {
+      "etag": "\"534ce9265677e44585ad716c744d513c\"",
+      "last_modified": "Sat, 14 Nov 2026 16:54:54 GMT"
+    },
+    "https://www.vlr.gg/rss": {},
+    "https://esports.gg/feed/": {
+      "etag": "W/\"7ea6e73e4e4b9255557f6ab90cec622a\"",
+      "last_modified": "Sat, 14 Nov 2026 17:52:04 GMT"
+    }
+  },
+  "updated_at": "2026-11-14T21:34:03.484345+00:00"
+}

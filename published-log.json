@@ -1,0 +1,36 @@
+{
+  "articles": [
+    {
+      "published_at": "2026-11-05T03:33:08.237155+00:00",
+      "slug": "sony-delays-god-of-war-laufey-to-may-20-2027",
+      "title": "Sony delays God of War Laufey to May 20, 2027",
+      "category": "gaming-news",
+      "mode": "draft",
+      "cluster_id": "4fa80a82eb65"
+    },
+    {
+      "published_at": "2026-11-06T01:37:11.438636+00:00",
+      "slug": "dragon-s-dogma-2-adds-delicious-in-dungeon-collaboration",
+      "title": "Dragon's Dogma 2 adds Delicious in Dungeon collaboration",
+      "category": "gaming-news",
+      "mode": "draft",
+      "cluster_id": "0a6e18587217"
+    },
+    {
+      "published_at": "2026-11-12T20:04:25.673208+00:00",
+      "slug": "halo-campaign-evolved-update-adds-firefight-mode-in-2026",
+      "title": "Halo: Campaign Evolved update adds Firefight mode in 2026",
+      "category": "gaming-news",
+      "mode": "auto",
+      "cluster_id": "31a7b22eeba9"
+    },
+    {
+      "published_at": "2026-11-13T12:07:59.273844+00:00",
+      "slug": "microsoft-announces-wolfenstein-3-and-updates",
+      "title": "Microsoft announces Wolfenstein 3 and updates",
+      "category": "gaming-news",
+      "mode": "auto",
+      "cluster_id": "b761681674f3"
+    }
+  ]
+}
