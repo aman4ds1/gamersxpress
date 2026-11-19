@@ -49,6 +49,7 @@ import json
 import logging
 import re
 import unicodedata
+from functools import lru_cache
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable
@@ -97,7 +98,8 @@ _DIACRITIC_FOLD = {
 }
 
 
-def strip_diacritics(text: object) -> str:
+@lru_cache(maxsize=65536)
+def _strip_diacritics_str(text: str) -> str:
     """Fold accents and special letters to their closest ASCII form.
 
     NFKD plus combining-mark removal handles most accents ("Tōkon" -> "Tokon",
@@ -107,6 +109,11 @@ def strip_diacritics(text: object) -> str:
     folded = "".join(_DIACRITIC_FOLD.get(char, char) for char in str(text or ""))
     decomposed = unicodedata.normalize("NFKD", folded)
     return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
+def strip_diacritics(text: object) -> str:
+    """Fold accents and special letters to ASCII (memoized per string)."""
+    return _strip_diacritics_str(str(text or ""))
 
 
 _LEADING_STOP = {
@@ -164,6 +171,11 @@ _INCIDENTAL_ENTITIES = {
 
 
 def match_normalize(text: str) -> str:
+    return _match_normalize_str(str(text or ""))
+
+
+@lru_cache(maxsize=65536)
+def _match_normalize_str(text: str) -> str:
     """Compare entity names with free text regardless of apostrophes/hyphens.
 
     Lowercases and folds diacritics, turns curly apostrophes/dashes straight,
@@ -182,6 +194,7 @@ def match_normalize(text: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+@lru_cache(maxsize=65536)
 def normalize_title(title: str) -> str:
     """Lowercase, fold accents, strip punctuation, collapse whitespace.
 
@@ -229,6 +242,11 @@ def _is_name_token(word: str) -> bool:
 
 def _ordered_entities(title: str, *, include_leading: bool = False) -> list[str]:
     """Named entities in ``title`` in order of first appearance."""
+    return list(_ordered_entities_cached(str(title or ""), include_leading))
+
+
+@lru_cache(maxsize=65536)
+def _ordered_entities_cached(title: str, include_leading: bool) -> tuple[str, ...]:
     words = _WORD_RE.findall(str(title or ""))
     phrases: list[list[str]] = []
     current: list[str] = []
@@ -266,7 +284,7 @@ def _ordered_entities(title: str, *, include_leading: bool = False) -> list[str]
             entities.append(word)
         else:
             entities.append(" ".join(phrase))
-    return entities
+    return tuple(entities)
 
 
 def named_entities(title: str, *, include_leading: bool = False) -> set[str]:
@@ -942,7 +960,12 @@ def contains_entity(haystack: str, entity: str) -> bool:
     entity = match_normalize(entity)
     if not haystack or not entity:
         return False
-    return re.search(rf"\b{re.escape(entity)}\b", haystack) is not None
+    return _entity_pattern(entity).search(haystack) is not None
+
+
+@lru_cache(maxsize=65536)
+def _entity_pattern(entity: str) -> "re.Pattern[str]":
+    return re.compile(rf"\b{re.escape(entity)}\b")
 
 
 def shared_entities(a_title: str, b_title: str) -> set[str]:
