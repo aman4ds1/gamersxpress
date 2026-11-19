@@ -5,21 +5,146 @@ const description = 'The page you were looking for could not be found on GamersX
 ---
 
 <BaseLayout title="Page not found | GamersXpress" description={description} noindex>
-  <div class="mx-auto max-w-3xl px-4 py-16 text-center">
-    <p class="gx-pixel gx-grad text-xs tracking-[0.2em]">ERROR 404</p>
-    <h1 class="gx-pixel mt-6 text-3xl leading-snug text-ink sm:text-5xl">GAME OVER</h1>
-    <p class="gx-pixel mt-4 text-[11px] leading-relaxed tracking-wider text-ink-muted">
-      LEVEL NOT FOUND
-    </p>
-    <p class="mx-auto mt-8 max-w-md text-lg text-ink-muted">
-      This page does not exist, or it has respawned somewhere else. Pick a way back into the game.
-    </p>
-    <p class="gx-pixel mt-8 text-[11px] tracking-wider text-ink">
-      CONTINUE?<span class="ml-2 inline-block" style="animation: gx-blink 1s steps(1) infinite" aria-hidden="true">_</span>
-    </p>
-    <p class="mt-6 flex flex-wrap justify-center gap-3">
-      <a href="/" class="gx-cta gx-gradbar">LATEST STORIES ▸</a>
-      <a href="/search" class="gx-cta gx-gradbar">SEARCH ▸</a>
-    </p>
+  <div class="mx-auto max-w-3xl px-4 py-16">
+    <section class="gx-nc">
+      <p class="gx-nc-tag gx-pixel">// NET ERROR // ROUTE FLATLINED</p>
+      <h1 class="gx-nc-code gx-pixel" data-text="404">404</h1>
+      <p class="gx-nc-title gx-pixel">SIGNAL LOST</p>
+      <p class="gx-nc-copy">
+        This page slipped behind the Blackwall, or it was wiped from the Net. No ping, no response.
+      </p>
+      <p class="gx-nc-term gx-pixel" aria-hidden="true">&gt; reconnect<span class="gx-nc-cursor">_</span></p>
+      <p class="gx-nc-actions">
+        <a href="/" class="gx-nc-btn gx-nc-btn-main">RECONNECT: LATEST STORIES</a>
+        <a href="/search" class="gx-nc-btn">RUN A SEARCH</a>
+      </p>
+    </section>
   </div>
 </BaseLayout>
+
+<style>
+  .gx-nc {
+    --blue: #1e6bff;
+    --cyan: #20e3ff;
+    --red: #ff1f4b;
+    --pink: #ff3d8b;
+    --yellow: #fcee09;
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    padding: 40px clamp(20px, 5vw, 48px);
+    background:
+      radial-gradient(60% 80% at 100% 0%, rgba(255, 31, 75, 0.28), transparent 60%),
+      radial-gradient(60% 80% at 0% 100%, rgba(30, 107, 255, 0.32), transparent 60%),
+      #07080d;
+    color: #e8eaf2;
+    border: 1px solid transparent;
+    border-image: linear-gradient(120deg, var(--red), var(--blue), var(--red)) 1;
+    clip-path: polygon(0 0, calc(100% - 28px) 0, 100% 28px, 100% 100%, 28px 100%, 0 calc(100% - 28px));
+    box-shadow: 0 0 40px -10px var(--blue);
+  }
+  /* fine scan lines */
+  .gx-nc::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 3px);
+  }
+  /* a neon grid floor */
+  .gx-nc::after {
+    content: '';
+    position: absolute;
+    left: -20%;
+    right: -20%;
+    bottom: -40px;
+    height: 140px;
+    z-index: -1;
+    background:
+      linear-gradient(90deg, rgba(32, 227, 255, 0.35) 1px, transparent 1px) 0 0 / 48px 100%,
+      linear-gradient(0deg, rgba(255, 31, 75, 0.35) 1px, transparent 1px) 0 0 / 100% 24px;
+    transform: perspective(240px) rotateX(62deg);
+    transform-origin: bottom;
+    opacity: 0.55;
+    mask-image: linear-gradient(0deg, #000, transparent);
+    -webkit-mask-image: linear-gradient(0deg, #000, transparent);
+  }
+  .gx-nc-tag { font-size: 10px; letter-spacing: 0.12em; color: var(--cyan); text-shadow: 0 0 8px var(--cyan); }
+  .gx-nc-code {
+    position: relative;
+    margin-top: 20px;
+    font-size: clamp(56px, 14vw, 120px);
+    line-height: 1;
+    color: #fff;
+    text-shadow: 4px 0 var(--red), -4px 0 var(--blue), 0 0 28px rgba(255, 31, 75, 0.6);
+  }
+  /* two clipped copies slide against each other for the glitch */
+  .gx-nc-code::before,
+  .gx-nc-code::after {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+  }
+  .gx-nc-code::before { color: var(--red); clip-path: inset(0 0 55% 0); mix-blend-mode: screen; }
+  .gx-nc-code::after { color: var(--cyan); clip-path: inset(55% 0 0 0); mix-blend-mode: screen; }
+  .gx-nc-title { margin-top: 18px; font-size: clamp(16px, 3.4vw, 26px); color: #fff; letter-spacing: 0.08em; text-shadow: 0 0 14px var(--blue); }
+  .gx-nc-copy { margin-top: 20px; max-width: 460px; font-size: 17px; line-height: 1.6; color: #b9bdd0; }
+  .gx-nc-term { margin-top: 26px; font-size: 12px; color: var(--pink); text-shadow: 0 0 8px var(--red); }
+  .gx-nc-cursor { margin-left: 2px; animation: gx-blink 1s steps(1) infinite; }
+  .gx-nc-actions { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 12px; }
+  .gx-nc-btn {
+    display: inline-block;
+    padding: 12px 18px;
+    border: 1px solid var(--cyan);
+    color: var(--cyan);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-decoration: none;
+    box-shadow: 0 0 14px -4px var(--cyan);
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+    transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+  }
+  .gx-nc-btn:hover, .gx-nc-btn:focus-visible { background: var(--cyan); color: #07080d; box-shadow: 0 0 22px 0 var(--cyan); }
+  .gx-nc-btn-main { background: var(--yellow); border-color: var(--yellow); color: #07080d; box-shadow: 0 0 16px -4px var(--yellow); }
+  .gx-nc-btn-main:hover, .gx-nc-btn-main:focus-visible { background: #fff; border-color: #fff; color: #07080d; box-shadow: 0 0 22px 0 var(--yellow); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .gx-nc-code { animation: gx-nc-shake 3.4s infinite; }
+    .gx-nc-code::before { animation: gx-nc-slice-a 3.4s infinite; }
+    .gx-nc-code::after { animation: gx-nc-slice-b 3.4s infinite; }
+    .gx-nc-title { animation: gx-nc-flicker 4.5s infinite; }
+    .gx-nc-tag { animation: gx-nc-flicker 6s infinite 1s; }
+    .gx-nc::after { animation: gx-nc-grid 2.4s linear infinite; }
+    .gx-nc { animation: gx-nc-glow 3s ease-in-out infinite alternate; }
+  }
+  @keyframes gx-nc-shake {
+    0%, 90%, 100% { transform: none; }
+    91% { transform: translate(-5px, 1px) skewX(-6deg); }
+    93% { transform: translate(5px, -1px) skewX(5deg); }
+    95% { transform: translate(-3px, 0); }
+  }
+  @keyframes gx-nc-slice-a {
+    0%, 90%, 100% { transform: none; opacity: 0; }
+    91% { transform: translate(-10px, 0); opacity: 1; }
+    94% { transform: translate(8px, 2px); opacity: 1; }
+    96% { opacity: 0; }
+  }
+  @keyframes gx-nc-slice-b {
+    0%, 90%, 100% { transform: none; opacity: 0; }
+    92% { transform: translate(10px, 0); opacity: 1; }
+    95% { transform: translate(-8px, -2px); opacity: 1; }
+    97% { opacity: 0; }
+  }
+  @keyframes gx-nc-flicker {
+    0%, 18%, 22%, 62%, 64%, 100% { opacity: 1; }
+    20%, 63% { opacity: 0.35; }
+  }
+  @keyframes gx-nc-grid { to { background-position: 48px 0, 0 24px; } }
+  @keyframes gx-nc-glow {
+    from { box-shadow: 0 0 24px -10px var(--blue), 0 0 40px -20px var(--red); }
+    to { box-shadow: 0 0 46px -8px var(--blue), 0 0 60px -14px var(--red); }
+  }
+</style>
