@@ -24,14 +24,11 @@ image: /covers/grand-theft-auto-vi-launches-on-playstation-5-and-xbox-cloud.webp
 imageAlt: GamersXpress cover image for "Grand Theft Auto VI launches on PlayStation 5 and Xbox Cloud" with the Gaming News label.
 hero:
   src: /images/grand-theft-auto-vi-launches-on-playstation-5-and-xbox-cloud.webp
-  alt: Photo of the PlayStation 5
-  credit: Osh33m
-  license: CC BY-SA 4.0
-  licenseUrl: https://creativecommons.org/licenses/by-sa/4.0/
-  title: PlayStation 5 and DualSense
-  sourceUrl: https://commons.wikimedia.org/wiki/File:PlayStation_5_and_DualSense.jpg
-  width: 1329
-  height: 1600
+  alt: Official Rockstar Games artwork for Grand Theft Auto VI
+  credit: Rockstar Games
+  license: Press kit
+  width: 1280
+  height: 720
 ---
 ## What happened
 
