@@ -3,7 +3,7 @@
    otherwise become the reference for position: fixed. */
 .gx-sp-backdrop { position: fixed; inset: 0; z-index: 39; background: rgba(8, 9, 14, 0.28); }
 .gx-sp-backdrop[hidden], .gx-sp[hidden] { display: none; }
-.gx-sp { position: fixed; z-index: 40; right: 12px; top: 90px; width: min(600px, calc(100vw - 24px)); max-height: 70vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 14px; box-shadow: 0 28px 64px -16px rgba(8, 9, 14, 0.45), 0 0 0 3px var(--glow); }
+.gx-sp { position: fixed; z-index: 40; right: 12px; top: 90px; width: min(600px, calc(100vw - 24px)); max-height: 70vh; display: flex; flex-direction: column; overflow: hidden; background: color-mix(in srgb, var(--card) 58%, transparent); -webkit-backdrop-filter: blur(22px) saturate(170%); backdrop-filter: blur(22px) saturate(170%); color: var(--ink); border: 1px solid color-mix(in srgb, var(--ink) 16%, transparent); border-radius: 14px; box-shadow: 0 28px 64px -16px rgba(8, 9, 14, 0.45), 0 0 0 3px var(--glow); }
 .gx-sp-box { display: flex; align-items: center; gap: 10px; margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--line); color: var(--ink-muted); }
 .gx-sp-input { flex: 1; min-width: 0; border: 0; padding: 4px 0; background: transparent; color: var(--ink); font: inherit; font-size: 16px; outline: none; }
 .gx-sp-input::placeholder { color: var(--ink-subtle, var(--ink-muted)); }

@@ -16,11 +16,22 @@ const description = 'The page you were looking for could not be found on GamersX
       <p class="gx-nc-term gx-pixel" aria-hidden="true">&gt; reconnect<span class="gx-nc-cursor">_</span></p>
       <p class="gx-nc-actions">
         <a href="/" class="gx-nc-btn gx-nc-btn-main">RECONNECT: LATEST STORIES</a>
-        <a href="/search" class="gx-nc-btn">RUN A SEARCH</a>
+        <a href="/search" class="gx-nc-btn" id="gx-nc-search">RUN A SEARCH</a>
       </p>
     </section>
   </div>
 </BaseLayout>
+
+<script>
+  // Open the glass search popup, centered, instead of leaving for /search. Without JavaScript the link still works.
+  document.getElementById('gx-nc-search')?.addEventListener('click', (event) => {
+    const opener = document.getElementById('search-open');
+    if (!opener) return;
+    event.preventDefault();
+    document.getElementById('gx-sp')?.setAttribute('data-center', '1');
+    opener.click();
+  });
+</script>
 
 <style>
   .gx-nc {

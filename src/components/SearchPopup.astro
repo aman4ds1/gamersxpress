@@ -180,8 +180,19 @@
 
     // The popup sits right under the search button (right edges aligned), and stays inside the screen.
     const place = () => {
-      const box = opener.getBoundingClientRect();
       const width = Math.min(600, window.innerWidth - 24);
+      // Opened from a page button that asked for the middle of the screen (the 404 page does this).
+      if (panel.dataset.center === '1') {
+        const top = Math.max(16, Math.round(window.innerHeight * 0.16));
+        panel.style.width = `${width}px`;
+        panel.style.top = `${top}px`;
+        panel.style.left = `${Math.round((window.innerWidth - width) / 2)}px`;
+        panel.style.right = 'auto';
+        panel.style.maxHeight = `${Math.max(220, window.innerHeight - top - 16)}px`;
+        return;
+      }
+      panel.style.left = '';
+      const box = opener.getBoundingClientRect();
       const top = box.bottom + 10;
       const right = Math.min(Math.max(12, window.innerWidth - box.right), window.innerWidth - width - 12);
       panel.style.width = `${width}px`;
@@ -211,6 +222,7 @@
     const close = (returnFocus = true) => {
       if (!isOpen()) return;
       token += 1;
+      delete panel.dataset.center;
       panel.hidden = true;
       backdrop.hidden = true;
       opener.setAttribute('aria-expanded', 'false');
