@@ -217,7 +217,6 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
     ("hardware", ("nvidia", "geforce", "rtx", "radeon", "amd", "ryzen", "intel", "arc", "gpu", "cpu", "snapdragon", "ssd", "steam deck", "graphics card")),
     ("esports", ("esports", "tournament", "championship", "major", "worlds", "val", "esl", "evo")),
     ("pc", ("steam", "epic games", "valve", "cd projekt", "riot games", "league of legends", "dota", "world of warcraft", "valorant", "pc gaming")),
-    ("india", ("india", "indian", "rupee", "ivg", "gaming in india")),
     ("tech", ("openai", "chatgpt", "apple", "meta", "android", "windows", "ai model", "artificial intelligence")),
 ]
 DEFAULT_CATEGORY = "gaming-news"

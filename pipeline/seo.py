@@ -106,7 +106,6 @@ ALLOWED_CATEGORIES = (
     "hardware",
     "tech",
     "esports",
-    "india",
 )
 
 # Hype/filler the writer prompt bans; the same ban applies to search snippets.

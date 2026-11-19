@@ -46,7 +46,6 @@ CATEGORY_LABELS = {
     "hardware": "Hardware",
     "tech": "Tech",
     "esports": "Esports",
-    "india": "India",
 }
 
 # Deterministic gradient per category: (top, bottom, accent).
@@ -59,7 +58,6 @@ PALETTE: dict[str, tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, 
     "hardware": ((51, 65, 85), (15, 23, 42), (148, 163, 184)),
     "tech": ((8, 47, 73), (2, 6, 23), (14, 165, 233)),
     "esports": ((56, 30, 8), (23, 10, 2), (245, 158, 11)),
-    "india": ((69, 26, 3), (23, 10, 2), (249, 115, 22)),
 }
 _PALETTE_FALLBACKS = [
     ((17, 24, 39), (2, 6, 23), (56, 189, 248)),

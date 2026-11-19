@@ -36,7 +36,6 @@ LOOK: dict[str, tuple[str, str]] = {
     "hardware": ("Hardware", "#0E7490"),
     "tech": ("Tech", "#4338CA"),
     "esports": ("Esports", "#BE185D"),
-    "india": ("India", "#C2410C"),
 }
 
 

@@ -69,7 +69,7 @@ LINK_TIMEOUT_SECONDS = 20
 
 ALLOWED_CATEGORIES = (
     "gaming-news", "pc", "playstation", "xbox", "nintendo",
-    "hardware", "tech", "esports", "india",
+    "hardware", "tech", "esports",
 )
 
 logger = logging.getLogger("gamersxpress.pipeline.gates")

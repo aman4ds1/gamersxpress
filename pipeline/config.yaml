@@ -1347,7 +1347,7 @@ sources:
     tier: 2
     owner: the-bridge
     region: india
-    categories: [india, esports]
+    categories: [esports]
   - name: Respawn (Outlook India)
     site: https://respawn.outlookindia.com
     feed_url: https://respawn.outlookindia.com/rss/gaming
@@ -1355,7 +1355,7 @@ sources:
     tier: 2
     owner: outlook-india
     region: india
-    categories: [india, gaming-news, esports]
+    categories: [gaming-news, esports]
   # Added November 2026: esports news. Owners were checked against each outlet's own pages or press
   # coverage: TalkEsport is independent (Mumbai); VLR.gg has no parent company that could be found;
   # esports.gg was acquired by eFuse, so its owner is `efuse`. Sites with one parent share one owner string.
@@ -1369,7 +1369,7 @@ sources:
     tier: 2
     owner: talkesport
     region: india
-    categories: [india, esports]
+    categories: [esports]
   - name: VLR.gg
     site: https://www.vlr.gg
     feed_url: https://www.vlr.gg/rss

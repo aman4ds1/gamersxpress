@@ -229,11 +229,11 @@ def test_with_no_steam_or_commons_hit_the_real_chain_gives_the_articles_category
     monkeypatch.setattr(run_module.commons_stage, "find_hero", lambda **_: None)
     write(articles, "pc-story", article(category="pc"))
     write(articles, "hw-story", article(category="hardware"))
-    write(articles, "odd-story", article(category="india"))          # no picture for this category in this small site
+    write(articles, "odd-story", article(category="tech"))           # no picture for this category in this small site
     results = {r["slug"]: r for r in backfill.backfill(articles_dir=articles, public_dir=public, apply=True, say=lambda _: None)}
     assert results["pc-story"]["kind"] == "category picture" and results["hw-story"]["kind"] == "category picture"
     assert "PC coverage" in results["pc-story"]["hero"]["alt"] and "Hardware coverage" in results["hw-story"]["hero"]["alt"]
-    assert results["odd-story"]["kind"] == "category picture" and "India coverage" in results["odd-story"]["hero"]["alt"]
+    assert results["odd-story"]["kind"] == "category picture" and "Tech coverage" in results["odd-story"]["hero"]["alt"]
     for slug in ("pc-story", "hw-story", "odd-story"):
         front, _ = gates.parse_front_matter((articles / f"{slug}.md").read_text(encoding="utf-8"))
         assert images.hero_failures(front["hero"], public) == []

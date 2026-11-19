@@ -25,7 +25,7 @@ def site_categories() -> dict[str, str]:
 
 
 def test_every_site_category_has_a_look_and_every_look_is_a_site_category():
-    assert set(default_images.LOOK) == set(site_categories()) and len(default_images.LOOK) == 9
+    assert set(default_images.LOOK) == set(site_categories()) and len(default_images.LOOK) == 8
 
 
 def test_the_look_uses_the_sites_category_colours():

@@ -6,12 +6,12 @@ Reference for humans and coding agents. Read this before any pipeline work and f
 
 Relaunch gamersxpress.com as a gaming news publication plus a small set of browser tools. Publishing is automated, but the content must be useful, original, and fact-checked. This is not an RSS-rewrite site.
 
-Topics: gaming news, PC, PlayStation, Xbox, Nintendo, hardware, gaming tech (NVIDIA/AMD/Intel, handhelds, VR/AR, AI in gaming, engines), esports, and Indian gaming and esports.
+Topics: gaming news, PC, PlayStation, Xbox, Nintendo, hardware, gaming tech (NVIDIA/AMD/Intel, handhelds, VR/AR, AI in gaming, engines), and esports, covered globally.
 
 ## 2. Audience and regional rules
 
 - One English site (US English spelling), plain language, no regional versions, no hreflang.
-- Primary audiences: US, UK, India. Region is expressed through tags and entities, not separate sections, except the existing `india` category.
+- Global audience, with US, UK and India as the main readerships. Region is expressed through tags and entities, never separate sections or categories.
 - Prices and availability: record per region only when an official or reputable source confirms them; otherwise state they are unconfirmed. Never convert currencies in articles.
 - Release and event times: stored as UTC and rendered by a time component in PT/ET, BST and IST. Models never convert times.
 - Sources include UK and Indian outlets and official regional pages.
@@ -91,7 +91,7 @@ Collection `articles` (`src/content.config.ts`, glob loader over `src/content/ar
 | description | string, 70-160 characters |
 | pubDate | date |
 | updatedDate | date, optional |
-| category | enum: gaming-news, pc, playstation, xbox, nintendo, hardware, tech, esports, india |
+| category | enum: gaming-news, pc, playstation, xbox, nintendo, hardware, tech, esports |
 | tags | string[] |
 | entities | string[] (for example NVIDIA, PS5, Xbox, Nintendo Switch 2) |
 | sources | {name, url}[], at least 2 for published articles |

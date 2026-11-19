@@ -849,14 +849,14 @@ _SITE_CATEGORIES = set(
     _re.findall(r"^\s*'?([a-z-]+)'?: '#[0-9A-Fa-f]{6}'", (_Path(__file__).resolve().parent.parent / "src" / "data" / "categories.ts").read_text(encoding="utf-8"), _re.M)
 )
 _NEW_ESPORTS_SOURCES = {
-    "TalkEsport": ("https://www.talkesport.com", "talkesport", "india", ["india", "esports"]),
+    "TalkEsport": ("https://www.talkesport.com", "talkesport", "india", ["esports"]),
     "VLR.gg": ("https://www.vlr.gg", "vlr-gg", "global", ["esports"]),
     "esports.gg": ("https://esports.gg", "efuse", "us", ["esports"]),
 }
 
 
 def test_every_source_uses_only_categories_and_regions_the_site_knows():
-    assert len(_SITE_CATEGORIES) == 9
+    assert len(_SITE_CATEGORIES) == 8
     for source in ingest.load_sources():
         assert set(source["categories"]) <= _SITE_CATEGORIES, source["name"]
         assert source["region"] in {"global", "us", "uk", "india"}, source["name"]
@@ -879,11 +879,6 @@ def test_the_esports_sources_are_all_different_voices():
     assert len(esports) >= 6
     assert len(owners) == len(set(owners)), "two esports outlets must not share an owner unless they share a parent"
     assert {"talkesport", "vlr-gg", "efuse", "esports-news-uk", "the-bridge", "outlook-india"} <= set(owners)
-
-
-def test_india_has_more_than_one_outlet_so_an_indian_story_can_be_confirmed():
-    indian = {s["owner"] for s in ingest.load_sources() if "india" in s["categories"]}
-    assert {"talkesport", "the-bridge", "outlook-india"} <= indian
 
 
 def test_the_new_feeds_are_marked_untested_until_someone_runs_them():

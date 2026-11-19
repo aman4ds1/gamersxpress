@@ -7,7 +7,6 @@ export const CATEGORIES = [
   'hardware',
   'tech',
   'esports',
-  'india',
 ] as const;
 
 export type Category = (typeof CATEGORIES)[number];
@@ -21,7 +20,6 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   hardware: 'Hardware',
   tech: 'Tech',
   esports: 'Esports',
-  india: 'India',
 };
 
 /** Tag color per category (white text on it passes 4.5:1 in both themes). */
@@ -34,5 +32,4 @@ export const CATEGORY_COLORS: Record<Category, string> = {
   hardware: '#0E7490',
   tech: '#4338CA',
   esports: '#BE185D',
-  india: '#C2410C',
 };
