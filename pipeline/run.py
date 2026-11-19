@@ -69,6 +69,7 @@ import gates as gates_stage
 import gaterepair as gaterepair_stage
 import gather as gather_stage
 import ingest as ingest_stage
+import manual as manual_stage
 import link as link_stage
 import publish as publish_stage
 import score as score_stage
@@ -491,6 +492,7 @@ def run(
     cover_fn: Callable[..., dict] | None = None,
     image_fn: Callable[..., dict | None] | None = None,
     gates_fn: Callable[..., Any] | None = None,
+    manual: dict | None = None,
     performance: dict | None = None,
     link_checker: Callable[[str], Any] | None = None,
     site_checks: Callable[[str, str], tuple[bool, str]] | None = None,
@@ -527,6 +529,8 @@ def run(
         run_section.get("max_total_seconds", DEFAULT_MAX_TOTAL_SECONDS) or 0.0
     )
     run_started = time.monotonic()
+    if manual is None:
+        manual = manual_stage.parse_request(env)
     exclude_patterns = score_stage.load_exclude_title_patterns(raw_config)
     try:
         sources = ingest_stage.load_sources(config_path)
@@ -568,6 +572,7 @@ def run(
             "exit_code": code,
             "generated_at": now.isoformat(),
             "breaker": dict(breaker),
+            "manual_topic": manual["topic"] if manual else None,
             "timings": durations,
             "model_calls": run_state.calls,
             **run_state.report(),
@@ -601,57 +606,74 @@ def run(
     draft: str | None = None
 
     try:
-        with timings.stage("ingest"):
-            if dry_run:
-                items = dryrun_stage.sample_pool(now).get("items") or []
-            else:
-                ingested = ingest_fn(
-                    config_path,
-                    output_dir=paths.candidates_dir,
-                    cache_path=paths.feed_cache,
-                    health_path=paths.feed_health,
+        if manual:
+            # Owner-requested topic: no ingest, clustering or scoring. One cluster is
+            # built from matching pooled items and the owner's URLs; every later stage
+            # (gather, facts, readiness, write, verify, gates) still applies.
+            with timings.stage("cluster"):
+                pool = cluster.load_pool(paths.pool)
+                failed = cluster.load_failed(paths.failed)
+                clusters = manual_stage.build_clusters(
+                    manual["topic"], manual["idea"], manual["urls"],
+                    pool.get("items") or [], now=now,
                 )
-                items = ingested.get("items") or []
-            # Drop promo/format headlines before they can cluster, so a deal
-            # post can never join a story and inflate its source count.
-            items = score_stage.filter_excluded_items(items, exclude_patterns)
+                for built in clusters:
+                    ingest_stage.reattribute_items(built["items"], sources)
+                    built["owners"] = sorted({i.get("owner") for i in built["items"] if i.get("owner")})
+                    built["tiers"] = sorted({i.get("tier") for i in built["items"] if i.get("tier") is not None})
+            logger.info("manual topic %r: %d source item(s)", manual["topic"], sum(len(c["items"]) for c in clusters))
+        else:
+            with timings.stage("ingest"):
+                if dry_run:
+                    items = dryrun_stage.sample_pool(now).get("items") or []
+                else:
+                    ingested = ingest_fn(
+                        config_path,
+                        output_dir=paths.candidates_dir,
+                        cache_path=paths.feed_cache,
+                        health_path=paths.feed_health,
+                    )
+                    items = ingested.get("items") or []
+                # Drop promo/format headlines before they can cluster, so a deal
+                # post can never join a story and inflate its source count.
+                items = score_stage.filter_excluded_items(items, exclude_patterns)
 
-        with timings.stage("cluster"):
-            pool = cluster.load_pool(paths.pool)
-            cluster.merge_items(pool, items, now=now, max_age=stale_after or cluster.DEFAULT_STALE_AFTER)
-            # Credit each item to the source that owns its link before clustering
-            # (a Wire item linking to IGN becomes IGN; unknown domains drop to
-            # tier 3), then re-filter the merged pool so exclusion applies to
-            # stale items carried over from earlier runs too.
-            ingest_stage.reattribute_items(pool.get("items") or [], sources)
-            pool["items"] = score_stage.filter_excluded_items(pool.get("items") or [], exclude_patterns)
-            cluster.save_pool(pool, now=now, path=paths.pool)
+            with timings.stage("cluster"):
+                pool = cluster.load_pool(paths.pool)
+                cluster.merge_items(pool, items, now=now, max_age=stale_after or cluster.DEFAULT_STALE_AFTER)
+                # Credit each item to the source that owns its link before clustering
+                # (a Wire item linking to IGN becomes IGN; unknown domains drop to
+                # tier 3), then re-filter the merged pool so exclusion applies to
+                # stale items carried over from earlier runs too.
+                ingest_stage.reattribute_items(pool.get("items") or [], sources)
+                pool["items"] = score_stage.filter_excluded_items(pool.get("items") or [], exclude_patterns)
+                cluster.save_pool(pool, now=now, path=paths.pool)
 
-            seen = cluster.load_seen(paths.seen)
-            # Every article already on the site covers its sources, however it got there.
-            covered = cluster.mark_articles_covered(seen, _article_records(paths.articles_dir), now=now)
-            if covered:
-                logger.info("published articles added to the seen list: %s", ", ".join(covered))
-            failed = cluster.load_failed(paths.failed)
-            cluster_section = raw_config.get("cluster") or {}
-            seen_cooldown = dt.timedelta(
-                days=float(cluster_section.get("seen_cooldown_days", cluster.SEEN_COOLDOWN.days))
-            )
-            failed_cooldown_hours = int(
-                cluster_section.get("failed_cooldown_hours", cluster.DEFAULT_FAILED_COOLDOWN_HOURS)
-            )
-            min_event_overlap = int(
-                cluster_section.get("min_event_overlap", cluster.DEFAULT_EVENT_OVERLAP)
-            )
-            clusters = cluster.cluster_items(
-                pool.get("items"),
-                now=now,
-                seen=seen,
-                failed=failed,
-                cooldown=seen_cooldown,
-                failed_cooldown_hours=failed_cooldown_hours,
-                min_event_overlap=min_event_overlap,
-            )
+                seen = cluster.load_seen(paths.seen)
+                # Every article already on the site covers its sources, however it got there.
+                covered = cluster.mark_articles_covered(seen, _article_records(paths.articles_dir), now=now)
+                if covered:
+                    logger.info("published articles added to the seen list: %s", ", ".join(covered))
+                failed = cluster.load_failed(paths.failed)
+                cluster_section = raw_config.get("cluster") or {}
+                seen_cooldown = dt.timedelta(
+                    days=float(cluster_section.get("seen_cooldown_days", cluster.SEEN_COOLDOWN.days))
+                )
+                failed_cooldown_hours = int(
+                    cluster_section.get("failed_cooldown_hours", cluster.DEFAULT_FAILED_COOLDOWN_HOURS)
+                )
+                min_event_overlap = int(
+                    cluster_section.get("min_event_overlap", cluster.DEFAULT_EVENT_OVERLAP)
+                )
+                clusters = cluster.cluster_items(
+                    pool.get("items"),
+                    now=now,
+                    seen=seen,
+                    failed=failed,
+                    cooldown=seen_cooldown,
+                    failed_cooldown_hours=failed_cooldown_hours,
+                    min_event_overlap=min_event_overlap,
+                )
         if not clusters:
             return finish("nothing", "no new stories to cover")
         min_score = float(score_section.get("min_score", score_stage.DEFAULT_MIN_SCORE))
@@ -683,7 +705,7 @@ def run(
         # single-source story must reach min_score). It stops after
         # max_candidates_per_run stories (or when none are left).
         with timings.stage("score"):
-            candidates = score_stage.pick_candidates(
+            candidates = list(clusters) if manual else score_stage.pick_candidates(
                 clusters,
                 max_candidates=max_candidates,
                 max_candidates_per_entity=max_candidates_per_entity,
@@ -918,7 +940,17 @@ def run(
             return finish("nothing", "no eligible candidate confirmed itself")
 
         with timings.stage("write"):
-            writer = write_fn(facts, run_state=run_state, generate=generate)
+            if manual and manual.get("idea"):
+                suffix = manual_stage.angle_suffix(manual["idea"])
+                primary_prompt = write_stage.build_prompt(facts)
+                fallback_prompt = write_stage.build_fallback_prompt(facts, primary=primary_prompt)
+                extra = {} if fallback_prompt == primary_prompt else {"fallback_prompt": fallback_prompt + suffix}
+                writer = write_fn(
+                    facts, run_state=run_state, generate=generate,
+                    prompt=primary_prompt + suffix, **extra,
+                )
+            else:
+                writer = write_fn(facts, run_state=run_state, generate=generate)
 
         # The writer produced an article, so a later verify or gate failure counts
         # as an attempt against this story; skips and provider outages never reach

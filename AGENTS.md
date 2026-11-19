@@ -8,6 +8,7 @@
 
 - Stack: Astro (static output), TypeScript, Tailwind. No database, no server code, no SSR.
   - Exception (owner-approved, 2026-11-12): `workers/pipeline-trigger/` is a Cloudflare Worker that only starts the Pipeline workflow on a cron schedule, because GitHub's own schedule skips most runs. It serves no pages and handles no site requests, so the site itself still has no server code.
+  - Exception (owner-requested, 2026-11-19): `workers/telegram-topic/` is a second Cloudflare Worker that receives the owner's Telegram messages (`/blog <topic> | <idea> | <urls>`) and only starts the Pipeline workflow with that topic as input. It accepts calls only with Telegram's secret header and only from the owner's chat, serves no pages, stores nothing, and cannot write or publish; the article still passes the normal fact, verifier and gate checks.
 - Site URL: https://gamersxpress.com. Keep `site` in astro.config set to it.
 - Articles are Markdown in src/content/articles/ and must match the Zod schema.
 - Never commit secrets. API keys come from environment variables only; keep .env gitignored.

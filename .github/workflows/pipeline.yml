@@ -36,6 +36,18 @@ on:
         description: "Only send a Telegram test message"
         type: boolean
         default: false
+      topic:
+        description: "Write about this topic now (sent from the Telegram bot). Skips the news search."
+        type: string
+        default: ""
+      idea:
+        description: "Angle or idea for the topic (steers the writer; it is not a source)"
+        type: string
+        default: ""
+      urls:
+        description: "Source URLs for the topic, separated by spaces"
+        type: string
+        default: ""
 
 # One run at a time, always. A queued run waits instead of cancelling the one in progress.
 concurrency:
@@ -119,6 +131,9 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+          MANUAL_TOPIC: ${{ inputs.topic }}
+          MANUAL_IDEA: ${{ inputs.idea }}
+          MANUAL_URLS: ${{ inputs.urls }}
         run: |
           set +e
           if [ "$DRY_RUN" = "true" ]; then

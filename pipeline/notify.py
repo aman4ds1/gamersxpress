@@ -205,6 +205,15 @@ def build_message(
             lines.append(run_link)
         if breaker.get("open"):
             lines.append("🛑 <b>Circuit breaker is open.</b> Runs stay paused until it is reset.")
+    elif report.get("manual_topic") and status in ("nothing", "skipped", "paused"):
+        # A topic the owner asked for must never end in silence.
+        lines.append(f"ℹ️ <b>No article for your topic:</b> {_escape(report['manual_topic'], 120)}")
+        if report.get("error"):
+            lines.append(_escape(report["error"], 160))
+        lines.append("Send URLs with the topic, or check the workflow run.")
+        run_link = _link(run_url, "Workflow run")
+        if run_link:
+            lines.append(run_link)
     else:
         return None
     return "\n".join(lines)
