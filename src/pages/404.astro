@@ -1,0 +1,25 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const description = 'The page you were looking for could not be found on GamersXpress.';
+---
+
+<BaseLayout title="Page not found | GamersXpress" description={description} noindex>
+  <div class="mx-auto max-w-3xl px-4 py-16 text-center">
+    <p class="gx-pixel gx-grad text-xs tracking-[0.2em]">ERROR 404</p>
+    <h1 class="gx-pixel mt-6 text-3xl leading-snug text-ink sm:text-5xl">GAME OVER</h1>
+    <p class="gx-pixel mt-4 text-[11px] leading-relaxed tracking-wider text-ink-muted">
+      LEVEL NOT FOUND
+    </p>
+    <p class="mx-auto mt-8 max-w-md text-lg text-ink-muted">
+      This page does not exist, or it has respawned somewhere else. Pick a way back into the game.
+    </p>
+    <p class="gx-pixel mt-8 text-[11px] tracking-wider text-ink">
+      CONTINUE?<span class="ml-2 inline-block" style="animation: gx-blink 1s steps(1) infinite" aria-hidden="true">_</span>
+    </p>
+    <p class="mt-6 flex flex-wrap justify-center gap-3">
+      <a href="/" class="gx-cta gx-gradbar">LATEST STORIES ▸</a>
+      <a href="/search" class="gx-cta gx-gradbar">SEARCH ▸</a>
+    </p>
+  </div>
+</BaseLayout>

@@ -20,6 +20,8 @@ interface Props {
   breadcrumbs?: { name: string; path: string }[];
   /** Article pages only: the text sits on a solid panel so the background never runs behind it. */
   reading?: boolean;
+  /** Pages that should not appear in search results, such as the 404 page. */
+  noindex?: boolean;
 }
 
 const {
@@ -32,6 +34,7 @@ const {
   dateModified,
   breadcrumbs,
   reading = false,
+  noindex = false,
 } = Astro.props;
 const scene = sceneForPath(Astro.url.pathname);
 ---
@@ -87,6 +90,7 @@ const scene = sceneForPath(Astro.url.pathname);
     <!-- Fonts are served from this site (see public/fonts), never from a font service. -->
     <link rel="preload" href="/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/chakra-petch-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin />
+    {noindex && <meta name="robots" content="noindex" />}
     <SEO
       title={title}
       description={description}
@@ -109,9 +113,14 @@ const scene = sceneForPath(Astro.url.pathname);
   <body
     class="flex min-h-screen flex-col bg-surface text-ink antialiased"
   >
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-surface focus:px-4 focus:py-2 focus:font-semibold focus:text-ink focus:ring-2 focus:ring-[color:var(--focus-ring)]"
+      >Skip to content</a
+    >
     <Scenes scene={scene} />
     <Header />
-    <main class:list={["flex-1", { "gx-reading": reading }]} data-pagefind-body>
+    <main id="main" class:list={["flex-1", { "gx-reading": reading }]} data-pagefind-body>
       <slot />
     </main>
     <Footer />
