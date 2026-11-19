@@ -1647,3 +1647,24 @@ def test_a_verifier_that_always_resets_skips_at_the_role_deadline(monkeypatch):
     assert all(t < 10 for t in call_times), "no provider call happens past the role deadline"
     assert clock["now"] <= 10, "the role never runs past max_role_seconds"
 
+
+
+def test_anthropic_provider_builds_a_messages_request_and_reads_the_reply():
+    from pipeline.providers import AnthropicProvider
+
+    provider = AnthropicProvider()
+    url, payload, headers = provider.prepare(
+        "claude-haiku-5-5", "hello", "key", None,
+        {"max_completion_tokens": 100, "response_format": "json_object", "bogus": 1},
+    )
+    assert url == "https://api.anthropic.com/v1/messages"
+    assert headers["x-api-key"] == "key" and headers["anthropic-version"]
+    assert payload["max_tokens"] == 100
+    assert "JSON object" in payload["messages"][0]["content"]
+    done = provider.extract({
+        "content": [{"type": "text", "text": "{\"a\": 1}"}],
+        "stop_reason": "end_turn", "usage": {"input_tokens": 1},
+    })
+    assert done.text == "{\"a\": 1}" and done.finish_reason == "end_turn"
+    cut = provider.extract({"content": [{"type": "text", "text": "x"}], "stop_reason": "max_tokens"})
+    assert cut.finish_reason == "length"

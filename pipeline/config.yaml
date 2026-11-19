@@ -76,6 +76,14 @@ roles:
       options:
         max_completion_tokens: 8192
         reasoning_effort: low
+    - provider: anthropic
+      # Paid, cheap, separate vendor: still works when Gemini and Groq are down.
+      # Family "anthropic" differs from google/openai/qwen, so either of those
+      # can verify its drafts.
+      model: claude-haiku-5-5
+      family: anthropic
+      options:
+        max_completion_tokens: 8192
     - provider: mistral
       # Medium 3.5: strongest Mistral model this key can access.
       enabled: false  # 429 on the free tier, re-test later
@@ -102,6 +110,15 @@ roles:
       options:
         max_completion_tokens: 8192
         reasoning_effort: low
+        response_format: json_object
+    - provider: anthropic
+      # Haiku 5.5: independent family and a separate vendor, so a Gemini/Groq
+      # outage cannot leave the verifier empty. Tried before Qwen, which has
+      # returned HTTP 400 json_validate_failed.
+      model: claude-haiku-5-5
+      family: anthropic
+      options:
+        max_completion_tokens: 8192
         response_format: json_object
     - provider: groq
       # qwen3.8-27b: Qwen's open reasoning model on Groq, family "qwen". A

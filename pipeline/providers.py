@@ -675,6 +675,71 @@ class GroqProvider(OpenAICompatibleProvider):
     base_url = "https://api.groq.com/openai/v1"
 
 
+class AnthropicProvider(Provider):
+    """Anthropic Messages API (api.anthropic.com/v1/messages).
+
+    The API has no JSON mode, so when JSON is wanted (a ``json_schema`` or the
+    ``response_format: json_object`` option) an instruction is appended to the
+    prompt; the caller still parses and validates the reply itself.
+    """
+
+    name = "anthropic"
+    env_key = "ANTHROPIC_API_KEY"
+    base_url = "https://api.anthropic.com/v1/messages"
+    api_version = "2023-06-01"
+    DEFAULT_MAX_TOKENS = 8192
+    OPTION_KEYS = frozenset({"max_completion_tokens", "response_format"})
+
+    def prepare(
+        self,
+        model: str,
+        prompt: str,
+        api_key: str,
+        json_schema: dict | None,
+        options: Mapping[str, Any] | None = None,
+    ) -> tuple[str, dict, dict]:
+        options = dict(options or {})
+        unknown = set(options) - self.OPTION_KEYS
+        if unknown:
+            logger.warning(
+                "provider=%s dropping undocumented option(s) %s",
+                self.__class__.__name__, sorted(unknown),
+            )
+        text = prompt
+        if json_schema is not None:
+            text += (
+                "\n\nReply with a single JSON value only, no prose and no code fences, "
+                "that conforms to this JSON Schema:\n" + json.dumps(json_schema)
+            )
+        elif options.get("response_format") == "json_object":
+            text += "\n\nReply with a single JSON object only, no prose and no code fences."
+        payload: dict[str, Any] = {
+            "model": model,
+            "max_tokens": int(options.get("max_completion_tokens") or self.DEFAULT_MAX_TOKENS),
+            "messages": [{"role": "user", "content": text}],
+        }
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": self.api_version,
+            "content-type": "application/json",
+        }
+        return self.base_url, payload, headers
+
+    def extract(self, data: dict) -> Completion:
+        blocks = data.get("content")
+        if not isinstance(blocks, list):
+            raise ProviderError("unexpected response shape: no content list", retryable=True)
+        text = "".join(
+            block.get("text", "") for block in blocks
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        stop = data.get("stop_reason")
+        finish_reason = "length" if stop == "max_tokens" else (str(stop) if stop else None)
+        if not text and finish_reason != "length":
+            raise ProviderError(f"empty response (stop_reason={stop})", retryable=True)
+        return Completion(text=text, finish_reason=finish_reason, usage=data.get("usage"), raw=data)
+
+
 class GeminiProvider(Provider):
     """Google AI Studio (Gemini API) generateContent."""
 
@@ -826,6 +891,7 @@ def default_providers() -> dict[str, Provider]:
         "gemini": GeminiProvider(),
         "mistral": MistralProvider(),
         "groq": GroqProvider(),
+        "anthropic": AnthropicProvider(),
         "mock": MockProvider(),
     }
 

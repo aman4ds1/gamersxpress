@@ -156,12 +156,13 @@ def test_api_keys_reach_only_the_pipeline_step_and_alerts_only_the_alert_steps()
         assert "secrets." not in str(job.get("env", {})), "secret in job-level env"
         for step in job["steps"]:
             env = str(step.get("env", {}))
-            for secret in ["GEMINI_API_KEY", "GROQ_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]:
+            for secret in ["GEMINI_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]:
                 if f"secrets.{secret}" in env:
                     holders.setdefault(secret, set()).add(step["name"])
             assert "secrets." not in str(step.get("run", ""))
     assert holders["GEMINI_API_KEY"] == {"Run the pipeline"}
     assert holders["GROQ_API_KEY"] == {"Run the pipeline"}
+    assert holders["ANTHROPIC_API_KEY"] == {"Run the pipeline"}
     assert holders["TELEGRAM_BOT_TOKEN"] == {"Send the test message", "Send the Telegram alert"}
     assert holders["TELEGRAM_CHAT_ID"] == {"Send the test message", "Send the Telegram alert"}
 

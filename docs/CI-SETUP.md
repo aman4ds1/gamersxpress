@@ -47,6 +47,7 @@ Secrets:
 |---|---|
 | `GEMINI_API_KEY` | pipeline run |
 | `GROQ_API_KEY` | pipeline run |
+| `ANTHROPIC_API_KEY` | pipeline run (paid fallback writer/verifier, Claude Haiku 5.5) |
 | `CLOUDFLARE_API_TOKEN` | deploy |
 | `CLOUDFLARE_ACCOUNT_ID` | deploy |
 | `TELEGRAM_BOT_TOKEN` | alerts |
