@@ -1,0 +1,10 @@
+{
+  "consecutive_failures": 5,
+  "last_failure_date": "2026-11-20",
+  "open": true,
+  "recent_failures": [
+    "verification failed (article_rejected): xbox-adds-21-classic-xbox-games-to-pc-via-xbox-backwards-compatibility-on-pc",
+    "verification failed (article_rejected): valves-latest-steam-machine-update-doesnt-inspire-confidence-for-2tb-buyers",
+    "verification failed (article_rejected): valves-latest-steam-machine-update-doesnt-inspire-confidence-for-2tb-buyers"
+  ]
+}
