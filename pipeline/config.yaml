@@ -1216,9 +1216,11 @@ run:
 # Tier 1 = official sources, tier 2 = reputable outlets.
 sources:
   # Tier 1: official
-  - name: NVIDIA Gaming News
+  # Replaced 22 November 2026: the old gaming-category feed (/cats/gaming.xml) has had no new item since 11 June 2019.
+  # This is the newsroom's main feed (20 items in the last 4 days; much of it is enterprise and AI, which the relevance filter drops).
+  - name: NVIDIA Newsroom
     site: https://nvidianews.nvidia.com
-    feed_url: https://nvidianews.nvidia.com/cats/gaming.xml
+    feed_url: https://nvidianews.nvidia.com/rss.xml
     topic: mixed
     tier: 1
     owner: nvidia

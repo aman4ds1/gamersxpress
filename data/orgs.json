@@ -21,7 +21,7 @@
     "Konami",
     "Arc System Works",
     "Embark Studios",
-    {"canonical": "NVIDIA", "aliases": ["NVIDIA Gaming News", "NVIDIA Blog"]},
+    {"canonical": "NVIDIA", "aliases": ["NVIDIA Gaming News", "NVIDIA Newsroom", "NVIDIA Blog"]},
     {"canonical": "AMD", "aliases": ["AMD Newsroom"]},
     {"canonical": "Intel", "aliases": ["Intel Newsroom"]},
     "Krafton",
