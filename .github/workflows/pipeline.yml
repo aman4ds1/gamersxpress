@@ -123,6 +123,17 @@ jobs:
         if: ${{ inputs.reset_breaker && !inputs.dry_run }}
         run: python -m pipeline.ci reset-breaker
 
+      # An open breaker issue blocks the next one from being created, so a stale issue
+      # would silence the next alert. Close it when the breaker is reset.
+      - name: Close the breaker issue
+        if: ${{ inputs.reset_breaker && !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for n in $(gh issue list --state open --label pipeline-breaker --json number --jq '.[].number'); do
+            gh issue close "$n" --comment "The circuit breaker was reset by workflow run $GITHUB_RUN_ID."
+          done
+
       - name: Run the pipeline
         id: pipeline
         timeout-minutes: 30
