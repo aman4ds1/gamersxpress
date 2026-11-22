@@ -1517,6 +1517,22 @@ def test_system_instruction_states_relative_time_grounding_and_byline_rules():
     assert "design decision" in instruction
 
 
+def test_absolutize_keeps_now_inside_a_title_cased_name():
+    assert facts.absolutize_relative_time("Now & Later Packs are coming back", "2026-11-17") == (
+        "Now & Later Packs are coming back"
+    )
+    assert facts.absolutize_relative_time("Includes the return of Now & Later Packs", "2026-11-17") == (
+        "Includes the return of Now & Later Packs"
+    )
+    # ordinary "now" is still anchored, and a name does not shield a later "now"
+    assert facts.absolutize_relative_time("The update is live now on PS5", "2026-11-17") == (
+        "The update is live as of November 17, 2026 on PS5"
+    )
+    assert facts.absolutize_relative_time("Now & Later Packs are live now", "2026-11-17") == (
+        "Now & Later Packs are live as of November 17, 2026"
+    )
+
+
 def test_absolutize_relative_time_uses_the_source_date():
     assert facts.absolutize_relative_time("begins today", dt.date(2026, 10, 7)) == "begins on October 7, 2026"
     assert facts.absolutize_relative_time("out now", "2026-10-07") == "available as of October 7, 2026"

@@ -353,6 +353,13 @@ def test_relative_time_in_title_and_description_fails():
     assert result.checks["relative_time"]["failures"]
 
 
+def test_now_inside_a_title_cased_name_is_not_relative_time():
+    name_body = "## What happened\n\nThe Now & Later Packs return with the update. " + filler()
+    assert run(make_article(body=name_body)[0]).checks["relative_time"]["failures"] == []
+    plain_body = "## What happened\n\nThe update is live now for all players. " + filler()
+    assert run(make_article(body=plain_body)[0]).checks["relative_time"]["failures"]
+
+
 def test_relative_time_inside_quotes_is_ignored():
     body = '## What happened\n\nThe track is called "Now or Never" and it ships with the update. ' + filler()
     result = run(make_article(body=body)[0])

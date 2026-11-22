@@ -175,6 +175,22 @@ _ORG_ORIGIN_WORDS = frozenset({
 # A quoted span (straight or curly double quotes) is a name, not reader text;
 # relative-time words inside it are ignored.
 _QUOTED_SPAN_RE = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
+# A capitalized "Now" in a title-cased name joined by "&" ("Now & Later Packs") is part of a product name,
+# not a word that will expire. Only this shape is protected: "Now Playing" or a sentence-initial "Now ..."
+# stay relative-time wording.
+_PROTECTED_NAME_RE = re.compile(r"\bNow\s*(?:&|&amp;)\s*[A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*)*")
+
+
+def protected_name_spans(text: object) -> list[tuple[int, int]]:
+    """Character spans of names whose relative-time word is part of the name."""
+    return [match.span() for match in _PROTECTED_NAME_RE.finditer(str(text or ""))]
+
+
+def strip_protected_names(text: object) -> str:
+    """``text`` with protected names blanked, for relative-time matching (call before lowercasing)."""
+    return _PROTECTED_NAME_RE.sub(" ", str(text or ""))
+
+
 _ALNUM_RE = re.compile(r"[a-z0-9]+")
 _MONTH_RE = re.compile(
     r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b",
@@ -518,7 +534,7 @@ def _parse_time(value: Any) -> dt.datetime | None:
 
 def _phrase_hits(text: str, phrases: Iterable[str]) -> list[str]:
     """Phrases present in ``text`` on word boundaries, ignoring quoted spans."""
-    haystack = _QUOTED_SPAN_RE.sub(" ", str(text or "")).lower()
+    haystack = _QUOTED_SPAN_RE.sub(" ", strip_protected_names(text)).lower()
     hits: list[str] = []
     for phrase in phrases:
         phrase = str(phrase).strip().lower()

@@ -1360,6 +1360,11 @@ def test_relative_time_word_only_in_the_models_paraphrase_is_allowed(tmp_path):
     assert clause not in report.unsupported
 
 
+def test_now_inside_a_title_cased_name_is_allowed_but_plain_now_is_not():
+    assert verify_module._relative_time_hits("The Now & Later Packs return", ("now",)) == []
+    assert verify_module._relative_time_hits("The update is live now", ("now",)) == ["now"]
+
+
 def test_relative_time_word_inside_a_quoted_name_is_allowed():
     assert verify_module._relative_time_hits('the "Today Show" panel', ("today",)) == []
 

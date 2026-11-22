@@ -284,6 +284,14 @@ def test_validate_rejects_relative_time_in_snippet():
     assert any("relative-time" in e for e in errors)
 
 
+def test_validate_allows_now_inside_a_title_cased_name():
+    data = seo_data(
+        description="NVIDIA's flagship graphics card brings back Now & Later Packs with more memory and a higher price for gaming PCs."
+    )
+    errors = seo.validate(data, article=ARTICLE, facts=make_facts(), entities=seo.load_entities())
+    assert not any("relative-time" in e for e in errors)
+
+
 def test_validate_rejects_completeness_word_without_a_fact():
     data = seo_data(
         description="NVIDIA's complete flagship graphics card arrives with more memory and a higher price for gaming PCs."

@@ -54,6 +54,7 @@ from gates import (
     entity_mention_failures,
     load_content_limits,
     load_content_rules,
+    strip_protected_names,
     title_entity_coverage,
 )
 from json_schema import schema_errors
@@ -802,9 +803,10 @@ def validate(
     # Relative-time wording makes the snippet go stale (writer rule: calendar
     # dates only). The writer replaces "today"/"now" with the sheet's date.
     rules = load_content_rules()
+    relative_snippet = strip_protected_names(f"{title}\n{description}").lower()
     for phrase in rules["relative_time_phrases"]:
         phrase = str(phrase).strip().lower()
-        if phrase and re.search(rf"(?<![\w-]){re.escape(phrase)}(?![\w-])", snippet):
+        if phrase and re.search(rf"(?<![\w-]){re.escape(phrase)}(?![\w-])", relative_snippet):
             errors.append(f"title or description uses relative-time wording: {phrase!r}")
 
     # "full" and "complete" are hype unless a fact states them.

@@ -1305,9 +1305,12 @@ def absolutize_relative_time(value: object, published: object, *, kind: str | No
     had_out_now = False
     kind_token = str(kind or "").strip().lower()
     statement_kind = kind_token == "statement"
+    protected = gates.protected_name_spans(text)
 
     def replace(match: re.Match) -> str:
         nonlocal had_out_now
+        if any(start <= match.start() and match.end() <= end for start, end in protected):
+            return match.group(0)  # part of a name such as "Now & Later Packs"
         word = match.group(0).lower()
         if word == "out now":
             had_out_now = True
@@ -1337,7 +1340,7 @@ def absolutize_relative_time(value: object, published: object, *, kind: str | No
 
 def _has_relative_time(value: object) -> bool:
     """True when a value contains a configured relative-time word."""
-    text = str(value or "")
+    text = gates.strip_protected_names(value)
     words = _relative_time_words()
     if not text or not words:
         return False

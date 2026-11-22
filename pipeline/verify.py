@@ -530,7 +530,7 @@ def _sentence_names_speaker(
 
 def _relative_time_hits(text: object, words: tuple[str, ...]) -> list[str]:
     """Relative-time words in ``text`` outside any quoted span (model-independent)."""
-    folded = _fold(text)
+    folded = _fold(gates.strip_protected_names(text))
     spans = [(match.start(), match.end()) for match in _QUOTED_SPAN_RE.finditer(folded)]
     hits: list[str] = []
     for word in words:
