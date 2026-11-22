@@ -12,3 +12,8 @@ data/gathered/
 data/candidates/
 data/reports/feed-health.json
 drafts/
+
+# pipeline output, regenerated each run (live state lives on the pipeline-state branch)
+data/facts/
+data/reports/
+data/failed.json
