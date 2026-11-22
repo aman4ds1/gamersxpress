@@ -1276,6 +1276,9 @@ sources:
     owner: techpowerup
     region: global
     categories: [hardware, pc, tech]
+    # fetch: false since 22 November 2026: its article pages answered HTTP 403 to GitHub's servers in 6 of 6 fetches
+    # over 5 runs (they load by hand), so it never counted as a source with text. Remove this line if that stops.
+    fetch: false
   - name: GamersNexus
     site: https://gamersnexus.net
     feed_url: https://gamersnexus.net/rss.xml
