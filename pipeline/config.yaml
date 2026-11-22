@@ -1451,6 +1451,63 @@ sources:
     region: us
     categories: [gaming-news]
     fetch: false
+  # Added 22 November 2026. Owners checked by hand; each feed and its article pages were fetched by hand.
+  # Destructoid and Nintendo Life were left out: their article pages return HTTP errors, so they would be headline-only.
+  - name: PCGamesN
+    site: https://www.pcgamesn.com
+    feed_url: https://www.pcgamesn.com/mainrss.xml
+    topic: gaming
+    tier: 2
+    owner: network-n
+    region: global
+    categories: [pc, gaming-news]
+  - name: Siliconera
+    site: https://www.siliconera.com
+    feed_url: https://www.siliconera.com/feed/
+    topic: gaming
+    tier: 2
+    owner: gamurs
+    region: us
+    categories: [gaming-news]
+    # owner: Gamurs Group (one source: CB Insights); Destructoid has the same owner
+  - name: The Verge
+    site: https://www.theverge.com
+    feed_url: https://www.theverge.com/rss/games/index.xml
+    topic: gaming
+    tier: 2
+    owner: penske-media
+    region: us
+    categories: [gaming-news, tech]
+    # owner: sold by Vox Media to Penske Media in June 2026 (reported by secondary outlets)
+  # Added 22 November 2026 (owners checked by hand; feed and article pages fetched by hand).
+  # PlayStation LifeStyle and My Nintendo News were left out: no owner could be found.
+  - name: The Xbox Hub
+    site: https://www.thexboxhub.com
+    feed_url: https://www.thexboxhub.com/feed/
+    topic: gaming
+    tier: 2
+    owner: thexboxhub
+    region: global
+    categories: [xbox, gaming-news]
+    # owner: the site's owner and editor is an individual; it says it is not affiliated with Microsoft. Fan site: expect rumors.
+  - name: GamingOnLinux
+    site: https://www.gamingonlinux.com
+    feed_url: https://www.gamingonlinux.com/article_rss.php
+    topic: gaming
+    tier: 2
+    owner: gamingonlinux
+    region: global
+    categories: [pc, gaming-news]
+    # owner: an independent site owned by one person (its own About page)
+  - name: Game Informer
+    site: https://gameinformer.com
+    feed_url: https://gameinformer.com/rss.xml
+    topic: gaming
+    tier: 2
+    owner: gunzilla-games
+    region: global
+    categories: [gaming-news]
+    # owner: Gunzilla Games bought and relaunched it in 2025 (2025 reports; no 2026 report found)
 
 # Real images (pipeline/images.py). An article may carry a `hero` picture with a credit; it is
 # resized to our own WebP file and must come from one of these license kinds. A picture from
