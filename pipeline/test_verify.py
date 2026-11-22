@@ -1342,6 +1342,24 @@ def test_relative_time_word_outside_quotes_is_unsupported(tmp_path):
     assert clause in report.unsupported
 
 
+def test_relative_time_word_only_in_the_models_paraphrase_is_allowed(tmp_path):
+    # The checker's restatement says "currently"; the article sentence does not.
+    # The rule judges the article's words, not the checker's.
+    clause = "Customers currently in line are no longer guaranteed a unit"
+    payload = model(
+        clauses=[{"clause": clause, "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}]
+    )
+    report = verify_module.verify(
+        "Customers still in line are no longer guaranteed a unit.\n",
+        sheet(),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert clause not in report.unsupported
+
+
 def test_relative_time_word_inside_a_quoted_name_is_allowed():
     assert verify_module._relative_time_hits('the "Today Show" panel', ("today",)) == []
 

@@ -197,7 +197,12 @@ SYSTEM_INSTRUCTION = (
     "said or did it (the speaker, the outlet, or the fact's attribution), "
     "qualifier and hedge words (could, may, expected, first, only, full, "
     "reportedly), the time or date, numbers, and the relationship between the "
-    "ideas. Say what the clause does beyond its facts in \"exceeds_facts\" and "
+    "ideas. Before judging that a clause adds a date, number, name or label, "
+    "check every numbered fact: when any fact in the sheet states that detail "
+    "about the same event, the clause does not add it, and you must cite every "
+    "fact that supports it in \"fact_ids\" (two facts that state the same event "
+    "are not a merged claim).\n"
+    "Say what the clause does beyond its facts in \"exceeds_facts\" and "
     "how close it is in \"match\" (informational only).\n"
     "\"exceeds_facts\" is a required boolean. Set it true only when the clause "
     "asserts something the cited facts do not assert, including dropping a "
@@ -862,7 +867,7 @@ def _model_check(
         if (
             not _clause_supported(item)
             or not attribution_ok
-            or _relative_time_hits(clause, relative_time_words)
+            or _relative_time_hits(sentence or clause, relative_time_words)
         ):
             unsupported_clauses.append(clause)
             unsupported_detail.append({"clause": clause, "sentence": best_sentence[:300]})
