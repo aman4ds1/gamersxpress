@@ -65,8 +65,12 @@ test('the solid panel is for article pages only, so the animation never runs beh
   assert.match(layout, /class:list=\{\["flex-1", \{ "gx-reading": reading \}\]\}/);
   assert.equal((read('src/pages/index.astro').match(/\breading\b/g) || []).length, 0, 'home page has no panel');
   const panel = /\nmain\.gx-reading \{([^}]*)\}/.exec(gx)[1];
-  assert.match(panel, /background: color-mix\(in srgb, var\(--surface\) 70%, transparent\);/);
-  assert.match(panel, /backdrop-filter: blur\(14px\) saturate\(115%\);/);
+  // the panel's look comes from theme tokens: frosted glass in light, the 70% surface in both dark modes
+  assert.match(panel, /background: var\(--panel-bg\);/);
+  assert.match(panel, /backdrop-filter: var\(--panel-blur\);/);
+  assert.equal((global.match(/--panel-bg: color-mix\(in srgb, var\(--surface\) 70%, transparent\);/g) || []).length, 2);
+  assert.equal((global.match(/--panel-blur: blur\(14px\) saturate\(115%\);/g) || []).length, 2);
+  assert.match(global, /:root \{[^}]*--panel-bg: [^;]+;/);
   assert.match(panel, /width: min\(1040px, calc\(100% - 24px\)\);/);
   assert.match(panel, /z-index: 1;/);
   assert.match(gx, /@media print \{ main\.gx-reading \{ border: 0; box-shadow: none; \} \}/);

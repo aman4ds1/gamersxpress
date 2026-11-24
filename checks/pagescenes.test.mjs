@@ -37,7 +37,7 @@ test('the list of sky pages is exactly the home page and the information pages',
 
 test('every page of the site has been deliberately given a scene', () => {
   // A new page must be added here (or to SKY_PATHS), so nobody gets a background by accident.
-  const MAZE_PAGES = ['/search'];
+  const MAZE_PAGES = ['/search', '/404'];
   const MAZE_FOLDERS = ['category', 'news', 'topic'];
   const NOT_PAGES = ['rss.xml.ts'];
   const known = new Set([...SKY_PATHS, ...MAZE_PAGES]);

@@ -215,7 +215,8 @@ test('the owner\'s exception is recorded under the "no server code" rule, and th
 test('the site deploy is untouched: the root config still deploys only the built site', () => {
   const root = JSON.parse(read('wrangler.jsonc'));
   assert.equal(root.name, 'gamersxpress');
-  assert.deepEqual(root.assets, { directory: './dist' });
+  // static assets only; the 404 page is served from dist, not by code
+  assert.deepEqual(root.assets, { directory: './dist', not_found_handling: '404-page' });
   assert.equal(root.main, undefined);
   assert.equal(root.triggers, undefined);
 });

@@ -36,7 +36,8 @@ test('the popup is rendered after the header, outside it and outside the indexed
   // inside the header it would be positioned against the header's backdrop-filter instead of the screen
   assert.ok(header.indexOf('<SearchPopup />') > header.indexOf('</header>'));
   assert.ok(layout.indexOf('<Header />') < layout.indexOf('<main'));
-  assert.match(layout, /<main class:list=\{\["flex-1", \{ "gx-reading": reading \}\]\} data-pagefind-body>/);
+  // id="main" is the target of the skip-to-content link
+  assert.match(layout, /<main id="main" class:list=\{\["flex-1", \{ "gx-reading": reading \}\]\} data-pagefind-body>/);
   assert.match(header, /import SearchPopup from '\.\/SearchPopup\.astro';/);
 });
 
@@ -117,7 +118,9 @@ test('a slow answer never overwrites a newer one', () => {
   assert.equal((script.match(/if \(mine !== token\) return;/g) || []).length, 2);
   assert.equal((script.match(/found === null \|\| mine !== token/g) || []).length, 2);
   assert.match(script, /if \(found === null \|\| mine !== token\) return; \/\/ a newer search replaced this one/);
-  assert.match(script, /token \+= 1;\s*panel\.hidden = true;/);               // closing also cancels a search in flight
+  // closing also cancels a search in flight, before the panel is hidden
+  const close = /const close = [\s\S]*?\n    \};/.exec(script)[0];
+  assert.ok(close.indexOf('token += 1;') > -1 && close.indexOf('token += 1;') < close.indexOf('panel.hidden = true;'));
 });
 
 test('keyboard: arrows move, Enter opens, Escape closes, / and Ctrl/Cmd+K open (but not while typing)', () => {
