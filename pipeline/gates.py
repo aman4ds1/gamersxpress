@@ -125,7 +125,7 @@ DEFAULT_GATES: dict[str, Any] = {
     "min_words": DEFAULT_CONTENT_LIMITS["min_words"],
     "min_sources": DEFAULT_CONTENT_LIMITS["min_sources"],
     "overlap": {"ngram": 8, "max_ratio": 0.2},
-    "near_duplicate": {"title_similarity": 0.8, "window_days": 7},
+    "near_duplicate": {"title_similarity": 0.8, "window_days": 7, "shared_entity_body_overlap": 0.3},
     "banned_phrases": [],
     # Draft-quality gates. Each ``check_*`` switch turns one gate off; the two
     # numeric limits are the per-gate thresholds.
@@ -379,6 +379,9 @@ def load_gates_config(path: str | Path | None = None) -> dict:
     config["near_duplicate"] = {
         "title_similarity": float(near.get("title_similarity", DEFAULT_GATES["near_duplicate"]["title_similarity"])),
         "window_days": int(near.get("window_days", DEFAULT_GATES["near_duplicate"]["window_days"])),
+        "shared_entity_body_overlap": float(
+            near.get("shared_entity_body_overlap", DEFAULT_GATES["near_duplicate"]["shared_entity_body_overlap"])
+        ),
     }
     for key in (
         "check_repeated_facts",
@@ -1296,16 +1299,23 @@ def default_site_checks(
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def _body_overlap(first: str, second: str) -> float:
+    """Content-word Jaccard of two article bodies (0 when either has no content words)."""
+    a, b = _content_words(first), _content_words(second)
+    return len(a & b) / len(a | b) if a and b else 0.0
+
+
 def load_existing_articles(articles_dir: str | Path | None = None) -> list[dict]:
     directory = Path(articles_dir) if articles_dir else DEFAULT_ARTICLES_DIR
     if not directory.is_dir():
         return []
     records: list[dict] = []
     for path in sorted(directory.glob("*.md")):
-        front, _body = parse_front_matter(path.read_text(encoding="utf-8"))
+        front, article_body = parse_front_matter(path.read_text(encoding="utf-8"))
         records.append(
             {
                 "slug": path.stem,
+                "body": article_body,
                 "title": str(front.get("title") or ""),
                 "entities": [str(e) for e in front.get("entities") or []],
                 "pubDate": front.get("pubDate"),
@@ -1616,7 +1626,12 @@ def run_gates(
             continue
         sim = similarity(title, other_title)
         shared = self_entities & {str(e).lower() for e in record_entry.get("entities") or []}
-        if sim >= near_cfg["title_similarity"] or (shared and sim >= 0.5):
+        # A title that is only half alike and a shared entity (often the game itself) also match a different
+        # angle on the same game, so that band needs the bodies to overlap too. A record without a body keeps
+        # the title-and-entity rule.
+        other_body = record_entry.get("body")
+        same_story = other_body is None or _body_overlap(body, str(other_body)) >= near_cfg["shared_entity_body_overlap"]
+        if sim >= near_cfg["title_similarity"] or (shared and sim >= 0.5 and same_story):
             duplicate_failures.append(f"near-duplicate of {other_slug} (title similarity {sim:.2f})")
     record("duplicates", duplicate_failures)
 

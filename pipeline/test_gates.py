@@ -238,6 +238,47 @@ def test_near_duplicate_inside_window_fails():
     assert not run(article, existing_articles=existing).passed
 
 
+def _mid_title_record(body):
+    # Title similarity 0.70 to make_article's title (band 0.5-0.8), one shared entity.
+    return [{
+        "slug": "older-angle",
+        "title": "Nvidia confirms RTX 5090 supply is tight at launch",
+        "entities": ["Nvidia"],
+        "pubDate": "2026-10-08",
+        "body": body,
+    }]
+
+
+def test_mid_title_match_with_shared_entity_and_unrelated_body_passes():
+    # A different angle on the same subject: half-alike title, shared entity, little shared wording.
+    article, _ = make_article()
+    other = "Retailers report queues, sold out preorders, scalper listings and shipping delays across Europe. " * 8
+    assert run(article, existing_articles=_mid_title_record(other)).passed
+
+
+def test_mid_title_match_with_shared_entity_and_same_body_fails():
+    article, _ = make_article()
+    _front, body = gates.parse_front_matter(article)
+    result = run(article, existing_articles=_mid_title_record(body))
+    assert not result.passed
+
+
+def test_mid_title_match_without_a_stored_body_keeps_the_title_and_entity_rule():
+    article, _ = make_article()
+    existing = _mid_title_record("x")
+    del existing[0]["body"]
+    assert not run(article, existing_articles=existing).passed
+
+
+def test_title_similarity_over_the_limit_fails_whatever_the_body():
+    article, _ = make_article()
+    existing = [{
+        "slug": "older-story", "title": "Nvidia confirms RTX 5090 launch window soon", "entities": [],
+        "pubDate": "2026-10-08", "body": "Retailers report queues and scalper listings across Europe. " * 8,
+    }]
+    assert not run(article, existing_articles=existing).passed
+
+
 def test_near_duplicate_outside_window_passes():
     article, _ = make_article()
     existing = [{

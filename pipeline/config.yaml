@@ -730,6 +730,10 @@ gates:
   near_duplicate:
     title_similarity: 0.8
     window_days: 7
+    # Titles 0.5-0.8 alike plus a shared entity only count as one story when the bodies share this
+    # much wording. The GTA VI launch and its player-record follow-up scored 0.14; unrelated
+    # published pairs at most 0.13. Not calibrated on a real duplicate: lower it if one slips through.
+    shared_entity_body_overlap: 0.3
   # Draft-quality gates, added after one real draft passed every older gate
   # while carrying a dangling reference, a circular attribution, a date stated
   # three times, an empty section, eight sentences opening with one outlet and
