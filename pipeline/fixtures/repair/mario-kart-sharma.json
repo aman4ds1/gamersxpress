@@ -1,0 +1,8 @@
+{
+  "source": "GitHub Actions run 45006010583 (repair rejected on 2026-11-2x); paragraph around the flagged sentence",
+  "flagged": [
+    "Asha Sharma stated regarding generative AI technology that on November 16, 2026, a single person will be able to wield capabilities that once required entire nations."
+  ],
+  "original_paragraph": "Computational power is not the sole focus for Project Helix, and Microsoft noted that the next generation was not about hitting 8K resolutions and 240 hertz frame-rates. Instead, Microsoft confirmed that Project Helix will use gen-AI-adjacent neural rendering technology going forward. Asha Sharma stated regarding generative AI technology that on November 16, 2026, a single person will be able to wield capabilities that once required entire nations. Jason Ronald stated that more innovation is expected over the next three to five years than was seen in the last 10 years.",
+  "repaired_paragraph": "Computational power is not the sole focus for Project Helix, and Microsoft noted that the next generation was not about hitting 8K resolutions and 240 hertz frame-rates. Instead, Microsoft confirmed that Project Helix will use gen-AI-adjacent neural rendering technology going forward. Asha Sharma discussed generative-AI-sounding technology, noting that too many concepts never become games and predicting that by November 16, 2026, an individual will hold capabilities that previously required entire nations. Jason Ronald stated that more innovation is expected over the next three to five years than was seen in the last 10 years."
+}

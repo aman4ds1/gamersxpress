@@ -1,0 +1,8 @@
+{
+  "source": "GitHub Actions run 45086925070 (repair rejected on 2026-11-2x); paragraph around the flagged sentence",
+  "flagged": [
+    "Szwed stated this is one of those ways where you can use AI ethically, with consent and also to do something good."
+  ],
+  "original_paragraph": "Localization producer Mikołaj Szwed stated that as a person working with voice actors across regions worldwide, generative AI in voice acting is a big concern. Szwed stated this is one of those ways where you can use AI ethically, with consent and also to do something good. Szwed stated the studio is not planning to do anything similar with English voice actor Doug Cockle, whose lines reportedly will not get generative AI treatment.",
+  "repaired_paragraph": "Localization producer Mikołaj Szwed stated that as a person working with voice actors across regions worldwide, generative AI in voice acting is a big concern. Szwed expressed that this case demonstrates how artificial intelligence can be deployed ethically, provided there is consent and a beneficial purpose. Szwed stated the studio is not planning to do anything similar with English voice actor Doug Cockle, whose lines reportedly will not get generative AI treatment."
+}

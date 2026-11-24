@@ -470,10 +470,27 @@ _NAME_CONNECTOR = r"of|and|the|for|in|on|at|de|van"
 _NAME = rf"{_NAME_WORD}(?:\s+(?:{_NAME_WORD}|{_NAME_CONNECTOR}))*"
 #: "according to <Source>" and "<Source> states/says/claims/announced/..."
 _ATTRIBUTION_LEAD_RE = re.compile(rf"(?i:according)\s+to\s+({_NAME})")
-_ATTRIBUTION_VERB_RE = re.compile(
-    rf"\b({_NAME})\s+(?:states|stated|state|says|said|say|claims|claimed|claim|"
-    rf"announces|announced|announce|confirms|confirmed|confirm|reports|reported|"
-    rf"report|reveals|revealed|reveal|adds|added|add|notes|noted|note)\b"
+#: Reporting verbs that make the name before them the speaker. A replacement may change the verb
+#: ("Szwed stated" -> "Szwed expressed"), so the list covers the common reporting verbs; a name
+#: that is not followed by one ("Szwed's team ...") is not an attribution.
+_REPORTING_VERBS = (
+    "states|stated|state|says|said|say|claims|claimed|claim|"
+    "announces|announced|announce|confirms|confirmed|confirm|reports|reported|report|"
+    "reveals|revealed|reveal|adds|added|add|notes|noted|note|"
+    "expresses|expressed|express|discusses|discussed|discuss|explains|explained|explain|"
+    "tells|told|tell|describes|described|describe|argues|argued|argue|"
+    "suggests|suggested|suggest|predicts|predicted|predict|warns|warned|warn|"
+    "emphasizes|emphasized|emphasize|emphasises|emphasised|emphasise|"
+    "acknowledges|acknowledged|acknowledge|admits|admitted|admit|denies|denied|deny|"
+    "comments|commented|comment|mentions|mentioned|mention|writes|wrote|write|"
+    "shares|shared|share|"
+    r"points\s+out|pointed\s+out|point\s+out"
+)
+_ATTRIBUTION_VERB_RE = re.compile(rf"\b({_NAME})\s+(?:{_REPORTING_VERBS})\b")
+#: Last words too generic to identify a speaker on their own ("Games" in "Epic Games").
+_GENERIC_NAME_WORDS = frozenset(
+    {"games", "game", "studios", "studio", "entertainment", "interactive", "software",
+     "inc", "group", "team", "company", "digital", "media", "labs", "productions"}
 )
 _HEADING_LINE_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
 _LIST_ITEM_LINE_RE = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,3}[.)])\s+")
@@ -738,6 +755,23 @@ def _attributions(sentence: str) -> set[str]:
     return found
 
 
+def _same_speaker(first: str, second: str) -> bool:
+    """True when two folded speaker names are the same, or one is the other's distinctive surname.
+
+    "mikołaj szwed" and "szwed" match. A single word matches only the last word of a longer name,
+    must be at least three letters and must not be a generic word such as "games", so "Games" never
+    stands in for "Epic Games" and a first name never stands in for a full name.
+    """
+    if first == second:
+        return True
+    a, b = first.split(), second.split()
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) != 1 or len(long) < 2:
+        return False
+    surname = short[0]
+    return len(surname) >= 3 and surname not in _GENERIC_NAME_WORDS and long[-1] == surname
+
+
 def _check_added_sentence(
     sentence: str,
     pending_sources: list[tuple[str, set[str]]],
@@ -757,7 +791,8 @@ def _check_added_sentence(
         problems.append(f"added sentence does not end with sentence punctuation: {preview!r}")
     if pending_sources:
         _removed, sources = pending_sources.pop(0)
-        if not (sources & _attributions(sentence)):
+        kept = _attributions(sentence)
+        if not any(_same_speaker(source, name) for source in sources for name in kept):
             problems.append(
                 "replacement drops the attribution to "
                 + ", ".join(sorted(sources))

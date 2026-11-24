@@ -365,6 +365,58 @@ def test_validate_repair_rejects_a_replacement_that_drops_the_attribution():
     assert any("drops the attribution to acme" in problem for problem in problems), problems
 
 
+REPAIR_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "repair"
+
+
+@pytest.mark.parametrize("name", ["witcher3-szwed", "mario-kart-sharma"])
+def test_real_repairs_that_kept_the_speaker_with_another_verb_are_accepted(name):
+    # Both were rejected in production as "replacement drops the attribution" although the
+    # replacement still named the speaker as subject ("Szwed expressed", "Asha Sharma discussed").
+    fixture = json.loads((REPAIR_FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
+    original = repair_article(fixture["original_paragraph"])
+    repaired = repair_article(fixture["repaired_paragraph"])
+    problems = write_module.validate_repair(original, repaired, fixture["flagged"])
+    assert not [problem for problem in problems if "drops the attribution" in problem], problems
+
+
+def test_a_multi_word_reporting_verb_is_an_attribution():
+    assert write_module._attributions("Szwed pointed out that the lines were recorded with consent.") == {"szwed"}
+
+
+def test_a_replacement_with_a_new_reporting_verb_keeps_the_attribution():
+    original = repair_article(ATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
+    repaired = repair_article("Acme pointed out that the glasses render at 240 Hz worldwide.", OVERVIEW_SENTENCE)
+    assert write_module.validate_repair(original, repaired, [ATTRIBUTED_SENTENCE]) == []
+
+
+def test_a_replacement_using_the_speakers_surname_keeps_the_attribution():
+    flagged = "Localization producer Mikolaj Szwed stated that the voice was restored with consent."
+    original = repair_article(flagged, OVERVIEW_SENTENCE)
+    repaired = repair_article("Szwed explained that the actor agreed to the restored voice lines.", OVERVIEW_SENTENCE)
+    assert write_module.validate_repair(original, repaired, [flagged]) == []
+
+
+def test_a_name_that_is_not_the_speaker_does_not_keep_the_attribution():
+    flagged = "Mikolaj Szwed stated that the voice was restored with consent."
+    original = repair_article(flagged, OVERVIEW_SENTENCE)
+    repaired = repair_article("Szwed's team restored the voice lines with the actor's consent.", OVERVIEW_SENTENCE)
+    problems = write_module.validate_repair(original, repaired, [flagged])
+    assert any("drops the attribution to mikolaj szwed" in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize(
+    ("speaker", "other"),
+    [
+        ("mikolaj szwed", "mikolaj"),      # a first name is not the speaker
+        ("epic games", "games"),           # a generic last word is not the speaker
+        ("mikolaj szwed", "jan szwed"),    # two full names sharing a surname are different people
+        ("cd projekt", "ed"),              # too short to identify anyone
+    ],
+)
+def test_ambiguous_names_are_not_the_same_speaker(speaker, other):
+    assert not write_module._same_speaker(speaker, other)
+
+
 def test_validate_repair_rejects_a_fragment_left_by_a_replacement():
     original = repair_article(UNATTRIBUTED_SENTENCE, OVERVIEW_SENTENCE)
     repaired = repair_article("The two-year warranty.", OVERVIEW_SENTENCE)
