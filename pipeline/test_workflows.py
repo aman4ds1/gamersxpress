@@ -163,8 +163,9 @@ def test_api_keys_reach_only_the_pipeline_step_and_alerts_only_the_alert_steps()
     assert holders["GEMINI_API_KEY"] == {"Run the pipeline"}
     assert holders["GROQ_API_KEY"] == {"Run the pipeline"}
     assert holders["ANTHROPIC_API_KEY"] == {"Run the pipeline"}
-    assert holders["TELEGRAM_BOT_TOKEN"] == {"Send the test message", "Send the Telegram alert"}
-    assert holders["TELEGRAM_CHAT_ID"] == {"Send the test message", "Send the Telegram alert"}
+    alerts = {"Send the test message", "Send the Telegram alert", "Send the reset alert"}
+    assert holders["TELEGRAM_BOT_TOKEN"] == alerts
+    assert holders["TELEGRAM_CHAT_ID"] == alerts
 
 
 def test_the_pull_request_step_gets_model_text_only_through_env():

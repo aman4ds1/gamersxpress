@@ -24,6 +24,7 @@ down the same way.
     python -m pipeline.ci restore
     python -m pipeline.ci save
     python -m pipeline.ci reset-breaker
+    python -m pipeline.ci reset-alert --run-url <url>
     python -m pipeline.ci breaker-status
     python -m pipeline.ci draft-branch --report data/reports/last-run.json --run-id 123
     python -m pipeline.ci publish-main --report data/reports/last-run.json
@@ -215,6 +216,13 @@ def save_state(
     return commit
 
 
+def _breaker_is_open(data_dir: Path) -> bool:
+    try:
+        return bool(json.loads((data_dir / "breaker.json").read_text(encoding="utf-8")).get("open"))
+    except (OSError, ValueError):
+        return False
+
+
 def reset_breaker(data_dir: Path) -> dict:
     """Close the circuit breaker (the same fields ``run.reset_breaker`` clears)."""
     path = data_dir / "breaker.json"
@@ -222,6 +230,7 @@ def reset_breaker(data_dir: Path) -> dict:
     if path.is_file():
         breaker = json.loads(path.read_text(encoding="utf-8"))
     breaker.update(consecutive_failures=0, open=False, recent_failures=[])
+    breaker.pop("last_paused_alert", None)
     breaker.setdefault("last_failure_date", None)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(breaker, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -478,7 +487,7 @@ def _set_output(key: str, value: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m pipeline.ci", description="CI helpers for the scheduled workflow.")
     parser.add_argument("command", choices=[
-        "restore", "save", "reset-breaker", "breaker-status", "draft-branch", "publish-main",
+        "restore", "save", "reset-breaker", "reset-alert", "breaker-status", "draft-branch", "publish-main",
         "notify", "announce", "deploy-failed", "unpublish", "telegram-test",
     ])
     parser.add_argument("--repo", default=str(PROJECT_ROOT), help="repository root")
@@ -505,8 +514,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "save":
             save_state(repo, data_dir)
         elif args.command == "reset-breaker":
+            # The alert is a separate workflow step, so this step never holds the Telegram secrets.
+            _set_output("was_open", "true" if _breaker_is_open(data_dir) else "false")
             reset_breaker(data_dir)
             logger.info("circuit breaker reset")
+        elif args.command == "reset-alert":
+            notify.send_telegram(notify.build_breaker_reset_message(args.run_url))
         elif args.command == "breaker-status":
             try:
                 is_open = bool(json.loads((data_dir / "breaker.json").read_text(encoding="utf-8")).get("open"))
@@ -553,7 +566,9 @@ def main(argv: list[str] | None = None) -> int:
                 published=str(args.published).strip().lower() == "true",
             )
             if message:
-                notify.send_telegram(message)
+                if not notify.send_telegram(message):
+                    # Visible in the run summary; the alert never fails the run.
+                    print("::warning::The Telegram alert was not delivered (see the log above).")
             else:
                 logger.info("no alert for this run (status %s)", report.get("status"))
         elif args.command == "telegram-test":

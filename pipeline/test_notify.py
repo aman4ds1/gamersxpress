@@ -212,6 +212,39 @@ def test_a_paused_run_with_an_open_breaker_does_not_repeat_the_alert():
     assert notify.build_message({"status": "paused", "breaker": {"open": True}}) is None
 
 
+def test_a_failed_run_shows_how_close_the_breaker_is():
+    message = notify.build_message(
+        {"status": "failed", "slug": "s", "breaker": {"consecutive_failures": 3, "open": False}, "breaker_threshold": 5}
+    )
+    assert "Failures in a row: 3/5" in message
+    assert "Circuit breaker is open" not in message
+
+
+def test_a_failed_run_without_a_threshold_shows_no_count():
+    assert "Failures in a row" not in notify.build_message(
+        {"status": "failed", "slug": "s", "breaker": {"consecutive_failures": 3}}
+    )
+
+
+def test_a_paused_run_due_a_reminder_says_publishing_is_still_paused():
+    message = notify.build_message(
+        {"status": "paused", "breaker_reminder": True, "breaker": {"open": True, "recent_failures": ["a", "last one"]}},
+        run_url=RUN,
+    )
+    assert "still paused" in message
+    assert "last one" in message
+    assert RUN in message
+
+
+def test_a_reminder_flag_alone_never_alerts_without_an_open_breaker():
+    assert notify.build_message({"status": "paused", "breaker_reminder": True, "breaker": {"open": False}}) is None
+
+
+def test_the_reset_message_says_publishing_resumed():
+    message = notify.build_breaker_reset_message(RUN)
+    assert "Publishing resumed" in message and RUN in message
+
+
 # --- the "published" message (auto mode) ----------------------------------------------------
 
 LIVE = [{"slug": "phantom-blade-zero-sells-4-million", "title": "Phantom Blade Zero sells 4 million copies",

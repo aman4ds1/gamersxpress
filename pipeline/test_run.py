@@ -161,6 +161,51 @@ def test_breaker_opens_after_the_configured_number_of_gate_failures_and_pauses(t
     assert breaker["consecutive_failures"] == threshold
 
 
+def _breaker(tmp_path):
+    return json.loads((tmp_path / "state" / "breaker.json").read_text(encoding="utf-8"))
+
+
+def _open_breaker(tmp_path):
+    config = yaml.safe_load((Path(run_module.__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8"))
+    for index in range(int(config["safety"]["breaker_threshold"])):
+        opened = NOW + dt.timedelta(hours=25 * index)
+        run_once(tmp_path, dry_run=True, scenario="fail-gate", now=opened)
+    return opened + dt.timedelta(hours=1)  # the next hourly run
+
+
+def test_opening_the_breaker_stamps_the_alert_time_so_the_next_paused_run_stays_quiet(tmp_path):
+    after = _open_breaker(tmp_path)
+    assert _breaker(tmp_path)["open"] is True and _breaker(tmp_path)["last_paused_alert"]
+    paused = run_once(tmp_path, dry_run=True, scenario="fail-gate", now=after)
+    assert paused.status == "paused"
+    assert paused.report["breaker_reminder"] is False
+
+
+def test_a_paused_run_reminds_once_a_day_while_the_breaker_stays_open(tmp_path):
+    after = _open_breaker(tmp_path)
+    later = after + dt.timedelta(hours=25)
+    reminded = run_once(tmp_path, dry_run=True, scenario="fail-gate", now=later)
+    assert reminded.report["breaker_reminder"] is True
+    assert _breaker(tmp_path)["last_paused_alert"] == later.isoformat()
+    again = run_once(tmp_path, dry_run=True, scenario="fail-gate", now=later + dt.timedelta(hours=1))
+    assert again.report["breaker_reminder"] is False
+    next_day = run_once(tmp_path, dry_run=True, scenario="fail-gate", now=later + dt.timedelta(hours=25))
+    assert next_day.report["breaker_reminder"] is True
+
+
+def test_an_open_breaker_without_a_reminder_time_reminds_at_once(tmp_path):
+    after = _open_breaker(tmp_path)
+    data = _breaker(tmp_path)
+    data.pop("last_paused_alert")
+    (tmp_path / "state" / "breaker.json").write_text(json.dumps(data), encoding="utf-8")
+    assert run_once(tmp_path, dry_run=True, scenario="fail-gate", now=after).report["breaker_reminder"] is True
+
+
+def test_the_failure_report_carries_the_breaker_limit(tmp_path):
+    result = run_once(tmp_path, dry_run=True, scenario="fail-gate")
+    assert isinstance(result.report["breaker_threshold"], int)
+
+
 def test_paused_env_stops_run_without_writing_state(tmp_path):
     result = run_once(tmp_path, dry_run=True, env={"PAUSED": "true"})
     assert result.status == "paused"

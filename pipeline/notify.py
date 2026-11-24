@@ -203,8 +203,22 @@ def build_message(
         run_link = _link(run_url, "Workflow run (draft attached)")
         if run_link:
             lines.append(run_link)
+        failures_so_far = breaker.get("consecutive_failures")
+        limit = report.get("breaker_threshold")
+        if isinstance(failures_so_far, int) and failures_so_far > 0 and isinstance(limit, int) and limit > 0:
+            lines.append(f"Failures in a row: {failures_so_far}/{limit}")
         if breaker.get("open"):
             lines.append("🛑 <b>Circuit breaker is open.</b> Runs stay paused until it is reset.")
+    elif status == "paused" and report.get("breaker_reminder") and breaker.get("open"):
+        # Paused runs are quiet except for one reminder a day, so a missed opening alert cannot hide a pause.
+        lines.append("⚠️ <b>Publishing is still paused:</b> the circuit breaker is open.")
+        recent = breaker.get("recent_failures")
+        if isinstance(recent, list) and recent:
+            lines.append(f"Last failure: {_escape(recent[-1], 160)}")
+        run_link = _link(run_url, "Workflow run")
+        if run_link:
+            lines.append(run_link)
+        lines.append("Reset it with the Pipeline workflow input reset_breaker.")
     elif report.get("manual_topic") and status in ("nothing", "skipped", "paused"):
         # A topic the owner asked for must never end in silence.
         lines.append(f"ℹ️ <b>No article for your topic:</b> {_escape(report['manual_topic'], 120)}")
@@ -216,6 +230,15 @@ def build_message(
             lines.append(run_link)
     else:
         return None
+    return "\n".join(lines)
+
+
+def build_breaker_reset_message(run_url: str | None = None) -> str:
+    """The alert sent when the circuit breaker is closed again."""
+    lines = ["✅ <b>Publishing resumed:</b> the circuit breaker was reset."]
+    run_link = _link(run_url, "Workflow run")
+    if run_link:
+        lines.append(run_link)
     return "\n".join(lines)
 
 

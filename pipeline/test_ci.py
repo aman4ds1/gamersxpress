@@ -193,6 +193,35 @@ def test_reset_breaker_closes_it_and_keeps_the_last_failure_date(tmp_path):
     }
 
 
+def test_reset_breaker_clears_the_reminder_time(tmp_path):
+    write_json(tmp_path / "breaker.json", {"consecutive_failures": 5, "open": True, "last_paused_alert": "2026-11-23T00:00:00+00:00"})
+    assert "last_paused_alert" not in ci.reset_breaker(tmp_path)
+
+
+def test_cli_reset_reports_whether_the_breaker_was_open(repo, monkeypatch):
+    outputs = []
+    monkeypatch.setattr(ci, "_set_output", lambda name, value: outputs.append((name, value)))
+    write_json(repo / "data" / "breaker.json", {"consecutive_failures": 5, "open": True})
+    assert ci.main(["reset-breaker", "--repo", str(repo)]) == 0
+    write_json(repo / "data" / "breaker.json", {"consecutive_failures": 2, "open": False})
+    assert ci.main(["reset-breaker", "--repo", str(repo)]) == 0
+    assert outputs == [("was_open", "true"), ("was_open", "false")]
+
+
+def test_cli_reset_alert_sends_the_resumed_message(repo, monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send_telegram", lambda text, **kw: sent.append(text) or True)
+    assert ci.main(["reset-alert", "--repo", str(repo)]) == 0
+    assert len(sent) == 1 and "Publishing resumed" in sent[0]
+
+
+def test_cli_notify_warns_in_the_run_summary_when_the_alert_is_not_delivered(repo, monkeypatch, capsys):
+    monkeypatch.setattr(notify, "send_telegram", lambda text, **kw: False)
+    write_json(repo / "data" / "reports" / "last-run.json", {"status": "failed", "error": "boom"})
+    assert ci.main(["notify", "--repo", str(repo)]) == 0
+    assert "::warning::" in capsys.readouterr().out
+
+
 # --- draft branch -------------------------------------------------------------
 
 REPORT = {"status": "completed", "slug": "sony-shows-prism-collection", "category": "hardware"}

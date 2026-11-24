@@ -120,8 +120,16 @@ jobs:
         run: python -m pipeline.ci restore
 
       - name: Close the circuit breaker
+        id: reset
         if: ${{ inputs.reset_breaker && !inputs.dry_run }}
         run: python -m pipeline.ci reset-breaker
+
+      - name: Send the reset alert
+        if: ${{ steps.reset.outputs.was_open == 'true' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m pipeline.ci reset-alert --run-url "$RUN_URL"
 
       # An open breaker issue blocks the next one from being created, so a stale issue
       # would silence the next alert. Close it when the breaker is reset.

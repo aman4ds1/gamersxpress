@@ -379,14 +379,36 @@ def record_failure(breaker: dict, message: str, *, now: dt.datetime, threshold: 
     recent.append(message)
     breaker["recent_failures"] = recent[-3:]
     if breaker["consecutive_failures"] >= threshold:
+        if not breaker.get("open"):
+            # The failing run's own alert announces the opening, so the paused-run reminder counts from here.
+            breaker["last_paused_alert"] = now.isoformat()
         breaker["open"] = True
     return breaker
+
+
+#: Hours between "still paused" Telegram reminders while the circuit breaker stays open.
+PAUSED_REMINDER_HOURS = 24
+
+
+def _paused_reminder_due(breaker: dict, now: dt.datetime) -> bool:
+    """True when no reminder was sent yet, or the last one is at least a day old (or unreadable)."""
+    last = breaker.get("last_paused_alert")
+    if not last:
+        return True
+    try:
+        sent = dt.datetime.fromisoformat(str(last))
+    except ValueError:
+        return True
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=dt.timezone.utc)
+    return now - sent >= dt.timedelta(hours=PAUSED_REMINDER_HOURS)
 
 
 def reset_breaker(breaker: dict) -> dict:
     breaker["consecutive_failures"] = 0
     breaker["open"] = False
     breaker["recent_failures"] = []
+    breaker.pop("last_paused_alert", None)
     return breaker
 
 
@@ -572,6 +594,7 @@ def run(
             "exit_code": code,
             "generated_at": now.isoformat(),
             "breaker": dict(breaker),
+            "breaker_threshold": threshold,
             "manual_topic": manual["topic"] if manual else None,
             "timings": durations,
             "model_calls": run_state.calls,
@@ -590,7 +613,11 @@ def run(
 
     if _env_flag(env.get("PAUSED")) or breaker.get("open"):
         logger.warning("run paused (PAUSED=%s, breaker.open=%s)", env.get("PAUSED"), breaker.get("open"))
-        return finish("paused", "paused by PAUSED or an open circuit breaker")
+        reminder = bool(breaker.get("open")) and _paused_reminder_due(breaker, now)
+        if reminder:
+            breaker["last_paused_alert"] = now.isoformat()
+            save_breaker(breaker, paths.breaker)
+        return finish("paused", "paused by PAUSED or an open circuit breaker", breaker_reminder=reminder)
 
     published_today = publish_stage.count_today(publish_stage.load_log(paths.log), now=now)
     if published_today >= daily_cap:
