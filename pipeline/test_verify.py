@@ -1365,6 +1365,77 @@ def test_now_inside_a_title_cased_name_is_allowed_but_plain_now_is_not():
     assert verify_module._relative_time_hits("The update is live now", ("now",)) == ["now"]
 
 
+def _small_overlap_gate(monkeypatch):
+    monkeypatch.setattr(
+        verify_module.gates, "load_gates_config", lambda *a, **k: {"overlap": {"ngram": 3, "max_ratio": 0.5}}
+    )
+
+
+OVERLAP_BODY = "alpha bravo charlie delta echo foxtrot golf hotel india juliet.\n"
+
+
+def test_overlap_check_flags_nothing_when_the_draft_is_within_the_publish_limit(monkeypatch):
+    # 4 of 8 three-word runs are copied: exactly the gate's limit of 0.5, which the gate allows,
+    # even though it is over the 0.75 repair margin (0.375).
+    _small_overlap_gate(monkeypatch)
+    assert verify_module.overlap_check(OVERLAP_BODY, ["alpha bravo charlie delta echo foxtrot"]) == []
+
+
+def test_overlap_check_flags_sentences_when_the_draft_is_over_the_publish_limit(monkeypatch):
+    # 5 of 8 runs are copied (0.625): over the limit, so the copied sentence goes to the repair.
+    _small_overlap_gate(monkeypatch)
+    flagged = verify_module.overlap_check(OVERLAP_BODY, ["alpha bravo charlie delta echo foxtrot golf"])
+    assert [item["clause"] for item in flagged] == [OVERLAP_BODY.strip()]
+
+
+TRIBUNAL_FACT = "The case was brought by 23 former employees who say they were sacked for trade union activity, a claim Rockstar denies"
+TRIBUNAL_ARTICLE = "The case was brought by 23 former employees who stated they were sacked for trade union activity, which Rockstar denies.\n"
+TRIBUNAL_CLAUSE = {
+    "clause": "The case was brought by 23 former employees who said they were sacked for trade union activity",
+    "fact_ids": ["F1"], "match": "paraphrase", "exceeds_facts": False, "difference": "",
+}
+
+
+def _verify_tribunal(tmp_path, *, clause=TRIBUNAL_CLAUSE, unsupported):
+    return verify_module.verify(
+        TRIBUNAL_ARTICLE,
+        sheet(claim(value=TRIBUNAL_FACT)),
+        run_state=providers.RunState(),
+        generate=make_generate(model(clauses=[clause], unsupported=unsupported)),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+
+
+def test_unsupported_claim_the_checker_itself_covers_with_a_supported_clause_is_cleared(tmp_path):
+    # A real reply: the clause is supported by F1, which says "a claim Rockstar denies", and the
+    # same reply lists "Rockstar denies the claim" as an unsupported claim.
+    report = _verify_tribunal(tmp_path, unsupported=["Rockstar denies the claim"])
+    assert report.passed is True
+    assert report.unsupported == []
+    assert any("Rockstar denies the claim" in note for note in report.notes)
+
+
+def test_invented_unsupported_claim_is_kept(tmp_path):
+    report = _verify_tribunal(tmp_path, unsupported=["Rockstar paid the dismissed workers $5 million"])
+    assert report.passed is False
+    assert "Rockstar paid the dismissed workers $5 million" in report.unsupported
+
+
+def test_unsupported_claim_with_a_word_no_cited_fact_states_is_kept(tmp_path):
+    for accusation in ("Rockstar admits the claim", "Rockstar denies the claim and plans to appeal"):
+        report = _verify_tribunal(tmp_path, unsupported=[accusation])
+        assert report.passed is False, accusation
+        assert accusation in report.unsupported
+
+
+def test_unsupported_claim_is_kept_when_the_covering_clause_exceeds_its_facts(tmp_path):
+    exceeding = {**TRIBUNAL_CLAUSE, "match": "partial", "exceeds_facts": True, "difference": "drops the hedge"}
+    report = _verify_tribunal(tmp_path, clause=exceeding, unsupported=["Rockstar denies the claim"])
+    assert report.passed is False
+    assert "Rockstar denies the claim" in report.unsupported
+
+
 def test_relative_time_word_inside_a_quoted_name_is_allowed():
     assert verify_module._relative_time_hits('the "Today Show" panel', ("today",)) == []
 

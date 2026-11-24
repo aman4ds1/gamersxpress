@@ -585,6 +585,42 @@ def _fact_speakers(claim: dict, facts: dict) -> list[str]:
     return names
 
 
+def _accusation_contradicted(
+    accusation: object,
+    clauses: list[dict],
+    unsupported_clauses: list[str],
+    sentences: list[str],
+    by_id: dict[str, dict],
+) -> bool:
+    """True when the checker's own clause verdicts show an ``unsupported_claims`` item is supported.
+
+    The free-text ``unsupported_claims`` list carries no fact id and no article sentence, so
+    one stray entry fails the whole draft. An entry is dropped only when all of these hold:
+    a clause the checker itself judged fully supported (and code did not flag) matches an
+    article sentence that shares at least half of the entry's content words, and a fact that
+    clause cites states every one of the entry's content words. Anything else, such as an
+    invented figure, a reversed meaning or a claim no cited fact contains, stays a failure.
+    """
+    words = gates._content_words(str(accusation or ""))
+    if not words:
+        return False
+    flagged = {_clause_key(clause) for clause in unsupported_clauses}
+    for item in clauses:
+        if _clause_key(item["clause"]) in flagged or not _clause_supported(item):
+            continue
+        sentence, ratio = _match_sentence(item["clause"], sentences)
+        if ratio < _SENTENCE_MATCH_THRESHOLD:
+            continue
+        if len(words & gates._content_words(sentence)) * 2 < len(words):
+            continue
+        for fact_id in item.get("fact_ids") or []:
+            fact = by_id.get(str(fact_id))
+            text = str((fact or {}).get("value") or (fact or {}).get("claim") or "")
+            if text and words <= gates._content_words(text):
+                return True
+    return False
+
+
 def _clause_supported(item: dict) -> bool:
     """True when a model clause asserts nothing beyond the cited facts.
 
@@ -876,9 +912,15 @@ def _model_check(
                 notes.append(f"speaker named in sentence: {clause}")
             if item.get("match") == "partial" and item.get("exceeds_facts") is False:
                 notes.append(f"partial match kept (states less than its fact): {clause}")
+    unsupported_claims: list[str] = []
+    for accusation in data["unsupported_claims"]:
+        if _accusation_contradicted(accusation, clauses, unsupported_clauses, sentences, by_id):
+            notes.append(f"unsupported claim cleared, the checker's own supported clause covers it: {accusation}")
+        else:
+            unsupported_claims.append(accusation)
     ok = not (
         unsupported_clauses
-        or data["unsupported_claims"]
+        or unsupported_claims
         or data["rumors_stated_as_fact"]
         or data["unsupported_regional"]
         or data["costs_described_as_received"]
@@ -891,7 +933,7 @@ def _model_check(
         "clauses": clauses,
         "unsupported_clauses": unsupported_clauses,
         "unsupported_detail": unsupported_detail,
-        "unsupported_claims": data["unsupported_claims"],
+        "unsupported_claims": unsupported_claims,
         "rumors_stated_as_fact": data["rumors_stated_as_fact"],
         "unsupported_regional": data["unsupported_regional"],
         "costs_described_as_received": data["costs_described_as_received"],
@@ -1427,12 +1469,20 @@ OVERLAP_REASON = (
 
 
 def overlap_check(article: Any, source_texts: list[str] | None) -> list[dict]:
-    """Sentences that copy source wording, so the repair rewrites them before the overlap gate."""
+    """Sentences that copy source wording, so the repair rewrites them before the overlap gate.
+
+    Only an article over the publish gate's own limit is flagged. Below the limit the gate
+    passes the article, so a flag there would fail a draft the gate allows whenever the one
+    repair is rejected (for example for dropping a speaker's attribution). Over the limit,
+    the flagged sentences are those that bring the overlap under ``OVERLAP_MARGIN`` of it.
+    """
     if not source_texts:
         return []
     settings = gates.load_gates_config().get("overlap") or gates.DEFAULT_GATES["overlap"]
     ngram, limit = int(settings["ngram"]), float(settings["max_ratio"])
     _front, body = _split_front_matter(_as_text(article))
+    if gates.overlap_ratio(body, source_texts, ngram) <= limit:
+        return []
     return [
         {"clause": item["sentence"], "reason": OVERLAP_REASON.format(count=item["copied"], ngram=ngram)}
         for item in gates.overlap_sentences(body, source_texts, ngram, limit * OVERLAP_MARGIN)
