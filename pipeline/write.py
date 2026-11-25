@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-from gates import find_leaks
+from gates import _content_words, find_leaks
 from providers import (
     Generation,
     RunState,
@@ -253,6 +253,48 @@ _FALLBACK_KIND_PRIORITY = {
 }
 
 
+#: The trimmed prompt must keep at least this many usable claims (any kind but rumor/opinion),
+#: the same floor as ``readiness.min_claims``. Below it the fallback writer would have to pad a
+#: 200-word article from a few facts, so no trimmed prompt is offered: the fallback model then
+#: refuses the full prompt, every writer fails, and the run is skipped (the breaker is untouched)
+#: to be retried when the primary writer is back.
+WRITER_FALLBACK_MIN_CLAIMS = 6
+
+_UNUSABLE_KINDS = ("rumor", "opinion")
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _claim_text(claim: dict) -> str:
+    return str(claim.get("value") or claim.get("claim") or "")
+
+
+def _restates(smaller: dict, larger: dict) -> bool:
+    """True when ``smaller`` says nothing ``larger`` does not: every content word and every number
+    of it appears in ``larger``. Conservative on purpose: "biggest launch in PlayStation history"
+    and "biggest launch in gaming history" differ by a word, so both stay."""
+    small_words = _content_words(_claim_text(smaller))
+    if not small_words:
+        return False
+    large_text = _claim_text(larger)
+    return small_words <= _content_words(large_text) and set(_NUMBER_RE.findall(_claim_text(smaller))) <= set(
+        _NUMBER_RE.findall(large_text)
+    )
+
+
+def _drop_restated(claims: list[dict]) -> list[dict]:
+    """``claims`` (best first) without the non-central claims a higher-ranked kept claim already states.
+
+    Only an earlier (higher-ranked) claim can cover a later one, so trimming, which drops from the
+    end, can never remove a covering claim while keeping nothing of what it said.
+    """
+    kept: list[dict] = []
+    for claim in claims:
+        if not claim.get("central") and any(_restates(claim, other) for other in kept):
+            continue
+        kept.append(claim)
+    return kept
+
+
 def _fallback_claim_score(claim: dict, entities: set[str]) -> int:
     """How important ``claim`` is to the trimmed writer prompt."""
     score = _FALLBACK_KIND_PRIORITY.get(str(claim.get("kind") or "").lower(), 2)
@@ -278,7 +320,10 @@ def build_fallback_prompt(
     The primary prompt itself is never changed. Identical values are deduped
     first, then claims are ranked central > gate-needed entities >
     confirmed/statement > reported > estimate > opinion/rumor. The source list
-    and single-origin note stay; central claims are never dropped.
+    and single-origin note stay; central claims are never dropped. A claim that
+    a higher-ranked kept claim already states (all its words and numbers) is
+    dropped first. When fewer than :data:`WRITER_FALLBACK_MIN_CLAIMS` usable
+    claims would fit, ``primary`` is returned: no trimmed prompt is offered.
     """
     primary = primary if primary is not None else build_prompt(
         facts, template=template, template_path=template_path
@@ -305,6 +350,9 @@ def build_fallback_prompt(
             deduped.values(), key=lambda item: (-item[0], item[1])
         )
     ]
+    restated = len(kept)
+    kept = _drop_restated(kept)
+    restated -= len(kept)
     removed = 0
     text = primary
     while True:
@@ -316,10 +364,18 @@ def build_fallback_prompt(
             break
         kept.pop(droppable[-1])
         removed += 1
-    if removed:
+    usable = sum(1 for claim in kept if str(claim.get("kind") or "").lower() not in _UNUSABLE_KINDS)
+    if usable < WRITER_FALLBACK_MIN_CLAIMS:
+        logger.warning(
+            "writer prompt not trimmed: only %d usable claim(s) fit %d tokens (minimum %d); "
+            "no fallback writer gets a starved facts sheet",
+            usable, budget, WRITER_FALLBACK_MIN_CLAIMS,
+        )
+        return primary
+    if removed or restated:
         logger.info(
-            "writer prompt trimmed: %d claim(s) dropped to fit %d tokens",
-            removed, budget,
+            "writer prompt trimmed: %d claim(s) dropped to fit %d tokens, %d restating a kept claim",
+            removed, budget, restated,
         )
     return text
 

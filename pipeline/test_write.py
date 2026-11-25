@@ -679,13 +679,13 @@ def test_repair_prompt_uses_the_compact_view():
     assert "grounding" not in prompt
 
 
-def big_sheet(count=40, *, central_kind="confirmed"):
+def big_sheet(count=40, *, central_kind="confirmed", detail=25):
     claims = []
     for index in range(count):
         kind = central_kind if index == 0 else ("rumor" if index % 3 == 0 else "reported")
         claims.append({
             "claim": f"Claim {index}",
-            "value": f"token{index} " + ("detail " * 80),
+            "value": f"token{index} " + ("detail " * detail),
             "source_url": "https://news.xbox.com/a",
             "confidence": 0.9,
             "kind": kind,
@@ -729,6 +729,49 @@ def test_the_fallback_prompt_drops_rumors_before_confirmed_claims():
     fallback = write_module.build_fallback_prompt(sheet, primary=write_module.build_prompt(sheet))
     assert "token0" in fallback
     assert "token3" not in fallback
+
+
+def test_no_trimmed_prompt_is_offered_when_fewer_than_six_usable_claims_fit():
+    # The GTA VI fallback writer was handed 5 of 35 facts and padded a 200-word draft with
+    # commentary. With too few claims the primary prompt is returned, so no fallback is used.
+    sheet = big_sheet(detail=80)  # only 3 claims of this size fit the budget
+    primary = write_module.build_prompt(sheet)
+    assert write_module.build_fallback_prompt(sheet, primary=primary) == primary
+
+
+def test_rumors_do_not_count_toward_the_fallback_floor():
+    sheet = big_sheet()
+    for claim in sheet["claims"][1:]:
+        claim["kind"] = "rumor"
+    primary = write_module.build_prompt(sheet)
+    assert write_module.build_fallback_prompt(sheet, primary=primary) == primary
+
+
+def test_a_claim_restating_a_higher_ranked_claim_is_dropped_first():
+    sheet = big_sheet()
+    sheet["claims"][1]["value"] = "GTA 6 set a new record for the highest number of concurrent players on PlayStation"
+    sheet["claims"][2]["value"] = "GTA 6 set record for the highest number of concurrent players on PlayStation"
+    fallback = write_module.build_fallback_prompt(sheet, primary=write_module.build_prompt(sheet))
+    assert "set a new record" in fallback
+    assert "set record for the highest" not in fallback
+
+
+@pytest.mark.parametrize(
+    ("smaller", "larger"),
+    [
+        ("Grand Theft Auto VI is the biggest launch in gaming history",
+         "Grand Theft Auto VI is the biggest launch in PlayStation history"),  # one different word
+        ("Players logged 683 million hours", "Players logged 17.4 million hours on PS5"),  # different number
+    ],
+)
+def test_claims_that_differ_in_a_word_or_a_number_are_both_kept(smaller, larger):
+    assert not write_module._restates({"value": smaller}, {"value": larger})
+
+
+def test_a_central_claim_is_never_dropped_as_a_restatement():
+    covering = {"value": "GTA 6 set a new record for concurrent players on PlayStation", "kind": "confirmed"}
+    central = {"value": "GTA 6 set a record for concurrent players", "kind": "confirmed", "central": True}
+    assert write_module._drop_restated([covering, central]) == [covering, central]
 
 
 def test_the_primary_prompt_is_never_changed_by_the_fallback_builder():
