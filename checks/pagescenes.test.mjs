@@ -68,20 +68,27 @@ const page = (scene, { declared = scene, sky = scene === 'sky' ? 1 : 0, maze = s
   `<html lang="en" data-page-scene="${declared}"><body>${'<div class="gx-scene gx-skyscene"></div>'.repeat(sky)}${'<div class="gx-scene gx-mazescene"></div>'.repeat(maze)}</body></html>`;
 
 test('the build check accepts a page with its own scene and nothing else', () => {
-  assert.deepEqual(sceneProblems('index.html', page('sky')), []);
-  assert.deepEqual(sceneProblems('privacy/index.html', page('sky')), []);
-  assert.deepEqual(sceneProblems('news/x/index.html', page('maze')), []);
-  assert.deepEqual(sceneProblems('search/index.html', page('maze')), []);
+  assert.deepEqual(sceneProblems('index.html', page('sky'), true), []);
+  assert.deepEqual(sceneProblems('privacy/index.html', page('sky'), true), []);
+  assert.deepEqual(sceneProblems('news/x/index.html', page('maze'), true), []);
+  assert.deepEqual(sceneProblems('search/index.html', page('maze'), true), []);
+});
+
+test('with the scenes switched off, a page declares its scene but draws none', () => {
+  assert.deepEqual(sceneProblems('index.html', page('sky', { sky: 0 }), false), []);
+  assert.deepEqual(sceneProblems('news/x/index.html', page('maze', { maze: 0 }), false), []);
+  assert.match(sceneProblems('index.html', page('sky'), false).join('\n'), /switched off, but a scene is rendered/);
+  assert.match(sceneProblems('index.html', page('maze', { maze: 0 }), false).join('\n'), /should have the sky scene/);
 });
 
 test('the build check names every kind of mistake', () => {
-  assert.match(sceneProblems('index.html', page('maze'))[0], /index\.html: should have the sky scene but data-page-scene is "maze"/);
-  assert.match(sceneProblems('news/x/index.html', page('sky'))[0], /should have the maze scene but data-page-scene is "sky"/);
-  assert.match(sceneProblems('about/index.html', '<html lang="en"><body></body></html>').join('\n'), /data-page-scene is missing/);
-  assert.match(sceneProblems('index.html', page('sky', { sky: 0 })).join('\n'), /expected exactly one sky scene in the page, found 0/);
-  assert.match(sceneProblems('index.html', page('sky', { sky: 2 })).join('\n'), /expected exactly one sky scene in the page, found 2/);
-  assert.match(sceneProblems('index.html', page('sky', { maze: 1 })).join('\n'), /the maze scene must not be rendered on this page/);
-  assert.match(sceneProblems('news/x/index.html', page('maze', { sky: 1 })).join('\n'), /the sky scene must not be rendered on this page/);
+  assert.match(sceneProblems('index.html', page('maze'), true)[0], /index\.html: should have the sky scene but data-page-scene is "maze"/);
+  assert.match(sceneProblems('news/x/index.html', page('sky'), true)[0], /should have the maze scene but data-page-scene is "sky"/);
+  assert.match(sceneProblems('about/index.html', '<html lang="en"><body></body></html>', true).join('\n'), /data-page-scene is missing/);
+  assert.match(sceneProblems('index.html', page('sky', { sky: 0 }), true).join('\n'), /expected exactly one sky scene in the page, found 0/);
+  assert.match(sceneProblems('index.html', page('sky', { sky: 2 }), true).join('\n'), /expected exactly one sky scene in the page, found 2/);
+  assert.match(sceneProblems('index.html', page('sky', { maze: 1 }), true).join('\n'), /the maze scene must not be rendered on this page/);
+  assert.match(sceneProblems('news/x/index.html', page('maze', { sky: 1 }), true).join('\n'), /the sky scene must not be rendered on this page/);
 });
 
 test('the build check runs on every built page', () => {

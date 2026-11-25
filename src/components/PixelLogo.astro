@@ -1,5 +1,5 @@
 ---
-/** The GamersXpress pixel mark: "G" in the text color, "X" in gold (light) / silver (dark). */
+/** The GamersXpress pixel mark: "G" in the text color, "X" in the brand blue (--gx-x). */
 interface Props {
   width?: number;
   animated?: boolean;
@@ -19,7 +19,7 @@ const x = pixels(X, 7);
   <g style="--base: var(--ink); fill: var(--ink)">
     {g.map((p) => <rect class={animated ? 'gx-px' : undefined} x={p.x} y={p.y} width="1" height="1" style={animated ? `animation-delay:${p.d}s` : undefined} />)}
   </g>
-  <g style="--base: var(--gold); fill: var(--gold)">
+  <g style="--base: var(--gx-x); fill: var(--gx-x)">
     {x.map((p) => <rect class={animated ? 'gx-px' : undefined} x={p.x} y={p.y} width="1" height="1" style={animated ? `animation-delay:${p.d}s` : undefined} />)}
   </g>
 </svg>

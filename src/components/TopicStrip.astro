@@ -1,0 +1,51 @@
+---
+/**
+ * "Explore by topic": a pill per category that has at least one story (no links to empty pages), then "All news".
+ * Icons are simple generic drawings, never platform logos. Scrolls sideways on phones.
+ */
+import { CATEGORIES, CATEGORY_LABELS, type Category } from '../data/categories';
+
+interface Props {
+  /** Number of stories per category. */
+  counts: Partial<Record<Category, number>>;
+}
+
+const { counts } = Astro.props;
+const shown = CATEGORIES.filter((category) => (counts[category] ?? 0) > 0);
+
+// 24x24 stroke icons (currentColor).
+const ICONS: Record<Category, string> = {
+  'gaming-news': 'M4 5h13v14H6a2 2 0 0 1-2-2zM17 9h3v8a2 2 0 0 1-2 2M8 9h5M8 13h5',
+  pc: 'M3 4h18v12H3zM8 20h8M12 16v4',
+  playstation: 'M6 9h12a4 4 0 0 1 3.8 5.2l-1 3a2 2 0 0 1-3.3.8L15 16H9l-2.5 2a2 2 0 0 1-3.3-.8l-1-3A4 4 0 0 1 6 9zM8 11v3M6.5 12.5h3M15.5 12h.01M17.5 13.5h.01',
+  xbox: 'M6 9h12a4 4 0 0 1 3.8 5.2l-1 3a2 2 0 0 1-3.3.8L15 16H9l-2.5 2a2 2 0 0 1-3.3-.8l-1-3A4 4 0 0 1 6 9zM8 11v3M6.5 12.5h3M15.5 12h.01M17.5 13.5h.01',
+  nintendo: 'M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 6h8v6H8zM9 16h2M10 15v2M15 16h.01',
+  hardware: 'M7 7h10v10H7zM10 10h4v4h-4zM9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4',
+  tech: 'M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5',
+  esports: 'M7 4h10v4a5 5 0 0 1-10 0zM7 6H4a3 3 0 0 0 3 3M17 6h3a3 3 0 0 1-3 3M12 13v4M8 21h8M9 17h6',
+};
+---
+
+{
+  shown.length > 0 && (
+    <section class="gx-topics" aria-labelledby="topics-heading">
+      <h2 id="topics-heading" class="gx-section-title">Explore by topic</h2>
+      <ul class="gx-topics-list">
+        {shown.map((category) => (
+          <li>
+            <a href={`/category/${category}`} class="gx-pill">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={ICONS[category]} /></svg>
+              {CATEGORY_LABELS[category]}
+            </a>
+          </li>
+        ))}
+        <li>
+          <a href="/news" class="gx-pill">
+            All news
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+          </a>
+        </li>
+      </ul>
+    </section>
+  )
+}

@@ -14,10 +14,11 @@ const description =
   ]}
 >
   <div class="mx-auto max-w-3xl px-4 py-10">
-    <h1 class="text-3xl font-extrabold tracking-tight">Search</h1>
-    <p class="mt-2 text-ink-muted">
-      Search every GamersXpress article by game, hardware, topic, or entity.
-    </p>
+    <header class="gx-pagehead">
+      <span class="gx-eyebrow">Search</span>
+      <h1>Search</h1>
+      <p>Search every GamersXpress article by game, hardware, topic, or entity.</p>
+    </header>
 
     <label for="search-input" class="mt-6 block text-sm font-medium">
       Search articles
@@ -27,7 +28,7 @@ const description =
       type="search"
       autocomplete="off"
       placeholder="Try NVIDIA, PS5, esports…"
-      class="mt-2 w-full rounded-sm border border-line-strong bg-surface-raised px-3 py-2 text-ink outline-none focus:border-focus-ring"
+      class="mt-2 w-full rounded-xl border border-line-strong bg-surface-raised px-4 py-3 text-ink outline-none focus:border-focus-ring"
     />
     <p
       id="search-status"

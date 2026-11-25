@@ -57,15 +57,15 @@ const description =
     { name: entity, path: `/topic/${slug}` },
   ]}
 >
-  <div class="gx-wrap flex flex-col gap-8 pt-12 pb-24">
-    <header class="flex flex-col gap-3 border-b border-line pb-5">
-      <span class="gx-mono gx-grad text-xs font-bold tracking-[0.2em]">// TOPIC</span>
-      <h1 class="gx-display text-[clamp(30px,4vw,48px)] font-bold text-ink">{entity}</h1>
-      <p class="max-w-[680px] text-ink-muted">{summary}</p>
+  <div class="gx-wrap flex flex-col gap-8 pt-10 pb-20">
+    <header class="gx-pagehead">
+      <span class="gx-eyebrow">Topic</span>
+      <h1>{entity}</h1>
+      <p>{summary}</p>
     </header>
     {
       count > 0 ? (
-        <div class="gx-cards">{articles.map((article) => <ArticleCard article={article} />)}</div>
+        <div class="gx-grid">{articles.map((article) => <ArticleCard article={article} level={2} />)}</div>
       ) : (
         <p class="text-ink-muted">New {entity} articles are coming soon.</p>
       )

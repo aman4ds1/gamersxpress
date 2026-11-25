@@ -1,0 +1,26 @@
+---
+/**
+ * The sky-blue "follow us" band. It points to the RSS feed, which works today; there is no newsletter provider, so
+ * there is no email field and nothing is collected.
+ */
+import Sprite from './Sprite.astro';
+import { CLOUD, COIN } from '../data/sprites';
+---
+
+<section class="gx-follow" aria-labelledby="follow-heading">
+  <div class="gx-follow-art gx-follow-art-left" aria-hidden="true">
+    <Sprite sprite={COIN} size={34} class="gx-follow-coin" />
+    <Sprite sprite={CLOUD} size={96} class="gx-follow-cloud" />
+  </div>
+  <div class="gx-follow-text">
+    <h2 id="follow-heading" class="gx-follow-title">Get the latest gaming news as it lands</h2>
+    <p class="gx-follow-sub">Follow GamersXpress in any RSS reader. No account, no spam.</p>
+  </div>
+  <a href="/rss.xml" class="gx-btn gx-btn-primary gx-follow-cta">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5 11a8 8 0 0 1 8 8M5 5a14 14 0 0 1 14 14"></path><circle cx="6" cy="18" r="1.4" fill="currentColor"></circle></svg>
+    Get the RSS feed
+  </a>
+  <div class="gx-follow-art gx-follow-art-right" aria-hidden="true">
+    <Sprite sprite={CLOUD} size={80} class="gx-follow-cloud" />
+  </div>
+</section>

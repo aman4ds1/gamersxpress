@@ -1,0 +1,26 @@
+---
+/** One pixel sprite from src/data/sprites.ts, drawn as crisp SVG rectangles. Always decorative. */
+import type { Sprite } from '../data/sprites';
+
+interface Props {
+  sprite: Sprite;
+  /** Rendered width in pixels; the height follows the sprite's proportions. */
+  size: number;
+  class?: string;
+}
+
+const { sprite, size, class: className } = Astro.props;
+const height = Math.round((size * sprite.height) / sprite.width);
+---
+
+<svg
+  class={className}
+  width={size}
+  height={height}
+  viewBox={`0 0 ${sprite.width} ${sprite.height}`}
+  shape-rendering="crispEdges"
+  aria-hidden="true"
+  focusable="false"
+>
+  {sprite.rects.map(([x, y, w, h, fill]) => <rect x={x} y={y} width={w} height={h} fill={fill ?? 'currentColor'} />)}
+</svg>

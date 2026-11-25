@@ -1,0 +1,27 @@
+---
+/** The date and reading time under a title: "Nov 20, 2026 · 4 min read". */
+import { formatDate } from '../data/articles';
+
+interface Props {
+  date: Date;
+  minutes?: number;
+  class?: string;
+}
+
+const { date, minutes, class: className } = Astro.props;
+---
+
+<p class:list={['gx-meta', className]}>
+  <span>
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M3 10h18M8 3v4M16 3v4"></path></svg>
+    <time datetime={date.toISOString()}>{formatDate(date)}</time>
+  </span>
+  {
+    minutes && (
+      <span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>
+        {minutes} min read
+      </span>
+    )
+  }
+</p>

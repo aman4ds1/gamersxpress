@@ -37,12 +37,13 @@
 }
 @media (prefers-reduced-motion: reduce) { .gx-burger-bars i { transition: none; } }
 
-/* phones: the logo and the buttons get a little smaller so they always fit on one row. The buttons get an explicit
-   width and no side padding: the base style gives them min-width 44px, 12px padding and, for the theme button, width 44px. */
+/* phones: the logo gets a little smaller so the row always fits. The buttons keep the 44px touch size (only search,
+   theme and menu show here since the 2026-11 redesign) with an explicit width and no side padding: the base style gives
+   them min-width 44px, 12px padding and, for the theme button, width 44px. */
 @media (max-width: 480px) {
   .gx-bar .gx-wrap { gap: 8px; min-height: 68px; }
   .gx-bar .gx-actions { gap: 6px; }
-  .gx-bar .gx-iconbtn { width: 40px; min-width: 40px; height: 40px; padding: 0; }
+  .gx-bar .gx-iconbtn { width: 44px; min-width: 44px; height: 44px; padding: 0; }
   .gx-logo { gap: 9px; }
   .gx-logo svg { width: 38px; height: auto; }
   .gx-logo-name { font-size: 11px; }

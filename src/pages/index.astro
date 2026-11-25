@@ -1,99 +1,67 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import ArticleCard from '../components/ArticleCard.astro';
-import { getCollection } from 'astro:content';
-import { CATEGORY_COLORS, CATEGORY_LABELS } from '../data/categories';
-import { entitySlug } from '../data/entities';
+import HeroStory from '../components/HeroStory.astro';
+import SideStory from '../components/SideStory.astro';
+import MostCovered from '../components/MostCovered.astro';
+import TopicStrip from '../components/TopicStrip.astro';
+import FollowBanner from '../components/FollowBanner.astro';
+import { sortedArticles, topicCounts } from '../data/articles';
+import type { Category } from '../data/categories';
 
-const all = (await getCollection('articles')).sort(
-  (a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
-);
+// Everything on this page comes from the published articles, newest first; no story appears twice.
+const all = await sortedArticles();
 const top = all[0];
-// With one article the grid would be empty, so it shows that article too.
-const latest = all.length > 1 ? all.slice(1, 13) : all;
-
-const entityCounts = new Map<string, number>();
-for (const article of all) {
-  for (const entity of article.data.entities) {
-    if (entitySlug(entity)) entityCounts.set(entity, (entityCounts.get(entity) ?? 0) + 1);
-  }
-}
-const topics = [...entityCounts.entries()]
-  .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-  .slice(0, 12)
-  .map(([entity]) => ({ entity, slug: entitySlug(entity) }));
+// a portrait or square top-story picture is shown whole, not cropped
+const topImageClass = top?.data.hero && top.data.hero.width / top.data.hero.height < 1.2 ? 'gx-thumb-contain' : undefined;
+const side = all.slice(1, 4);
+// The Latest News grid continues after the featured stories; with few articles it shows what is left.
+const latest = all.slice(1 + side.length, 1 + side.length + 6);
+const topics = topicCounts(all).slice(0, 5);
+const counts: Partial<Record<Category, number>> = {};
+for (const article of all) counts[article.data.category] = (counts[article.data.category] ?? 0) + 1;
 ---
 
 <BaseLayout title="GamersXpress | Gaming News, Hardware & Esports">
-  <div class="gx-wrap flex flex-col gap-16 pt-12 pb-24">
+  <div class="gx-wrap gx-home">
     <h1 class="sr-only">GamersXpress: gaming news that checks out</h1>
     {
-      top && (
-        <section aria-labelledby="top-story" class="flex flex-col gap-4">
-          <div class="gx-mono flex items-center gap-3.5 text-xs tracking-[0.2em] text-ink-muted">
-            <span class="gx-grad font-bold">// TOP STORY</span>
-            <span class="h-px flex-1 bg-line" />
-            <time datetime={top.data.pubDate.toISOString()}>
-              {top.data.pubDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()}
-            </time>
-          </div>
-          <a href={`/news/${top.id}`} class="gx-lined gx-hero">
-            <div class="gx-card">
-              <span class="gx-tick gx-tl" aria-hidden="true" /><span class="gx-tick gx-br" aria-hidden="true" />
-              {
-                top.data.hero && (
-                  <img
-                    src={top.data.hero.src}
-                    alt=""
-                    width={top.data.hero.width}
-                    height={top.data.hero.height}
-                    fetchpriority="high"
-                    decoding="async"
-                    class:list={['gx-thumb', 'gx-thumb-wide', top.data.hero.width / top.data.hero.height < 1.2 && 'gx-thumb-contain']}
-                  />
-                )
-              }
-              <span class="gx-chip" style={`--chip:${CATEGORY_COLORS[top.data.category]}`}>{CATEGORY_LABELS[top.data.category]}</span>
-              <h2 id="top-story" class="gx-display max-w-[860px] text-[clamp(30px,4.4vw,56px)] leading-[1.05] font-bold text-ink">{top.data.title}</h2>
-              <p class="max-w-[660px] text-[17px] leading-relaxed text-ink-muted">{top.data.description}</p>
-              <span class="gx-cta gx-gradbar mt-2">READ STORY ▸</span>
+      top ? (
+        <section class:list={['gx-top', side.length === 0 && 'gx-top-solo']} aria-label="Top stories">
+          <HeroStory article={top} imageClass={topImageClass} />
+          {side.length > 0 && (
+            <div class="gx-sides">
+              {side.map((article) => <SideStory article={article} />)}
             </div>
-          </a>
+          )}
         </section>
+      ) : (
+        <p class="text-ink-muted">New articles are coming soon.</p>
       )
     }
-
-    <section aria-labelledby="latest-heading" class="flex flex-col gap-6">
-      <div class="flex flex-wrap items-end justify-between gap-4 border-b border-line pb-4">
-        <div class="flex flex-col gap-2">
-          <span class="gx-mono gx-grad text-xs font-bold tracking-[0.2em]">// LATEST DROPS</span>
-          <h2 id="latest-heading" class="gx-display text-[34px] font-bold text-ink">Latest stories</h2>
-          <span class="gx-gradbar h-[3px] w-[72px] rounded-sm" aria-hidden="true" />
-        </div>
-        <span class="gx-mono text-xs tracking-wider text-ink-muted">Every story links its sources</span>
-      </div>
-      {
-        latest.length > 0 ? (
-          <div class="gx-cards">{latest.map((article) => <ArticleCard article={article} />)}</div>
-        ) : (
-          <p class="text-ink-muted">New articles are coming soon.</p>
-        )
-      }
-    </section>
 
     {
-      topics.length > 0 && (
-        <section aria-labelledby="topics-heading" class="flex flex-col gap-4">
-          <h2 id="topics-heading" class="gx-mono gx-grad text-xs font-bold tracking-[0.2em]">// TOPICS</h2>
-          <ul class="flex flex-wrap gap-2">
-            {topics.map(({ entity, slug }) => (
-              <li>
-                <a href={`/topic/${slug}`} class="gx-topic">{entity}</a>
-              </li>
-            ))}
-          </ul>
-        </section>
+      (latest.length > 0 || topics.length > 0) && (
+        <div class:list={['gx-midrow', (latest.length === 0 || topics.length === 0) && 'gx-midrow-solo']}>
+          {latest.length > 0 && (
+            <section class="gx-panel gx-latest" aria-labelledby="latest-heading">
+              <div class="gx-latest-head">
+                <h2 id="latest-heading" class="gx-panel-title">Latest News</h2>
+                <span class="gx-rule" aria-hidden="true" />
+                <a href="/news" class="gx-viewall">
+                  View all news
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+                </a>
+              </div>
+              <div class="gx-grid">{latest.map((article) => <ArticleCard article={article} />)}</div>
+            </section>
+          )}
+          {topics.length > 0 && <MostCovered topics={topics} />}
+        </div>
       )
     }
+
+    <TopicStrip counts={counts} />
+    <FollowBanner />
   </div>
 </BaseLayout>

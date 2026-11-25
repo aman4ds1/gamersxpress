@@ -81,7 +81,7 @@ test('the background switch moves into the menu on small screens only', () => {
 test('the bar stays on one row on small screens', () => {
   assert.match(narrowBlock, /:root\[data-js\] \.gx-bar \.gx-wrap \{ flex-wrap: nowrap; \}/);
   const phone = /@media \(max-width: 480px\) \{([\s\S]*?)\n\}/.exec(css)[1];
-  assert.match(phone, /\.gx-bar \.gx-iconbtn \{ width: 40px; min-width: 40px; height: 40px; padding: 0; \}/);   // the base style has width 44px and 12px padding
+  assert.match(phone, /\.gx-bar \.gx-iconbtn \{ width: 44px; min-width: 44px; height: 44px; padding: 0; \}/);   // the base style has width 44px and 12px padding
   const tiny = /@media \(max-width: 350px\) \{([\s\S]*?)\n\}/.exec(css)[1];
   assert.match(tiny, /\.gx-bar \.gx-iconbtn \{ width: 36px; min-width: 36px; height: 36px; \}/);
   assert.match(tiny, /\.gx-logo-tag \{ display: none; \}/);

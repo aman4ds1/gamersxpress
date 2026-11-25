@@ -1,0 +1,28 @@
+---
+/**
+ * A thin bar at the top of an article page that fills as the reader scrolls. Pure CSS where the browser supports
+ * scroll-driven animations; a few lines of script elsewhere. Decorative only (screen readers skip it).
+ */
+---
+
+<div class="gx-progress" aria-hidden="true"><span></span></div>
+
+<script>
+  // Browsers without scroll-driven animations: set the width from the scroll position, once per frame at most.
+  if (!CSS.supports('animation-timeline: scroll()')) {
+    const bar = document.querySelector<HTMLElement>('.gx-progress span');
+    let queued = false;
+    const update = () => {
+      queued = false;
+      const max = document.documentElement.scrollHeight - innerHeight;
+      bar?.style.setProperty('transform', `scaleX(${max > 0 ? Math.min(1, scrollY / max) : 0})`);
+    };
+    addEventListener('scroll', () => {
+      if (!queued) {
+        queued = true;
+        requestAnimationFrame(update);
+      }
+    }, { passive: true });
+    update();
+  }
+</script>

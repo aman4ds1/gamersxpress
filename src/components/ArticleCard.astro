@@ -1,39 +1,43 @@
 ---
+/** A story card: picture with its category tag, title, short description, date and reading time. Always light. */
 import type { CollectionEntry } from 'astro:content';
-import { CATEGORY_COLORS, CATEGORY_LABELS } from '../data/categories';
+import { CATEGORY_LABELS, chipStyle } from '../data/categories';
+import { cardImage, readingMinutes } from '../data/articles';
+import Meta from './Meta.astro';
 
 interface Props {
   article: CollectionEntry<'articles'>;
+  /** 2 on listing pages, where the cards sit right under the page's h1; 3 (default) under a section heading. */
+  level?: 2 | 3;
 }
 
-const { article } = Astro.props;
-const { title, description, pubDate, category, hero } = article.data;
+const { article, level = 3 } = Astro.props;
+const Heading = level === 2 ? 'h2' : 'h3';
+const { title, description, pubDate, category } = article.data;
+const image = cardImage(article);
+// a portrait or square picture is shown whole, not cropped to 16:9
+const { hero } = article.data;
+const contain = hero ? hero.width / hero.height < 1.2 : false;
 ---
 
-<a href={`/news/${article.id}`} class="gx-lined">
-  <article class="gx-card min-h-[240px]">
-    <span class="gx-tick gx-tl" aria-hidden="true"></span><span class="gx-tick gx-br" aria-hidden="true"></span>
-    {
-      hero && (
-        <img
-          src={hero.src}
-          alt=""
-          width={hero.width}
-          height={hero.height}
-          loading="lazy"
-          decoding="async"
-          class:list={['gx-thumb', hero.width / hero.height < 1.2 && 'gx-thumb-contain']}
-        />
-      )
-    }
-    <div class="flex items-center justify-between gap-2.5">
-      <span class="gx-chip" style={`--chip:${CATEGORY_COLORS[category]}`}>{CATEGORY_LABELS[category]}</span>
-      <time class="gx-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted" datetime={pubDate.toISOString()}>
-        {pubDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-      </time>
+<a href={`/news/${article.id}`} class="gx-ncard">
+  <article class="gx-ncard-inner">
+    <div class="gx-ncard-media">
+      <img
+        src={image.src}
+        alt=""
+        width={image.width}
+        height={image.height}
+        loading="lazy"
+        decoding="async"
+        class:list={[contain && 'gx-thumb-contain']}
+      />
+      <span class="gx-chip gx-ncard-chip" style={chipStyle(category)}>{CATEGORY_LABELS[category]}</span>
     </div>
-    <h3 class="gx-display text-[21px] leading-snug font-bold text-ink">{title}</h3>
-    <p class="text-[14.5px] leading-relaxed text-ink-muted">{description}</p>
-    <span class="gx-mono mt-auto pt-1.5 text-xs font-bold tracking-[0.14em] text-ink">READ ▸</span>
+    <div class="gx-ncard-body">
+      <Heading class="gx-ncard-title">{title}</Heading>
+      <p class="gx-ncard-desc">{description}</p>
+      <Meta date={pubDate} minutes={readingMinutes(article.body)} class="mt-auto" />
+    </div>
   </article>
 </a>

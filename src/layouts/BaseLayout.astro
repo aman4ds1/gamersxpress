@@ -6,7 +6,8 @@ import Scenes from '../components/Scenes.astro';
 import SEO from '../components/SEO.astro';
 import JsonLd from '../components/JsonLd.astro';
 import { SITE_NAME, SITE_DESCRIPTION } from '../data/site';
-import { sceneForPath } from '../data/scenes.mjs';
+import { SCENES_ENABLED, sceneForPath } from '../data/scenes.mjs';
+import PixelDecor from '../components/PixelDecor.astro';
 import ConsentBanner from '../components/ConsentBanner.astro';
 
 interface Props {
@@ -71,8 +72,8 @@ const scene = sceneForPath(Astro.url.pathname);
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0b0c10" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#EAF5FF" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#101B30" media="(prefers-color-scheme: dark)" />
     <script is:inline>
       // Lets the styles tell "JavaScript is on" (the menu collapses into a burger) from "off" (every link stays visible).
       document.documentElement.setAttribute('data-js', '');
@@ -118,7 +119,8 @@ const scene = sceneForPath(Astro.url.pathname);
       class="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-surface focus:px-4 focus:py-2 focus:font-semibold focus:text-ink focus:ring-2 focus:ring-[color:var(--focus-ring)]"
       >Skip to content</a
     >
-    <Scenes scene={scene} />
+    <!-- The animated backgrounds are switched off by SCENES_ENABLED (src/data/scenes.mjs); static pixel art instead. -->
+    {SCENES_ENABLED ? <Scenes scene={scene} /> : <PixelDecor />}
     <Header />
     <main id="main" class:list={["flex-1", { "gx-reading": reading }]} data-pagefind-body>
       <slot />

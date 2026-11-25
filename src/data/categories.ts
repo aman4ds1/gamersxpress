@@ -22,7 +22,11 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   esports: 'Esports',
 };
 
-/** Tag color per category (white text on it passes 4.5:1 in both themes). */
+/**
+ * Tag color per category (white text on it passes 4.5:1 in both themes). The pipeline draws the placeholder pictures
+ * in these same colours (pipeline/default_images.py, checked by pipeline/test_default_images.py), so a change here
+ * needs those pictures regenerated too.
+ */
 export const CATEGORY_COLORS: Record<Category, string> = {
   'gaming-news': '#B45309',
   pc: '#6D28D9',
@@ -33,3 +37,6 @@ export const CATEGORY_COLORS: Record<Category, string> = {
   tech: '#4338CA',
   esports: '#BE185D',
 };
+
+/** The inline style for a category tag (.gx-chip): its color, with white text. */
+export const chipStyle = (category: Category) => `--chip:${CATEGORY_COLORS[category]};--chip-ink:#FFFFFF`;

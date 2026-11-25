@@ -1,0 +1,41 @@
+---
+/** The featured story at the top of the home page: the newest article, its picture full-bleed under a dark shade. */
+import type { CollectionEntry } from 'astro:content';
+import { CATEGORY_LABELS, chipStyle } from '../data/categories';
+import { cardImage, readingMinutes } from '../data/articles';
+import Meta from './Meta.astro';
+
+interface Props {
+  article: CollectionEntry<'articles'>;
+  /** Extra class for the picture: 'gx-thumb-contain' shows a portrait or square picture whole instead of cropped. */
+  imageClass?: string;
+}
+
+const { article, imageClass } = Astro.props;
+const { title, description, pubDate, category } = article.data;
+const image = cardImage(article);
+const href = `/news/${article.id}`;
+---
+
+<article class="gx-feature" aria-labelledby="top-story">
+  <img
+    class:list={['gx-feature-img', imageClass]}
+    src={image.src}
+    alt=""
+    width={image.width}
+    height={image.height}
+    fetchpriority="high"
+    decoding="async"
+  />
+  <div class="gx-feature-shade" aria-hidden="true"></div>
+  <div class="gx-feature-body">
+    <span class="gx-chip" style={chipStyle(category)}>{CATEGORY_LABELS[category]}</span>
+    <h2 id="top-story" class="gx-feature-title"><a href={href}>{title}</a></h2>
+    <p class="gx-feature-desc">{description}</p>
+    <Meta date={pubDate} minutes={readingMinutes(article.body)} />
+    <a href={href} class="gx-btn gx-btn-primary gx-feature-cta" tabindex="-1" aria-hidden="true">
+      Read More
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+    </a>
+  </div>
+</article>

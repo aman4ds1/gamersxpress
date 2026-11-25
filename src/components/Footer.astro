@@ -1,5 +1,7 @@
 ---
 import PixelLogo from './PixelLogo.astro';
+import Sprite from './Sprite.astro';
+import { BITS } from '../data/sprites';
 
 const year = new Date().getFullYear();
 const footerLinks = [
@@ -13,17 +15,25 @@ const footerLinks = [
 ---
 
 <footer class="gx-footer mt-auto">
-  <div class="gx-wrap flex flex-wrap items-center justify-between gap-5 py-8 text-sm text-ink-muted">
-    <span class="flex items-center gap-2.5">
-      <PixelLogo width={30} animated={false} />
-      <span class="gx-pixel text-[11px] text-ink">GAMERS<span style="color: var(--gold)">X</span>PRESS</span>
-    </span>
+  <Sprite sprite={BITS} size={64} class="gx-footer-bits gx-footer-bits-l" />
+  <Sprite sprite={BITS} size={64} class="gx-footer-bits gx-footer-bits-r" />
+  <div class="gx-wrap gx-footer-row">
+    <a href="/" class="gx-footer-brand" aria-label="GamersXpress home">
+      <PixelLogo width={44} animated={false} />
+      <span class="flex flex-col gap-1.5 leading-none">
+        <span class="gx-pixel gx-logo-name text-[13px]">GAMERS<span class="gx-logo-x">X</span>PRESS</span>
+        <span class="gx-footer-tag">gaming news that checks out.</span>
+      </span>
+    </a>
     <nav aria-label="Footer">
-      <ul class="flex flex-wrap gap-x-5 gap-y-2">
-        {footerLinks.map((item) => <li><a href={item.href} class="hover:text-ink">{item.label}</a></li>)}
+      <ul class="gx-footer-links">
+        {footerLinks.map((item) => <li><a href={item.href}>{item.label}</a></li>)}
         <li><button type="button" id="cookie-settings" class="hover:text-ink">Cookie settings</button></li>
       </ul>
     </nav>
-    <span>&copy; {year} GamersXpress</span>
+    <a href="/rss.xml" class="gx-iconbtn gx-footer-rss" aria-label="RSS feed">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 11a8 8 0 0 1 8 8M5 5a14 14 0 0 1 14 14"></path><circle cx="6" cy="18" r="1.4" fill="currentColor"></circle></svg>
+    </a>
   </div>
+  <p class="gx-wrap gx-footer-copy">&copy; {year} GamersXpress</p>
 </footer>

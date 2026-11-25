@@ -1,0 +1,16 @@
+---
+/**
+ * The static page decoration used while the animated scenes are switched off (SCENES_ENABLED in src/data/scenes.mjs):
+ * a pixel cloud and sun at the top, a few squares in the bottom corners. Fixed behind the page, decorative only,
+ * and shown only on wide screens where there is room beside the content.
+ */
+import Sprite from './Sprite.astro';
+import { BITS, CLOUD, SUN } from '../data/sprites';
+---
+
+<div class="gx-decor" aria-hidden="true">
+  <Sprite sprite={CLOUD} size={110} class="gx-decor-cloud" />
+  <Sprite sprite={SUN} size={56} class="gx-decor-sun" />
+  <Sprite sprite={BITS} size={72} class="gx-decor-bits gx-decor-bl" />
+  <Sprite sprite={BITS} size={72} class="gx-decor-bits gx-decor-br" />
+</div>

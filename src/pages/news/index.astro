@@ -1,0 +1,34 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import ArticleCard from '../../components/ArticleCard.astro';
+import { sortedArticles } from '../../data/articles';
+
+// Every published story, newest first: the target of "View all news" on the home page.
+const all = await sortedArticles();
+---
+
+<BaseLayout
+  title="All news | GamersXpress"
+  description="Every GamersXpress story, newest first: gaming news, hardware and esports, each with its sources."
+  breadcrumbs={[
+    { name: 'GamersXpress', path: '/' },
+    { name: 'All news', path: '/news' },
+  ]}
+>
+  <div class="gx-wrap gx-home">
+    <section class="gx-panel gx-latest" aria-labelledby="all-heading">
+      <div class="gx-latest-head">
+        <h1 id="all-heading" class="gx-panel-title">All news</h1>
+        <span class="gx-rule" aria-hidden="true"></span>
+        <span class="gx-muted text-sm">{all.length} {all.length === 1 ? 'story' : 'stories'}</span>
+      </div>
+      {
+        all.length > 0 ? (
+          <div class="gx-grid">{all.map((article) => <ArticleCard article={article} level={2} />)}</div>
+        ) : (
+          <p class="gx-muted">New articles are coming soon.</p>
+        )
+      }
+    </section>
+  </div>
+</BaseLayout>

@@ -25,7 +25,12 @@ const site = Astro.site;
 if (!site) throw new Error('astro.config.mjs must set `site`');
 
 const canonical = new URL(Astro.url.pathname, site);
-const imageUrl = image ? new URL(image, site).href : undefined;
+// Pages without their own picture (home, categories, topics, info pages) share the brand card, so links to them
+// still show an image on X, Discord and the like. Made from the site's own logo and fonts; 1200x630.
+const DEFAULT_IMAGE = '/og-default.png';
+const DEFAULT_IMAGE_ALT = 'GamersXpress: gaming news that checks out.';
+const imageUrl = new URL(image ?? DEFAULT_IMAGE, site).href;
+const imageAltText = image ? imageAlt : DEFAULT_IMAGE_ALT;
 const published = type === 'article' ? datePublished : undefined;
 const modified = published ? (dateModified ?? published) : undefined;
 ---
@@ -46,14 +51,8 @@ const modified = published ? (dateModified ?? published) : undefined;
 <meta property="og:type" content={type} />
 <meta property="og:url" content={canonical.href} />
 <meta property="og:site_name" content={SITE_NAME} />
-{
-  imageUrl && (
-    <>
-      <meta property="og:image" content={imageUrl} />
-      {imageAlt && <meta property="og:image:alt" content={imageAlt} />}
-    </>
-  )
-}
+<meta property="og:image" content={imageUrl} />
+{imageAltText && <meta property="og:image:alt" content={imageAltText} />}
 {
   published && (
     <meta property="article:published_time" content={published.toISOString()} />
@@ -61,7 +60,7 @@ const modified = published ? (dateModified ?? published) : undefined;
 }
 {modified && <meta property="article:modified_time" content={modified.toISOString()} />}
 
-<meta name="twitter:card" content={imageUrl ? 'summary_large_image' : 'summary'} />
+<meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content={title} />
 <meta name="twitter:description" content={description} />
-{imageUrl && <meta name="twitter:image" content={imageUrl} />}
+<meta name="twitter:image" content={imageUrl} />

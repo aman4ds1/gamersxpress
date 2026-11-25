@@ -1,0 +1,42 @@
+---
+/**
+ * "Most covered": the topics with the most GamersXpress stories, with their real counts. It stands in for the
+ * mockup's "Trending" tabs: a static site has no view counts, so none are shown or invented.
+ */
+import type { TopicCount } from '../data/articles';
+import { distinctThumbnails } from '../data/articles';
+
+interface Props {
+  topics: TopicCount[];
+}
+
+const { topics } = Astro.props;
+const thumbnails = distinctThumbnails(topics);
+---
+
+<section class="gx-panel gx-covered" id="most-covered" aria-labelledby="covered-heading">
+  <div class="gx-covered-head">
+    <svg width="22" height="22" viewBox="0 0 12 12" shape-rendering="crispEdges" aria-hidden="true"><rect x="0" y="8" width="3" height="4" fill="#8DD0FF"></rect><rect x="4" y="4" width="3" height="8" fill="#1685D8"></rect><rect x="8" y="0" width="3" height="12" fill="#FFD044"></rect></svg>
+    <h2 id="covered-heading" class="gx-panel-title">Most covered</h2>
+  </div>
+  <p class="gx-muted gx-covered-note">Topics with the most stories on GamersXpress</p>
+  <ol class="gx-covered-list">
+    {
+      topics.map((topic, index) => {
+        const image = thumbnails[index];
+        return (
+          <li>
+            <a href={`/topic/${topic.slug}`} class="gx-covered-item">
+              <span class="gx-covered-rank" aria-hidden="true">{index + 1}</span>
+              <img src={image.src} alt="" width={image.width} height={image.height} loading="lazy" decoding="async" class="gx-covered-thumb" />
+              <span class="gx-covered-text">
+                <span class="gx-covered-name">{topic.entity}</span>
+                <span class="gx-muted gx-covered-count">{topic.count} {topic.count === 1 ? 'story' : 'stories'}</span>
+              </span>
+            </a>
+          </li>
+        );
+      })
+    }
+  </ol>
+</section>
