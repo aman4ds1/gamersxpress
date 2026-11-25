@@ -4,8 +4,8 @@
   "description": "Gaming news, hardware and esports",
   "start_url": "/",
   "display": "browser",
-  "background_color": "#101B30",
-  "theme_color": "#101B30",
+  "background_color": "#0b0c10",
+  "theme_color": "#ffffff",
   "icons": [
     {
       "src": "/icon-192.png",

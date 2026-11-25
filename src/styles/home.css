@@ -1,26 +1,19 @@
 /* Layout of the 2026-11 redesign: header details, the home page sections, story cards, the footer and the static
-   pixel decorations. Colours come from the tokens in global.css. Breakpoints: desktop 1060px and up (the menu
+   pixel decorations. Colours come from the original palette in global.css (gold in light, silver in dark); story
+   cards, the featured story and the side cards wear the animated .gx-lined border. Breakpoints: desktop 1060px and up (the menu
    breakpoint), tablet 640-1059px, phone below 640px. */
 
-/* ---- page ------------------------------------------------------------------------------------------- */
-body { background-image: linear-gradient(180deg, color-mix(in srgb, var(--gx-blue) 9%, var(--surface)) 0, var(--surface) 520px); background-repeat: no-repeat; }
-
 /* ---- header ----------------------------------------------------------------------------------------- */
-.gx-bar { border-bottom-color: color-mix(in srgb, var(--gx-blue) 35%, var(--line)); }
 .gx-logo-x { color: var(--gx-x); }
 .gx-search-label { display: none; }
 @media (min-width: 1060px) {
   .gx-bar .gx-nav { column-gap: 4px; align-items: center; }
   .gx-bar .gx-nav a { padding: 7px 11px; border-bottom: 0; border-radius: 8px; }
   .gx-bar .gx-nav a:hover { color: var(--ink); background: var(--surface-hover); }
-  .gx-bar .gx-nav a[aria-current='page'] { color: var(--gx-navy); background: var(--gx-sky); }
+  .gx-bar .gx-nav a[aria-current='page'] { color: var(--surface); background: var(--accent); }
 }
-@media (min-width: 1280px) {
-  /* wide screens: the search button looks like a search field (it still opens the search popup) */
-  .gx-bar #search-open { width: 236px; justify-content: space-between; padding: 0 14px; color: var(--ink-muted); background: color-mix(in srgb, var(--surface-raised) 60%, transparent); font-size: 14px; }
-  .gx-bar #search-open:hover { color: var(--ink); }
-  .gx-bar .gx-search-label { display: inline; }
-}
+/* the search button stays an icon (it opens the search popup), so the nav, search, RSS, background and theme
+   buttons always fit on one row */
 /* phones: the RSS link stays in the footer, so the bar keeps room for its buttons */
 @media (max-width: 480px) { .gx-bar .gx-rss { display: none; } }
 
@@ -46,19 +39,20 @@ body { background-image: linear-gradient(180deg, color-mix(in srgb, var(--gx-blu
 .gx-top-solo { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 1059px) { .gx-top { grid-template-columns: minmax(0, 1fr); } }
 
-.gx-feature { position: relative; isolation: isolate; display: flex; align-items: flex-end; min-height: 430px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--gx-sky) 40%, transparent); border-radius: 16px; background: var(--gx-navy-2); }
+.gx-feature-wrap { border-radius: 16px; }
+.gx-feature { position: relative; isolation: isolate; display: flex; align-items: flex-end; height: 100%; min-height: 430px; overflow: hidden; border-radius: 14.5px; background: var(--gx-navy-2); }
 .gx-feature-img { position: absolute; inset: 0; z-index: -2; width: 100%; height: 100%; object-fit: cover; }
-.gx-feature-img.gx-thumb-contain { object-fit: contain; background: #0B1324; }
-.gx-feature-shade { position: absolute; inset: 0; z-index: -1; background: linear-gradient(90deg, rgba(10, 18, 34, 0.92) 0%, rgba(10, 18, 34, 0.72) 42%, rgba(10, 18, 34, 0.08) 80%), linear-gradient(0deg, rgba(10, 18, 34, 0.7), transparent 55%); }
-.gx-feature-body { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; max-width: 640px; padding: 36px 40px; color: #F4F8FF; }
+.gx-feature-img.gx-thumb-contain { object-fit: contain; background: #0b0c10; }
+.gx-feature-shade { position: absolute; inset: 0; z-index: -1; background: linear-gradient(90deg, rgba(11, 12, 16, 0.92) 0%, rgba(11, 12, 16, 0.72) 42%, rgba(11, 12, 16, 0.08) 80%), linear-gradient(0deg, rgba(11, 12, 16, 0.7), transparent 55%); }
+.gx-feature-body { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; max-width: 640px; padding: 36px 40px; color: #f3f4f6; }
 .gx-feature-title { font-family: "Chakra Petch", var(--font-sans); font-size: clamp(28px, 3.6vw, 46px); font-weight: 700; line-height: 1.05; color: #FFFFFF; text-wrap: balance; }
 .gx-feature-title a { color: inherit; text-decoration: none; }
 /* the whole picture is the link; the Read More button is a visual duplicate of it */
 .gx-feature-title a::after { content: ''; position: absolute; inset: 0; z-index: 0; }
-.gx-feature-desc { max-width: 540px; font-size: 17px; line-height: 1.5; color: #DCE6F3; }
-.gx-feature .gx-meta { color: #C9D6E6; }
+.gx-feature-desc { max-width: 540px; font-size: 17px; line-height: 1.5; color: #e6e7ec; }
+.gx-feature .gx-meta { color: #c9ced6; }
 .gx-feature-cta { position: relative; z-index: 1; margin-top: 4px; }
-.gx-feature:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.gx-feature-wrap:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 4px; }
 .gx-feature-title a:focus-visible { outline: none; }
 @media (max-width: 640px) {
   .gx-feature { flex-direction: column; align-items: stretch; min-height: 0; }
@@ -71,13 +65,12 @@ body { background-image: linear-gradient(180deg, color-mix(in srgb, var(--gx-blu
 .gx-sides { display: grid; grid-template-rows: repeat(3, minmax(0, 1fr)); gap: 12px; }
 @media (max-width: 1059px) { .gx-sides { grid-template-rows: none; grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .gx-sides { grid-template-columns: minmax(0, 1fr); } }
-.gx-side { position: relative; isolation: isolate; display: flex; align-items: center; min-height: 128px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--tint) 45%, transparent); border-radius: 14px; background: linear-gradient(100deg, #0E1A2F 32%, color-mix(in srgb, var(--tint) 55%, #0E1A2F)); color: #F4F8FF; text-decoration: none; transition: transform 0.2s ease, box-shadow 0.2s ease; }
-.gx-side:hover { transform: translateY(-2px); box-shadow: 0 14px 30px -16px color-mix(in srgb, var(--tint) 70%, transparent); }
-.gx-side:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.gx-side-wrap { height: 100%; border-radius: 14px; }
+.gx-side { position: relative; isolation: isolate; display: flex; align-items: center; height: 100%; min-height: 128px; overflow: hidden; border-radius: 12.5px; background: linear-gradient(100deg, #14161b 32%, color-mix(in srgb, var(--tint) 55%, #14161b)); color: #f3f4f6; }
 .gx-side-img { position: absolute; top: 0; right: 0; z-index: -1; width: 50%; height: 100%; object-fit: cover; -webkit-mask-image: linear-gradient(90deg, transparent, #000 50%); mask-image: linear-gradient(90deg, transparent, #000 50%); }
 .gx-side-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; max-width: 66%; padding: 16px 18px; }
-.gx-side-title { display: -webkit-box; overflow: hidden; font-family: "Chakra Petch", var(--font-sans); font-size: 18px; font-weight: 700; line-height: 1.15; color: #FFFFFF; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
-.gx-side .gx-meta { font-size: 12px; color: #C9D6E6; }
+.gx-side-title { display: -webkit-box; overflow: hidden; font-family: "Chakra Petch", var(--font-sans); font-size: 18px; font-weight: 700; line-height: 1.15; color: #ffffff; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.gx-side .gx-meta { font-size: 12px; color: #c9ced6; }
 @media (min-width: 761px) and (max-width: 1059px) {
   /* three in a row on tablets: the picture goes on top */
   .gx-side { flex-direction: column; align-items: stretch; }
@@ -102,11 +95,9 @@ body { background-image: linear-gradient(180deg, color-mix(in srgb, var(--gx-blu
   .gx-latest-head .gx-rule { display: none; }
 }
 
-/* a story card (ArticleCard.astro): always a light card, whatever the page behind it */
-.gx-ncard { display: block; height: 100%; border-radius: 12px; color: var(--gx-panel-ink); text-decoration: none; transition: transform 0.2s ease, box-shadow 0.2s ease; }
-.gx-ncard:hover { transform: translateY(-3px); box-shadow: 0 16px 30px -18px rgba(16, 27, 48, 0.5); }
-.gx-ncard:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
-.gx-ncard-inner { display: flex; flex-direction: column; height: 100%; overflow: hidden; border: 1px solid var(--gx-panel-line); border-radius: 12px; background: #FFFFFF; }
+/* a story card (ArticleCard.astro), inside the animated .gx-lined border */
+.gx-ncard { height: 100%; color: var(--ink); }
+.gx-ncard-inner { display: flex; flex-direction: column; height: 100%; overflow: hidden; border-radius: 12.5px; background: var(--card); }
 .gx-ncard-media { position: relative; aspect-ratio: 16 / 9; background: var(--gx-panel-2); }
 .gx-ncard-media img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .gx-ncard-media img.gx-thumb-contain { object-fit: contain; }
@@ -125,7 +116,7 @@ body { background-image: linear-gradient(180deg, color-mix(in srgb, var(--gx-blu
 @media (min-width: 640px) and (max-width: 1059px) { .gx-covered-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; } }
 .gx-covered-item { display: grid; grid-template-columns: 28px 60px minmax(0, 1fr); align-items: center; gap: 12px; padding: 8px; border-radius: 10px; text-decoration: none; }
 .gx-covered-item:hover { background: var(--gx-panel-2); }
-.gx-covered-item:focus-visible { outline: 2px solid var(--gx-blue); outline-offset: 1px; }
+.gx-covered-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .gx-covered-rank { font-family: "Chakra Petch", var(--font-sans); font-size: 26px; font-weight: 700; text-align: center; color: var(--gx-blue-ink); }
 .gx-covered-thumb { width: 60px; height: 60px; border-radius: 8px; object-fit: cover; }
 .gx-covered-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -141,15 +132,14 @@ body { background-image: linear-gradient(180deg, color-mix(in srgb, var(--gx-blu
   .gx-topics-list li { flex: none; scroll-snap-align: start; }
 }
 
-/* the sky-blue RSS band */
-.gx-follow { position: relative; display: flex; align-items: center; gap: 24px; overflow: hidden; padding: 20px 28px; border: 1px solid #6FBDF3; border-radius: 16px; background: linear-gradient(180deg, #A9DCFF, #8DD0FF); color: #101B30; }
+/* the RSS band: the glass of the panels with the purple / cyan / pink wash */
+.gx-follow { position: relative; display: flex; align-items: center; gap: 24px; overflow: hidden; padding: 20px 28px; border: 1px solid var(--line-strong); border-radius: 16px; background: linear-gradient(120deg, var(--c1), var(--c2) 55%, var(--c3)), var(--panel-bg); -webkit-backdrop-filter: var(--panel-blur); backdrop-filter: var(--panel-blur); color: var(--ink); }
 .gx-follow-text { flex: 1; min-width: 0; }
-.gx-follow-title { font-family: "Chakra Petch", var(--font-sans); font-size: clamp(20px, 2.2vw, 26px); font-weight: 700; line-height: 1.15; color: #101B30; }
-.gx-follow-sub { margin-top: 4px; color: #1E3352; }
+.gx-follow-title { font-family: "Chakra Petch", var(--font-sans); font-size: clamp(20px, 2.2vw, 26px); font-weight: 700; line-height: 1.15; color: var(--ink); }
+.gx-follow-sub { margin-top: 4px; color: var(--ink-muted); }
 .gx-follow-art { display: flex; flex: none; align-items: flex-end; gap: 10px; }
-.gx-follow-cloud { color: #FFFFFF; }
+.gx-follow-cloud { color: var(--a2); opacity: 0.55; }
 .gx-follow-cta { flex: none; }
-.gx-follow .gx-btn:focus-visible { outline-color: #101B30; }
 @media (max-width: 900px) {
   .gx-follow { flex-direction: column; align-items: flex-start; gap: 14px; padding: 22px 20px; }
   .gx-follow-text { padding-right: 44px; }
@@ -157,12 +147,8 @@ body { background-image: linear-gradient(180deg, color-mix(in srgb, var(--gx-blu
   .gx-follow-art-left { position: absolute; top: 18px; right: 18px; }
 }
 
-/* ---- footer: always navy, so it sets its own colours ------------------------------------------------ */
-.gx-footer {
-  --ink: #F4F8FF; --ink-muted: #AEBFD5; --line: #293B56; --line-strong: #344A6A; --gx-x: #8DD0FF; --gold: #FFD044;
-  --surface-hover: #1B2C47; --focus-ring: #FFD044;
-  position: relative; overflow: hidden; border-top: 1px solid var(--line); background: var(--gx-navy); color: var(--ink-muted); -webkit-backdrop-filter: none; backdrop-filter: none;
-}
+/* ---- footer ------------------------------------------------------------------------------------------ */
+.gx-footer { position: relative; overflow: hidden; border-top: 1px solid var(--line); background: var(--bar); color: var(--ink-muted); }
 .gx-footer-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding-top: 30px; padding-bottom: 12px; }
 .gx-footer-brand { display: flex; align-items: center; gap: 12px; color: var(--ink); text-decoration: none; }
 .gx-footer-tag { font-size: 12.5px; color: var(--ink-muted); }
@@ -171,27 +157,15 @@ body { background-image: linear-gradient(180deg, color-mix(in srgb, var(--gx-blu
 .gx-footer-links a:hover, .gx-footer-links button:hover { color: var(--ink); }
 /* below wide desktop the links take their own row under the logo and the RSS button */
 @media (max-width: 1199px) { .gx-footer-row > nav { order: 3; flex-basis: 100%; } }
-.gx-footer-copy { padding-top: 2px; padding-bottom: 28px; font-size: 13px; color: #8FA2BD; }
-.gx-footer-bits { position: absolute; bottom: 10px; color: rgba(141, 208, 255, 0.12); }
+.gx-footer-copy { padding-top: 2px; padding-bottom: 28px; font-size: 13px; color: var(--ink-faint); }
+.gx-footer-bits { position: absolute; bottom: 10px; color: var(--glow); }
 .gx-footer-bits-l { left: 10px; }
 .gx-footer-bits-r { right: 10px; transform: scaleX(-1); }
 @media (max-width: 760px) { .gx-footer-bits { display: none; } }
 
-@media (prefers-reduced-motion: reduce) {
-  .gx-side, .gx-ncard { transition: none; }
-  .gx-side:hover, .gx-ncard:hover { transform: none; }
-}
 @media print { .gx-decor, .gx-follow { display: none; } }
 
 /* ---- article pages ---------------------------------------------------------------------------------- */
-/* The reading panel (BaseLayout's reading prop) is a light surface in both themes, so it sets its own colours. */
-main.gx-reading {
-  --ink: #101B30; --ink-strong: #1A2740; --ink-brand: #101B30; --ink-muted: #536178; --ink-subtle: #536178; --ink-faint: #5A6880;
-  --line: #D5E5F5; --line-strong: #BCD4EC; --line-hover: #1685D8; --link: #0F6CB8; --accent: #0F6CB8; --accent-hover: #0B5A9C;
-  --gold: #E0A800; --card: #FFFFFF; --surface-hover: #E8F3FF; --glass-bg: #E8F3FF; --glass-edge: transparent; --glass-shadow: none;
-  --focus-ring: #1685D8;
-  color: var(--ink);
-}
 .gx-article-wrap { padding: 12px 0 8px; }
 .gx-crumbs ol { display: flex; flex-wrap: wrap; align-items: center; row-gap: 4px; font-size: 13.5px; color: var(--ink-muted); }
 .gx-crumbs li { display: inline-flex; align-items: center; min-width: 0; }
@@ -203,19 +177,19 @@ main.gx-reading {
 .gx-article-meta { font-size: 13.5px; }
 .gx-article-meta a { color: var(--link); font-weight: 600; text-decoration: none; }
 .gx-article-meta a:hover { text-decoration: underline; }
-/* a small uppercase label above a heading or list (sky on navy, brand blue on light surfaces) */
+/* a small uppercase label above a heading or list */
 .gx-eyebrow { font-family: "Chakra Petch", var(--font-sans); font-size: 13px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); }
 .gx-share { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .gx-share-label { margin-right: 6px; font-weight: 700; color: var(--ink); }
 .gx-sharebtn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 44px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--card); color: var(--ink); font-size: 14px; font-weight: 600; text-decoration: none; cursor: pointer; }
-.gx-sharebtn:hover { border-color: var(--gx-blue); }
+.gx-sharebtn:hover { border-color: var(--gold); }
 .gx-sharebtn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .gx-sources a { display: inline-flex; align-items: center; min-height: 44px; }
 .gx-related { margin-top: 40px; padding-top: 28px; border-top: 1px solid var(--line); }
 
 /* reading progress: sits just under the sticky header (the reading panel is its own layer below the header) */
 .gx-progress { position: fixed; top: 77px; left: 0; right: 0; z-index: 5; height: 3px; pointer-events: none; }
-.gx-progress span { display: block; height: 100%; background: linear-gradient(90deg, var(--gx-blue), var(--gx-sky)); transform: scaleX(0); transform-origin: 0 50%; }
+.gx-progress span { display: block; height: 100%; background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3)); transform: scaleX(0); transform-origin: 0 50%; }
 @keyframes gx-progress { to { transform: scaleX(1); } }
 @supports (animation-timeline: scroll()) {
   .gx-progress span { animation: gx-progress linear both; animation-timeline: scroll(root); }

@@ -3,11 +3,10 @@
 // A plain .mjs module so the build checks and the tests can import the very same function the layout uses.
 
 /**
- * Whether the animated backgrounds are shown at all. Off since the 2026-11 redesign (a calm navy page with static
- * pixel decorations instead). Everything below is kept working and tested: set this to true and the sky and maze
- * scenes, and the header switch that turns them off, come back exactly as they were.
+ * Whether the animated backgrounds (the sky and maze scenes, and the header switch that turns them off) are shown.
+ * On. Set it to false for a calm page with static pixel decorations (PixelDecor.astro) instead; both ways are tested.
  */
-export const SCENES_ENABLED = false;
+export const SCENES_ENABLED = true;
 
 /** The pages that get the sky scene. A page that is not listed here gets the maze. */
 export const SKY_PATHS = ['/', '/about', '/privacy', '/terms', '/contact', '/corrections', '/editorial-policy', '/ai-disclosure'];

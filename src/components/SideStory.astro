@@ -15,7 +15,8 @@ const { title, pubDate, category } = article.data;
 const image = article.data.hero ? cardImage(article) : null;
 ---
 
-<a href={`/news/${article.id}`} class="gx-side" style={`--tint:${CATEGORY_COLORS[category]}`}>
+<a href={`/news/${article.id}`} class="gx-lined gx-side-wrap">
+<div class="gx-side" style={`--tint:${CATEGORY_COLORS[category]}`}>
   {
     image && (
       <img class="gx-side-img" src={image.src} alt="" width={image.width} height={image.height} decoding="async" />
@@ -26,4 +27,5 @@ const image = article.data.hero ? cardImage(article) : null;
     <h3 class="gx-side-title">{title}</h3>
     <Meta date={pubDate} minutes={readingMinutes(article.body)} />
   </div>
+</div>
 </a>

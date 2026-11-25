@@ -13,13 +13,20 @@ const read = (path) => readFileSync(join(ROOT, path), 'utf8');
 const built = { skip: existsSync(join(DIST, 'index.html')) ? false : 'no dist/ (run npm run build first)' };
 const global = read('src/styles/global.css');
 
-test('the palette is defined for light and for both dark blocks', () => {
-  for (const token of ['--gx-navy: #101B30', '--gx-blue: #1685D8', '--gx-sky: #8DD0FF', '--gx-yellow: #FFD044', '--gx-panel: #FFFFFF']) {
-    assert.ok(global.includes(token), token);
-  }
-  assert.equal((global.match(/--surface: #101B30;/g) || []).length, 2, 'navy page in both dark blocks');
-  assert.equal((global.match(/--gx-panel: #F3F8FF;/g) || []).length, 2, 'soft white panel in both dark blocks');
-  assert.match(global, /:root \{[^}]*--surface: #EAF5FF;/, 'light sky page in the light theme');
+test('the original palette: gold in light, silver in dark, and the layout roles drawn from it', () => {
+  assert.match(global, /:root \{[^}]*--surface: #ffffff;[^}]*--gold: #b8860b;/, 'white page and gold in the light theme');
+  assert.equal((global.match(/--surface: #0b0c10;/g) || []).length, 2, 'near-black page in both dark blocks');
+  assert.equal((global.match(/--gold: #c9ced6;/g) || []).length, 2, 'silver in both dark blocks');
+  for (const role of ['--gx-x: var(--gold);', '--gx-yellow: var(--gold);', '--gx-panel: var(--panel-bg);']) assert.ok(global.includes(role), role);
+  const gx = read('src/styles/gx.css');
+  assert.match(gx, /\.gx-panel \{[^}]*background: var\(--panel-bg\);[^}]*backdrop-filter: var\(--panel-blur\);/, 'panels are the same glass as the reading panel');
+});
+
+test('story cards, the featured story and the side cards wear the animated gold / silver border', () => {
+  assert.match(read('src/components/ArticleCard.astro'), /class="gx-lined gx-ncard"/);
+  assert.match(read('src/components/HeroStory.astro'), /class="gx-lined gx-feature-wrap"/);
+  assert.match(read('src/components/SideStory.astro'), /class="gx-lined gx-side-wrap"/);
+  assert.match(read('src/styles/gx.css'), /\.gx-lined \{[^}]*conic-gradient\(from var\(--gx-a\), var\(--l1\)/);
 });
 
 test('category tags reach 4.5:1 contrast with their white text', () => {
@@ -60,9 +67,9 @@ test('the topic strip only offers categories that have stories', () => {
   assert.match(read('src/components/TopicStrip.astro'), /CATEGORIES\.filter\(\(category\) => \(counts\[category\] \?\? 0\) > 0\)/);
 });
 
-test('the old animated backgrounds are switched off, not deleted', () => {
-  for (const file of ['src/components/Scenes.astro', 'src/styles/scenes.css', 'src/data/scenes.mjs']) assert.ok(existsSync(join(ROOT, file)), file);
-  assert.match(read('src/data/scenes.mjs'), /export const SCENES_ENABLED = false;/);
+test('the animated sky and maze backgrounds are on, with the static decorations kept as the alternative', () => {
+  for (const file of ['src/components/Scenes.astro', 'src/styles/scenes.css', 'src/data/scenes.mjs', 'src/components/PixelDecor.astro']) assert.ok(existsSync(join(ROOT, file)), file);
+  assert.match(read('src/data/scenes.mjs'), /export const SCENES_ENABLED = true;/);
 });
 
 test('pages without their own picture share the 1200x630 brand card', () => {

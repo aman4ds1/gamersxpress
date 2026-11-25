@@ -53,7 +53,7 @@ body { transition: background-color 0.35s ease, color 0.35s ease; }
 /* labels */
 .gx-grad { background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3), var(--a1)); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: gx-flow 6s linear infinite; }
 .gx-gradbar { background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3), var(--a1)); background-size: 200% 100%; animation: gx-flow 6s linear infinite; }
-.gx-chip { display: inline-block; padding: 5px 9px; border-radius: 6px; background: var(--chip, #1273BE); color: var(--chip-ink, #fff); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; text-decoration: none; }
+.gx-chip { display: inline-block; padding: 5px 9px; border-radius: 6px; background: var(--chip, #6d28d9); color: var(--chip-ink, #fff); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; text-decoration: none; }
 .gx-topic { display: inline-block; padding: 6px 11px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink-muted); font-size: 13px; font-weight: 600; text-decoration: none; background: var(--card); }
 .gx-topic:hover { color: var(--ink); border-color: var(--gold); }
 
@@ -68,28 +68,28 @@ body { transition: background-color 0.35s ease, color 0.35s ease; }
 .gx-tl { top: 10px; left: 10px; border-width: 2px 0 0 2px; }
 .gx-br { bottom: 10px; right: 10px; border-width: 0 2px 2px 0; }
 .gx-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 22px; }
-.gx-cta { display: inline-block; padding: 12px 20px; border-radius: 10px; background: var(--gx-yellow); color: var(--gx-yellow-ink); box-shadow: 0 3px 0 #C99A1C; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; font-weight: 700; letter-spacing: 0.14em; }
+.gx-cta { display: inline-block; padding: 12px 20px; border-radius: 10px; background: var(--gx-yellow); color: var(--gx-yellow-ink); box-shadow: 0 3px 0 color-mix(in srgb, var(--gold) 65%, #000); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; font-weight: 700; letter-spacing: 0.14em; }
 
-/* Design system (navy / sky blue / pixel yellow). Breakpoints: desktop 1060px and up (the menu breakpoint),
+/* Layout components of the 2026-11 redesign, in the gold / silver palette. Breakpoints: desktop 1060px and up (the menu breakpoint),
    tablet 640-1059px, phone below 640px. */
 .gx-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 20px; border-radius: 10px; font-weight: 700; font-size: 15px; text-decoration: none; cursor: pointer; transition: transform 0.15s ease, background-color 0.15s ease, border-color 0.15s ease; }
-.gx-btn-primary { background: var(--gx-yellow); color: var(--gx-yellow-ink); border: 1px solid #E0B42E; box-shadow: 0 3px 0 #C99A1C; }
-.gx-btn-primary:hover { transform: translateY(-1px); background: #FFD95E; }
-.gx-btn-primary:active { transform: translateY(1px); box-shadow: 0 1px 0 #C99A1C; }
+.gx-btn-primary { background: var(--gx-yellow); color: var(--gx-yellow-ink); border: 1px solid color-mix(in srgb, var(--gold) 80%, #000); box-shadow: 0 3px 0 color-mix(in srgb, var(--gold) 65%, #000); }
+.gx-btn-primary:hover { transform: translateY(-1px); background: color-mix(in srgb, var(--gold) 85%, #fff); }
+.gx-btn-primary:active { transform: translateY(1px); box-shadow: 0 1px 0 color-mix(in srgb, var(--gold) 65%, #000); }
 .gx-btn-ghost { background: transparent; color: var(--ink); border: 1px solid var(--line-strong); }
-.gx-btn-ghost:hover { border-color: var(--gx-sky); }
+.gx-btn-ghost:hover { border-color: var(--gold); }
 .gx-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
 
-/* the light content panel; text inside it always uses the panel colours, in both themes */
-.gx-panel { background: var(--gx-panel); color: var(--gx-panel-ink); border: 1px solid var(--gx-panel-line); border-radius: 16px; box-shadow: var(--gx-panel-shadow); padding: 24px; }
+/* a content panel: the same glass as the article reading panel (frosted in light, translucent in dark) */
+.gx-panel { background: var(--panel-bg); color: var(--ink); border: 1px solid var(--panel-border); border-radius: 16px; box-shadow: var(--panel-shadow); -webkit-backdrop-filter: var(--panel-blur); backdrop-filter: var(--panel-blur); padding: 24px; }
 .gx-panel a { color: inherit; }
 .gx-panel .gx-muted { color: var(--gx-panel-muted); }
 .gx-panel-title { font-family: "Chakra Petch", var(--font-sans); font-weight: 700; font-size: clamp(24px, 2.6vw, 32px); line-height: 1.1; color: var(--gx-panel-ink); }
-.gx-rule { height: 3px; flex: 1; border-radius: 2px; background: linear-gradient(90deg, var(--gx-blue), var(--gx-sky) 60%, transparent); }
+.gx-rule { height: 3px; flex: 1; border-radius: 2px; background: linear-gradient(90deg, var(--a1), var(--a2) 50%, var(--a3) 80%, transparent); }
 
 /* a pill-shaped topic button */
 .gx-pill { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--surface-raised); color: var(--ink); font-weight: 600; font-size: 14px; text-decoration: none; white-space: nowrap; transition: border-color 0.15s ease, background-color 0.15s ease; }
-.gx-pill:hover, .gx-pill[aria-current='page'] { border-color: var(--gx-sky); background: var(--surface-hover); }
+.gx-pill:hover, .gx-pill[aria-current='page'] { border-color: var(--gold); background: var(--surface-hover); }
 
 /* date and reading time under a title */
 .gx-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 13px; color: var(--ink-muted); }
