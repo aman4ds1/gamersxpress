@@ -32,7 +32,8 @@ family guard from PLAN.md principle 4:
    output stop the pipeline instead of failing it. Parsing here keeps a parse
    error a hard FAIL. A ``finish_reason`` of ``"length"`` (truncated JSON) is
    never parsed; the provider retries once with a larger budget, and if it is
-   still truncated the run fails as ``verifier_output_invalid``.
+   still truncated the next verifier in the chain is tried. When every verifier
+   fails the run is skipped (no verdict, so the breaker is not counted).
 
 2. **Code check (independent of the model).** Every number, price, percentage,
    date, time, version and spec value in the article body must appear in the
@@ -816,7 +817,8 @@ def _model_check(
     }
 
     # finish_reason="length" means the output is truncated JSON. It must never be
-    # parsed; it is its own failure (verifier_output_invalid), not a skip.
+    # parsed. The provider layer now falls back to the next verifier instead of
+    # returning a truncated reply; this stays as a fail-closed guard.
     if generation.finish_reason == "length":
         return generation, {
             **empty,

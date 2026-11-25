@@ -3,7 +3,8 @@
 The workflow calls :func:`build_message` and :func:`send_telegram` after every
 run. One short message at most: a draft is ready, a draft failed its checks, a
 run failed, or the circuit breaker opened. Quiet runs (nothing to cover, paused,
-skipped) send nothing. In auto mode a published article is announced once the
+skipped) send nothing, except a run skipped because no verifier returned a usable
+verdict: that is reported as a technical failure, never as a rejected story. In auto mode a published article is announced once the
 site is live (:func:`build_live_message`, sent by the Announce workflow after a
 successful deploy), not when the pipeline run ends.
 
@@ -219,6 +220,19 @@ def build_message(
         if run_link:
             lines.append(run_link)
         lines.append("Reset it with the Pipeline workflow input reset_breaker.")
+    elif status == "skipped" and report.get("skip_role") == "verifier":
+        # Not a rejection: no verifier returned a usable verdict, so the article was never judged.
+        label = report.get("story_title") or report.get("slug") or "the selected story"
+        lines.append(f"⚠️ <b>Verification could not complete:</b> {_escape(label, 120)}")
+        lines.append(
+            "Technical failure, not a rejection: no verifier returned a usable verdict. "
+            "The story was skipped unpublished and the circuit breaker was not counted."
+        )
+        if report.get("error"):
+            lines.append(f"Reason: {_escape(report['error'], 200)}")
+        run_link = _link(run_url, "Workflow run")
+        if run_link:
+            lines.append(run_link)
     elif report.get("manual_topic") and status in ("nothing", "skipped", "paused"):
         # A topic the owner asked for must never end in silence.
         lines.append(f"ℹ️ <b>No article for your topic:</b> {_escape(report['manual_topic'], 120)}")

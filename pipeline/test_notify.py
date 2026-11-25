@@ -334,3 +334,25 @@ def test_article_description_reads_the_front_matter(tmp_path):
     assert notify.article_description(path) is None
     assert notify.article_description(tmp_path / "missing.md") is None
     assert notify.article_description(None) is None
+
+
+
+def test_verifier_skip_is_reported_as_a_technical_failure_not_a_rejection():
+    report = {
+        "status": "skipped", "skip_role": "verifier", "slug": "nioh-3-xbox",
+        "story_title": "Nioh 3 Is Coming to Xbox in 2027",
+        "error": "all providers failed for role 'verifier': truncated response (finish_reason=length)",
+        "breaker": {"consecutive_failures": 2, "open": False},
+    }
+    text = notify.build_message(report, run_url="https://github.com/o/r/actions/runs/9")
+    assert "Verification could not complete" in text
+    assert "Nioh 3 Is Coming to Xbox in 2027" in text
+    assert "not a rejection" in text and "breaker was not counted" in text
+    assert "finish_reason=length" in text
+    assert "actions/runs/9" in text
+    assert "Draft failed its checks" not in text
+
+
+def test_other_skipped_runs_stay_quiet():
+    assert notify.build_message({"status": "skipped", "skip_role": "writer", "error": "HTTP 503"}) is None
+    assert notify.build_message({"status": "skipped", "error": "HTTP 503"}) is None

@@ -114,8 +114,14 @@ _USER_AGENT = "GamersXpress/0.1 (+https://gamersxpress.com)"
 class SkipRun(Exception):
     """Raised when every provider for a role is unavailable.
 
-    Callers must treat this as "publish nothing" rather than a crash.
+    Callers must treat this as "publish nothing" rather than a crash. ``role`` names the role
+    that could not run (``"verifier"``, ``"writer"``, ...) when it is known, so the alert can say
+    that verification never completed rather than that the story was rejected.
     """
+
+    def __init__(self, message: str = "", *, role: str | None = None) -> None:
+        super().__init__(message)
+        self.role = role
 
 
 class MissingWriterFamilyError(Exception):
@@ -1035,10 +1041,10 @@ def _complete_with_retry(
 
     A ``finish_reason="length"`` response is truncated output, which must never
     be parsed: it retries up to ``length_retries`` times with a larger token
-    budget. If it stays truncated, a ``json_schema`` request raises
-    :class:`ProviderError` (so the next provider is tried), while a schema-less
-    call (the verifier) returns the truncated :class:`Completion` unchanged so
-    the caller fails the run without parsing it.
+    budget. If it stays truncated, a ``json_schema`` request and any verifier call
+    raise :class:`ProviderError` (so the next provider is tried); any other
+    schema-less call (the writer) returns the truncated :class:`Completion`
+    unchanged, as before.
     """
     if time_budget is None:
         time_budget = _RoleTimeBudget(float("inf"))
@@ -1124,10 +1130,13 @@ def _complete_with_retry(
                 continue
 
         if completion.finish_reason == "length":
-            # Truncated JSON must never be parsed. With a json_schema, fall back
-            # to the next provider; without one (the verifier), propagate the
-            # truncation so the caller fails the run instead of skipping it.
-            if json_schema is not None:
+            # Truncated JSON must never be parsed. With a json_schema, and for the verifier
+            # (whose truncated reply is no verdict on the article), fall back to the next
+            # provider: for the verifier the next model of a family other than the writer's.
+            # When every verifier truncates or fails, generate() raises SkipRun and the run is
+            # skipped without touching the breaker. Other schema-less calls (the writer) keep
+            # the truncated Completion unchanged, as before.
+            if json_schema is not None or role == "verifier":
                 raise ProviderError(
                     f"truncated response from {provider.name}/{model} (finish_reason=length)",
                     retryable=True,
@@ -1184,7 +1193,7 @@ def _select_chain(
         if run_state is not None:
             run_state.add_failures([message])
         logger.error(message)
-        raise SkipRun(message)
+        raise SkipRun(message, role=role)
     return kept
 
 
@@ -1230,7 +1239,7 @@ def generate(
         if run_state is not None:
             run_state.add_failures([message])
         logger.error(message)
-        raise SkipRun(message)
+        raise SkipRun(message, role=role)
 
     if dry_run is None:
         dry_run = _env_flag(os.environ.get("DRY_RUN"))
@@ -1332,7 +1341,7 @@ def generate(
         if run_state is not None:
             run_state.add_failures(list(fallbacks))
         logger.warning("fallback role=%s: %s", role, exc)
-        return SkipRun(str(exc))
+        return SkipRun(str(exc), role=role)
 
     for entry in chain:
         # Role wall-clock deadline, checked before each provider so a provider
@@ -1474,7 +1483,7 @@ def generate(
 
     if run_state is not None:
         run_state.add_failures(fallbacks)
-    raise SkipRun(f"all providers failed for role {role!r}: " + "; ".join(fallbacks))
+    raise SkipRun(f"all providers failed for role {role!r}: " + "; ".join(fallbacks), role=role)
 
 
 __all__ = [

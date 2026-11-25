@@ -1317,6 +1317,34 @@ def test_a_provider_error_skips_the_run_without_touching_the_breaker(tmp_path):
     assert breaker["open"] is False
 
 
+def test_every_verifier_failing_skips_the_run_without_touching_the_breaker(tmp_path):
+    paths = make_paths(tmp_path)
+    run_module.save_breaker(
+        {"consecutive_failures": 2, "last_failure_date": None, "open": False, "recent_failures": []},
+        paths.breaker,
+    )
+    base = repair_generate([dryrun.sample_body()], [verdict_json()], repair_calls())
+
+    def generate(role, prompt, json_schema=None, *, run_state=None, **kwargs):
+        if role == "verifier" and json_schema is None:
+            raise providers.SkipRun(
+                "all providers failed for role 'verifier': truncated response (finish_reason=length)",
+                role="verifier",
+            )
+        return base(role, prompt, json_schema, run_state=run_state, **kwargs)
+
+    result = run_once(tmp_path, dry_run=True, generate=generate)
+
+    assert result.status == "skipped"
+    assert result.exit_code == 2
+    assert result.report["skip_role"] == "verifier"
+    assert result.report["story_title"]
+    assert "finish_reason=length" in result.error
+    breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
+    assert breaker["consecutive_failures"] == 2, "no verdict was reached, so nothing is counted"
+    assert breaker["open"] is False
+
+
 def test_a_repair_transport_error_keeps_the_draft_and_skips(tmp_path):
     paths = make_paths(tmp_path)
     run_module.save_breaker(

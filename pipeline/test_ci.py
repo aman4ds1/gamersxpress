@@ -222,6 +222,20 @@ def test_cli_notify_warns_in_the_run_summary_when_the_alert_is_not_delivered(rep
     assert "::warning::" in capsys.readouterr().out
 
 
+def test_cli_notify_verifier_skip_alert_failing_to_send_changes_nothing(repo, monkeypatch, capsys):
+    sent = []
+    monkeypatch.setattr(notify, "send_telegram", lambda text, **kw: sent.append(text) and False)
+    report = {"status": "skipped", "skip_role": "verifier", "story_title": "Nioh 3", "exit_code": 2,
+              "breaker": {"consecutive_failures": 2, "open": False}}
+    write_json(repo / "data" / "reports" / "last-run.json", report)
+    write_json(repo / "data" / "breaker.json", {"consecutive_failures": 2, "open": False})
+    assert ci.main(["notify", "--repo", str(repo)]) == 0, "a failed alert never fails the job"
+    assert sent and "Verification could not complete" in sent[0]
+    assert "::warning::" in capsys.readouterr().out
+    assert json.loads((repo / "data" / "reports" / "last-run.json").read_text(encoding="utf-8")) == report
+    assert json.loads((repo / "data" / "breaker.json").read_text(encoding="utf-8"))["consecutive_failures"] == 2
+
+
 # --- draft branch -------------------------------------------------------------
 
 REPORT = {"status": "completed", "slug": "sony-shows-prism-collection", "category": "hardware"}

@@ -2480,3 +2480,75 @@ def test_the_reasons_are_written_to_the_report_file(tmp_path):
 
 def test_a_passing_article_has_no_flag_details(tmp_path):
     assert verify_with(tmp_path, model()).unsupported_detail == []
+
+
+
+# --- a truncated first verifier falls back; the second verifier's verdict counts --
+
+
+def _chain_generate(second_reply):
+    """The real providers.generate: Groq truncates, Claude (another family) answers."""
+    import functools
+
+    class Fake(providers.Provider):
+        def __init__(self, name, results):
+            self.name, self.env_key, self.results, self.calls = name, f"{name.upper()}_KEY", list(results), []
+
+        def complete(self, model, prompt, *, api_key, json_schema=None, options=None, transport=None):
+            self.calls.append(prompt)
+            item = self.results.pop(0)
+            return item if isinstance(item, providers.Completion) else providers.Completion(text=item, finish_reason="stop")
+
+    groq = Fake("groq", [providers.Completion(text='{"clauses": [', finish_reason="length")])
+    claude = Fake("claude", [second_reply])
+    cfg = {
+        "roles": {"verifier": [
+            {"provider": "groq", "model": "oss", "family": "openai"},
+            {"provider": "claude", "model": "haiku", "family": "anthropic"},
+        ]},
+        "retry": {"max_attempts": 1, "base_delay_seconds": 1, "max_delay_seconds": 30, "length_retries": 0},
+    }
+    run_state = providers.RunState()
+    run_state.record(providers.Generation("writer", "gemini", "flash", "google", "DRAFT"))
+    generate = functools.partial(
+        providers.generate, config=cfg, providers={"groq": groq, "claude": claude},
+        env={"GROQ_KEY": "k", "CLAUDE_KEY": "k"}, sleep=lambda _d: None,
+    )
+    return generate, run_state, claude
+
+
+def test_truncated_first_verifier_then_valid_approval_passes(tmp_path):
+    generate, run_state, claude = _chain_generate(json.dumps(model()))
+    report = verify_module.verify(
+        ARTICLE, sheet(), run_state=run_state, generate=generate,
+        report_dir=tmp_path, verify_config=config(),
+    )
+    assert report.passed is True
+    assert report.failure_reason is None
+    assert len(claude.calls) == 1
+
+
+def test_truncated_first_verifier_then_valid_rejection_is_article_rejected(tmp_path):
+    payload = model(
+        clauses=[
+            {"clause": "The console costs $499", "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""},
+            {"clause": "Free games forever", "fact_ids": [], "match": "none", "exceeds_facts": False, "difference": "not in the sheet"},
+        ]
+    )
+    generate, run_state, _claude = _chain_generate(json.dumps(payload))
+    report = verify_module.verify(
+        "## Price\nThe console costs $499. Free games forever.\n", sheet(), run_state=run_state,
+        generate=generate, report_dir=tmp_path, verify_config=config(),
+    )
+    assert report.passed is False
+    assert report.failure_reason == "article_rejected", "a complete rejection is still a real article failure"
+
+
+def test_truncated_first_verifier_then_malformed_reply_is_still_verifier_output_invalid(tmp_path):
+    # Complete but malformed output keeps its existing classification.
+    generate, run_state, _claude = _chain_generate("no json here")
+    report = verify_module.verify(
+        ARTICLE, sheet(), run_state=run_state, generate=generate,
+        report_dir=tmp_path, verify_config=config(),
+    )
+    assert report.failure_reason == "verifier_output_invalid"

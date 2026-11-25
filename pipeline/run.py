@@ -1271,6 +1271,10 @@ def run(
             self_finish=finish, breaker=breaker, paths=paths, error=str(exc),
             slug=slug or provisional_slug, cluster_id=cluster_id, chosen=chosen,
             article=draft,
+            # "verifier": verification never completed, which the alert reports as a
+            # technical failure, not as a story the verifier rejected.
+            skip_role=getattr(exc, "role", None),
+            story_title=(chosen or {}).get("title"),
         )
     except (ProviderError, OSError, http.client.HTTPException) as exc:
         # A provider or transport failure is an outage, not a bad article: skip

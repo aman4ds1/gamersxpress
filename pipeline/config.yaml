@@ -163,8 +163,10 @@ roles:
 # of output budget and the response is truncated JSON, which must never be
 # parsed. Instead retry up to length_retries times with the token budget scaled
 # by length_budget_multiplier and clamped to length_budget_cap. If it is still
-# truncated the caller fails the run (a verifier truncation is its own failure,
-# verifier_output_invalid, not a skipped run). A 0 cap disables these retries.
+# truncated the next provider is tried; when every provider of the role fails
+# the run is skipped (for the verifier: no verdict, so the breaker is not
+# counted, and Telegram says verification could not complete). A 0 cap disables
+# these retries.
 retry:
   max_attempts: 3
   base_delay_seconds: 1

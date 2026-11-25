@@ -1021,7 +1021,7 @@ def test_length_truncation_stops_when_cap_cannot_grow_budget():
     assert len(provider.calls) == 1  # cap does not exceed the current budget, so no retry
 
 
-def test_length_truncation_after_retries_returns_truncated_for_verifier():
+def test_length_truncation_after_retries_skips_when_the_only_verifier_truncates():
     options = {"max_completion_tokens": 8192}
     provider = FakeProvider(
         "a",
@@ -1034,13 +1034,15 @@ def test_length_truncation_after_retries_returns_truncated_for_verifier():
     config["retry"].update(
         {"length_retries": 1, "length_budget_multiplier": 2, "length_budget_cap": 20000}
     )
-    result = providers.generate(
-        "verifier", "p", config=config, providers={"a": provider}, env=keyed("a"),
-        run_state=_run_with_writer_family("google"),
-    )
-    assert result.finish_reason == "length"
-    assert result.value == "v2-trunc"  # truncated output is never parsed
-    assert len(provider.calls) == 2
+    with pytest.raises(providers.SkipRun) as raised:
+        providers.generate(
+            "verifier", "p", config=config, providers={"a": provider}, env=keyed("a"),
+            run_state=_run_with_writer_family("google"),
+        )
+    # A truncated verdict is never returned or parsed: it is no verdict at all.
+    assert raised.value.role == "verifier"
+    assert "finish_reason=length" in str(raised.value)
+    assert len(provider.calls) == 2  # the one larger-budget retry still happens first
 
 
 def test_length_truncation_with_json_schema_falls_back():
@@ -1668,3 +1670,64 @@ def test_anthropic_provider_builds_a_messages_request_and_reads_the_reply():
     assert done.text == "{\"a\": 1}" and done.finish_reason == "end_turn"
     cut = provider.extract({"content": [{"type": "text", "text": "x"}], "stop_reason": "max_tokens"})
     assert cut.finish_reason == "length"
+
+
+
+# --- a truncated verifier reply falls back to the next verifier ----------------
+
+
+def _verifier_config(*triples):
+    return {
+        "roles": {"verifier": chain(*triples)},
+        "retry": {"max_attempts": 1, "base_delay_seconds": 1, "max_delay_seconds": 30, "length_retries": 0},
+    }
+
+
+def test_truncated_verifier_falls_back_to_the_next_verifier():
+    groq = FakeProvider("groq", [providers.Completion(text='{"clauses": [', finish_reason="length")])
+    claude = FakeProvider("claude", ['{"clauses": []}'])
+    result = providers.generate(
+        "verifier", "p", config=_verifier_config(("groq", "oss", "openai"), ("claude", "haiku", "anthropic")),
+        providers={"groq": groq, "claude": claude}, env=keyed("groq", "claude"),
+        run_state=_run_with_writer_family("google"), sleep=lambda _d: None,
+    )
+    assert (result.provider, result.family) == ("claude", "anthropic")
+    assert result.value == '{"clauses": []}'
+    assert result.finish_reason == "stop"
+    assert claude.calls[0]["prompt"] == "p", "the next verifier gets the same, full prompt"
+    assert any("finish_reason=length" in f for f in result.fallbacks)
+
+
+def test_every_verifier_truncating_skips_the_run():
+    first = FakeProvider("groq", [providers.Completion(text="{", finish_reason="length")])
+    second = FakeProvider("claude", [providers.Completion(text="{", finish_reason="length")])
+    with pytest.raises(providers.SkipRun) as raised:
+        providers.generate(
+            "verifier", "p", config=_verifier_config(("groq", "oss", "openai"), ("claude", "haiku", "anthropic")),
+            providers={"groq": first, "claude": second}, env=keyed("groq", "claude"),
+            run_state=_run_with_writer_family("google"), sleep=lambda _d: None,
+        )
+    assert raised.value.role == "verifier"
+    assert len(first.calls) == 1 and len(second.calls) == 1
+
+
+def test_truncation_fallback_never_reaches_a_verifier_of_the_writers_family():
+    groq = FakeProvider("groq", [providers.Completion(text="{", finish_reason="length")])
+    gemini = FakeProvider("gemini", ['{"clauses": []}'])
+    with pytest.raises(providers.SkipRun):
+        providers.generate(
+            "verifier", "p", config=_verifier_config(("groq", "oss", "openai"), ("gemini", "flash", "google")),
+            providers={"groq": groq, "gemini": gemini}, env=keyed("groq", "gemini"),
+            run_state=_run_with_writer_family("google"), sleep=lambda _d: None,
+        )
+    assert gemini.calls == [], "the writer's own family must never verify, even as a fallback"
+
+
+def test_truncated_writer_output_is_still_returned_unchanged():
+    # The fallback is only for the verifier: the writer's truncation handling is unchanged.
+    writer = FakeProvider("a", [providers.Completion(text="half a draft", finish_reason="length")])
+    nxt = FakeProvider("b", ["full draft"])
+    config = make_config(chain(("a", "m", "fa"), ("b", "m2", "fb")), max_attempts=1)
+    result = providers.generate("writer", "p", config=config, providers={"a": writer, "b": nxt}, env=keyed("a", "b"))
+    assert result.finish_reason == "length" and result.value == "half a draft"
+    assert nxt.calls == []
