@@ -551,6 +551,12 @@ _GENERIC_NAME_WORDS = frozenset(
 _HEADING_LINE_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
 _LIST_ITEM_LINE_RE = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,3}[.)])\s+")
 
+#: A Markdown horizontal rule ("---", "***", "___", spaces allowed between). It
+#: carries no fact: run 45796994430's fallback writer ended its body with a
+#: stray "---", the repair rightly dropped it, and the validator rejected an
+#: otherwise clean repair for "changing" that line.
+_THEMATIC_BREAK_LINE_RE = re.compile(r"^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$", re.MULTILINE)
+
 #: Anaphoric openers, longest first so a multi-word marker is matched whole. A
 #: sentence that opens with one of these leans on the sentence just before it,
 #: so it cannot stand on its own once that sentence is removed.
@@ -856,6 +862,17 @@ def _check_added_sentence(
             )
 
 
+def _without_body_rules(text: str) -> tuple[str, int]:
+    """``text`` with the horizontal rules of its body removed, and how many there were.
+
+    The front matter's own ``---`` delimiters are left alone.
+    """
+    body = _body_of_article(text)
+    front = text[: len(text) - len(body)]
+    stripped, count = _THEMATIC_BREAK_LINE_RE.subn("", body)
+    return front + stripped, count
+
+
 def validate_repair(original: str, repaired: str, flagged_clauses: list[str]) -> list[str]:
     """Check a repaired draft against the draft it came from.
 
@@ -870,7 +887,9 @@ def validate_repair(original: str, repaired: str, flagged_clauses: list[str]) ->
     3. every sentence the repair added is a complete sentence (``F1:`` scraps
        and clause fragments are rejected), and a replacement for an attributed
        flagged sentence still attributes the same source;
-    4. no heading or list item is added;
+    4. no heading, list item or horizontal rule is added (a rule under a line
+       would make it a heading); dropping a horizontal rule is fine, since it
+       states nothing;
     5. the word count does not grow by more than
        :data:`REPAIR_MAX_NET_ADDED_WORDS` net words.
 
@@ -880,9 +899,11 @@ def validate_repair(original: str, repaired: str, flagged_clauses: list[str]) ->
     section disappears with it may be removed. Such a paragraph or section
     being emptied and removed is accepted.
     """
-    original = str(original or "")
-    repaired = str(repaired or "")
+    original, original_rules = _without_body_rules(str(original or ""))
+    repaired, repaired_rules = _without_body_rules(str(repaired or ""))
     problems: list[str] = list(find_leaks(_body_of_article(repaired)))
+    if repaired_rules > original_rules:
+        problems.append("repair added a horizontal rule")
 
     original_sentences = _sentences(original)
     repaired_sentences = _sentences(repaired)

@@ -656,6 +656,34 @@ def test_validate_repair_accepts_removing_an_emptied_paragraph():
     assert write_module.validate_repair(original, repaired, [FLAGGED_SENTENCE]) == []
 
 
+def test_validate_repair_accepts_dropping_a_stray_horizontal_rule():
+    # Run 45796994430: the fallback writer ended its body with "---"; the repair deleted exactly the
+    # padded clauses and that rule, and was rejected for "changing" the rule.
+    original = repair_article(OVERVIEW_SENTENCE, UNATTRIBUTED_SENTENCE) + "\n\n---"
+    repaired = repair_article(OVERVIEW_SENTENCE)
+    assert write_module.validate_repair(original, repaired, [UNATTRIBUTED_SENTENCE]) == []
+
+
+@pytest.mark.parametrize("rule", ["***", "___", "- - -", "   ----"])
+def test_validate_repair_treats_every_horizontal_rule_spelling_alike(rule):
+    original = repair_article(OVERVIEW_SENTENCE, "", rule, "", ATTRIBUTED_SENTENCE)
+    assert write_module.validate_repair(original, repair_article(OVERVIEW_SENTENCE, ATTRIBUTED_SENTENCE), []) == []
+    assert write_module.validate_repair(original, original, []) == []
+
+
+def test_validate_repair_rejects_adding_a_horizontal_rule():
+    # "---" under a line would turn that sentence into a heading.
+    original = repair_article(OVERVIEW_SENTENCE, ATTRIBUTED_SENTENCE)
+    repaired = repair_article(OVERVIEW_SENTENCE, "---", ATTRIBUTED_SENTENCE)
+    assert write_module.validate_repair(original, repaired, []) == ["repair added a horizontal rule"]
+
+
+def test_validate_repair_still_pins_the_front_matter_around_a_dropped_rule():
+    original = repair_article(OVERVIEW_SENTENCE) + "\n\n---"
+    repaired = original.replace("Synthetic title", "Other title")
+    assert any("Synthetic title" in problem for problem in write_module.validate_repair(original, repaired, []))
+
+
 def test_validate_repair_accepts_removing_an_emptied_section():
     original = (
         REPAIR_FRONT
