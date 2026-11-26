@@ -182,6 +182,17 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 #: relative-time words inside it are ignored.
 _QUOTED_SPAN_RE = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
 
+#: "as soon as" is a conjunction meaning "when" ("as soon as the stock sells
+#: out"), not a claim about time, so its "soon" never counts as a relative-time
+#: word. A plain "soon" ("the console launches soon") still does.
+_CONJUNCTION_SPAN_RE = re.compile(r"(?<!\w)as soon as(?!\w)")
+
+#: Markdown block boundaries: a blank line, or a line that starts a heading or a
+#: list item. A sentence never runs across one; without this a heading and a
+#: list glued themselves onto the sentence before them (run 45701430556 judged a
+#: price list by the "As soon as" sentence above its heading).
+_BLOCK_BREAK_RE = re.compile(r"\n[ \t]*\n|\n(?=[ \t]*(?:#{1,6}[ \t]|[-*+][ \t]|\d+[.)][ \t]))")
+
 
 SYSTEM_INSTRUCTION = (
     "You are an independent fact checker. You receive a news article and the "
@@ -529,10 +540,20 @@ def _sentence_names_speaker(
     return False
 
 
+def _article_sentences(body: str) -> list[str]:
+    """The article body's sentences, never running across a Markdown block boundary.
+
+    The body is cut at blank lines, headings and list items first, then each
+    block is split into sentences, so every clause is judged by its own sentence.
+    """
+    return [sentence for block in _BLOCK_BREAK_RE.split(body) for sentence in gather._split_sentences(block)]
+
+
 def _relative_time_hits(text: object, words: tuple[str, ...]) -> list[str]:
-    """Relative-time words in ``text`` outside any quoted span (model-independent)."""
+    """Relative-time words in ``text`` outside any quoted span or "as soon as" (model-independent)."""
     folded = _fold(gates.strip_protected_names(text))
     spans = [(match.start(), match.end()) for match in _QUOTED_SPAN_RE.finditer(folded)]
+    spans += [(match.start(), match.end()) for match in _CONJUNCTION_SPAN_RE.finditer(folded)]
     hits: list[str] = []
     for word in words:
         needle = _fold(word).strip()
@@ -885,7 +906,7 @@ def _model_check(
     # less than its fact does not fail: it stays visible as a note.
     by_id = _facts_by_id(facts)
     body = _split_front_matter(_as_text(article))[1]
-    sentences = gather._split_sentences(body)
+    sentences = _article_sentences(body)
     unsupported_clauses: list[str] = []
     unsupported_detail: list[dict] = []
     notes: list[str] = []

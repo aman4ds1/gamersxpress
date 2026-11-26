@@ -1365,6 +1365,72 @@ def test_now_inside_a_title_cased_name_is_allowed_but_plain_now_is_not():
     assert verify_module._relative_time_hits("The update is live now", ("now",)) == ["now"]
 
 
+def test_as_soon_as_is_a_conjunction_not_a_relative_time_word():
+    # "as soon as" means "when"; a plain "soon" is still a word that expires.
+    words = verify_module.DEFAULT_RELATIVE_TIME_WORDS
+    assert verify_module._relative_time_hits("As soon as the batch sells out, the console is out of stock", words) == []
+    assert verify_module._relative_time_hits("It restocks as soon as possible", words) == []
+    assert verify_module._relative_time_hits("The console ships soon", words) == ["soon"]
+    assert verify_module._relative_time_hits("As soon as stock returns, it ships soon", words) == ["soon"]
+
+
+def test_a_sentence_never_runs_across_a_heading_a_list_item_or_a_blank_line():
+    body = (
+        "Stock lasts until the batch sells out.\n\n### Pricing\n\n- **US:** $1,049\n- **UK:** $999\n"
+        "2) Second step\nstill the same item.\n\nLast paragraph."
+    )
+    assert verify_module._article_sentences(body) == [
+        "Stock lasts until the batch sells out.",
+        "### Pricing",
+        "- **US:** $1,049",
+        "- **UK:** $999",
+        "2) Second step\nstill the same item.",
+        "Last paragraph.",
+    ]
+
+
+def test_a_supported_list_item_is_not_failed_by_a_time_word_in_the_sentence_above_it(tmp_path):
+    # Run 45701430556: the checker supported every price, but the prices were matched to one long "sentence"
+    # that ran from "As soon as ..." through the Pricing heading and its list, and its "soon" failed them all.
+    price = "The 512GB model costs $1,049"
+    stock = "When the batch sells out, the console is out of stock"
+    article = (
+        "As soon as the batch sells out, the console is out of stock until more units are made.\n\n"
+        "### Pricing\n\n- The 512GB model costs $1,049.\n"
+    )
+    payload = model(
+        clauses=[
+            {"clause": stock, "fact_ids": ["F1"], "match": "paraphrase", "exceeds_facts": False, "difference": ""},
+            {"clause": price, "fact_ids": ["F2"], "match": "exact", "exceeds_facts": False, "difference": ""},
+        ]
+    )
+    report = verify_module.verify(
+        article,
+        sheet(claim("Once the batch sells out the console is out of stock until more units are made"), claim("The 512GB model costs $1,049")),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert stock not in report.unsupported
+    assert price not in report.unsupported
+
+
+def test_a_time_word_still_fails_its_own_list_item(tmp_path):
+    clause = "The 2TB model ships soon"
+    article = "Stock is limited.\n\n### Pricing\n\n- The 2TB model ships soon.\n"
+    payload = model(clauses=[{"clause": clause, "fact_ids": ["F1"], "match": "exact", "exceeds_facts": False, "difference": ""}])
+    report = verify_module.verify(
+        article,
+        sheet(claim("The 2TB model ships soon")),
+        run_state=providers.RunState(),
+        generate=make_generate(payload),
+        report_dir=tmp_path,
+        verify_config=config(),
+    )
+    assert clause in report.unsupported
+
+
 def _small_overlap_gate(monkeypatch):
     monkeypatch.setattr(
         verify_module.gates, "load_gates_config", lambda *a, **k: {"overlap": {"ngram": 3, "max_ratio": 0.5}}
