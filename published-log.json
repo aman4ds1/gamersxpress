@@ -1,0 +1,76 @@
+{
+  "articles": [
+    {
+      "published_at": "2026-11-05T03:33:08.237155+00:00",
+      "slug": "sony-delays-god-of-war-laufey-to-may-20-2027",
+      "title": "Sony delays God of War Laufey to May 20, 2027",
+      "category": "gaming-news",
+      "mode": "draft",
+      "cluster_id": "4fa80a82eb65"
+    },
+    {
+      "published_at": "2026-11-06T01:37:11.438636+00:00",
+      "slug": "dragon-s-dogma-2-adds-delicious-in-dungeon-collaboration",
+      "title": "Dragon's Dogma 2 adds Delicious in Dungeon collaboration",
+      "category": "gaming-news",
+      "mode": "draft",
+      "cluster_id": "0a6e18587217"
+    },
+    {
+      "published_at": "2026-11-12T20:04:25.673208+00:00",
+      "slug": "halo-campaign-evolved-update-adds-firefight-mode-in-2026",
+      "title": "Halo: Campaign Evolved update adds Firefight mode in 2026",
+      "category": "gaming-news",
+      "mode": "auto",
+      "cluster_id": "31a7b22eeba9"
+    },
+    {
+      "published_at": "2026-11-13T12:07:59.273844+00:00",
+      "slug": "microsoft-announces-wolfenstein-3-and-updates",
+      "title": "Microsoft announces Wolfenstein 3 and updates",
+      "category": "gaming-news",
+      "mode": "auto",
+      "cluster_id": "b761681674f3"
+    },
+    {
+      "published_at": "2026-11-19T07:11:03.998111+00:00",
+      "slug": "grand-theft-auto-vi-launches-on-playstation-5-and-xbox-cloud",
+      "title": "Grand Theft Auto VI launches on PlayStation 5 and Xbox Cloud",
+      "category": "gaming-news",
+      "mode": "auto",
+      "cluster_id": "1e61c5396f8e"
+    },
+    {
+      "published_at": "2026-11-19T09:08:29.835980+00:00",
+      "slug": "the-outer-worlds-2-expansion-side-effects-guaranteed-arrives",
+      "title": "The Outer Worlds 2 expansion Side Effects Guaranteed arrives",
+      "category": "gaming-news",
+      "mode": "auto",
+      "cluster_id": "b30d96b3e444"
+    },
+    {
+      "published_at": "2026-11-19T21:08:07.205692+00:00",
+      "slug": "nvidia-announces-rubin-hpc-gpu-with-over-50000-cuda-cores",
+      "title": "NVIDIA announces Rubin HPC GPU with over 50000 CUDA cores",
+      "category": "hardware",
+      "mode": "auto",
+      "cluster_id": "93f164183375"
+    },
+    {
+      "published_at": "2026-11-20T03:08:08.914401+00:00",
+      "slug": "sony-announces-dog-adventure-game-hounded-for-release-in-2027",
+      "title": "Sony announces dog adventure game Hounded for release in 2027",
+      "category": "playstation",
+      "mode": "auto",
+      "cluster_id": "f40956f28cd3"
+    },
+    {
+      "published_at": "2026-11-25T10:56:19.678379+00:00",
+      "slug": "nioh-3-and-complete-edition-arrive-on-xbox-on-january-28-2027",
+      "title": "Nioh 3 and Complete Edition arrive on Xbox on January 28, 2027",
+      "category": "gaming-news",
+      "mode": "auto",
+      "cluster_id": "e2d9708a0865"
+    }
+  ]
+}

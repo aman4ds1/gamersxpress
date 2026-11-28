@@ -1,0 +1,901 @@
+{
+  "stories": {
+    "doom,doom director says we’re doing great,half,laid off,machinegames,software,xbox|announcement": {
+      "attempt_count": 1,
+      "last_attempt": "2026-11-01T22:54:16.662934+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "7a9ebafec84d",
+      "primary_entities": [
+        "doom",
+        "doom director says we’re doing great",
+        "half",
+        "laid off",
+        "machinegames",
+        "software",
+        "xbox"
+      ],
+      "story_type": "announcement"
+    },
+    "best-selling games,instant hit,just 72,phantom blade zero,phantom blade zero became,ps5 pc,steam's|sales": {
+      "attempt_count": 1,
+      "last_attempt": "2026-11-02T11:24:11.848832+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "37db78b373e9",
+      "primary_entities": [
+        "best-selling games",
+        "instant hit",
+        "just 72",
+        "phantom blade zero",
+        "phantom blade zero became",
+        "ps5 pc",
+        "steam's"
+      ],
+      "story_type": "sales"
+    },
+    "best-selling games,instant hit,just 72,numbers,phantom blade zero,phantom blade zero became,phantom blade zero put up some massive,ps5 pc,steam's|sales": {
+      "attempt_count": 3,
+      "last_attempt": "2026-11-10T09:59:39.819017+00:00",
+      "failure_reason": "gate failure",
+      "cluster_id": "89fd6c012053",
+      "primary_entities": [
+        "best-selling games",
+        "game of the year candidate and you could get",
+        "instant hit",
+        "just 72",
+        "numbers",
+        "phantom blade zero",
+        "phantom blade zero became",
+        "phantom blade zero put up some massive",
+        "ps5 pc",
+        "steam's",
+        "won me over"
+      ],
+      "story_type": "sales",
+      "member_urls": [
+        "https://eurogamer.net/phantom-blade-zero-4-million-copies-steam-biggest-launch",
+        "https://gamespot.com/articles/phantom-blade-zero-has-won-me-over-as-a-game-of-the-year-candidate-and-you-could-get-it-for-1/",
+        "https://gamespot.com/articles/phantom-blade-zero-put-up-some-massive-sales-numbers/",
+        "https://gematsu.com/2026/11/phantom-blade-zero-sales-top-four-million-in-72-hours",
+        "https://insider-gaming.com/phantom-blade-zero-sells-4-million-copies-in-72-hours/",
+        "https://kitguru.net/tech-news/mustafa-mahmoud/phantom-blade-zero-officially-sells-4-million-copies-in-3-days/",
+        "https://polygon.com/phantom-blade-zero-4-million-copies-opening-weekend/",
+        "https://pushsquare.com/news/2026/11/phantom-blade-zero-is-an-instant-hit-with-4-million-sales-on-ps5-pc"
+      ]
+    },
+    "hike,nintendo,no plans for another switch 2,switch 2|announcement": {
+      "attempt_count": 4,
+      "last_attempt": "2026-11-08T23:47:13.334062+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "cf0a0ae12eb1",
+      "primary_entities": [
+        "hike",
+        "nintendo",
+        "no plans for another switch 2",
+        "switch 2"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://eurogamer.net/nintendo-switch-2-no-plans-for-more-price-hikes",
+        "https://kitguru.net/gaming/matthew-wilson/nintendo-isnt-considering-another-switch-2-price-increase-for-now/",
+        "https://techpowerup.com/354516/nintendo-has-no-plans-for-another-switch-2-price-hike"
+      ]
+    },
+    "anticipated adds ps5 pro support,assassin's creed valhalla,assassin’s creed valhalla,game,game rune forge,ps5 pro,pssr,requested,resource,way bigger|announcement": {
+      "attempt_count": 1,
+      "last_attempt": "2026-11-06T23:15:41.609302+00:00",
+      "failure_reason": "gate failure",
+      "cluster_id": "140eed823365",
+      "primary_entities": [
+        "anticipated adds ps5 pro support",
+        "assassin's creed valhalla",
+        "assassin’s creed valhalla",
+        "game",
+        "game rune forge",
+        "ps5 pro",
+        "pssr",
+        "requested",
+        "resource",
+        "way bigger"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://blog.playstation.com/2026/11/05/assassins-creed-valhalla-new-update-brings-new-game-upgraded-pssr-support-for-ps5-pro-today/",
+        "https://news.xbox.com/en-us/2026/11/05/assassins-creed-valhalla-the-most-requested-update/",
+        "https://pushsquare.com/news/2026/11/assassins-creed-valhalla-new-gameplus-patch-is-way-bigger-than-anticipated-adds-ps5-pro-support"
+      ]
+    },
+    "alongside december,here's,path of exile,path of exile 2,path of exile 2 sets the stage for massive,shadow|announcement": {
+      "attempt_count": 1,
+      "last_attempt": "2026-11-07T20:57:34.716058+00:00",
+      "failure_reason": "gate failure",
+      "cluster_id": "5d60a803dd5d",
+      "primary_entities": [
+        "alongside december",
+        "here's",
+        "path of exile",
+        "path of exile 2",
+        "path of exile 2 sets the stage for massive",
+        "shadow"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://pcgamer.com/games/rpg/heres-whats-in-path-of-exile-2s-huge-1-0-release-coming-in-december/",
+        "https://pcgamer.com/games/rpg/path-of-exile-2-announces-a-second-new-class-the-shadow-for-its-december-1-0-release/",
+        "https://polygon.com/path-of-exile-2-launch-update/",
+        "https://rockpapershotgun.com/path-of-exile-2s-10-version-is-out-this-year-after-all-arriving-in-december-with-a-full-campaign-two-neat-new-classes-and-more"
+      ]
+    },
+    "366gb,50gb,nier automata,nier automata’s,pc,square enix|announcement": {
+      "attempt_count": 1,
+      "last_attempt": "2026-11-10T01:38:13.661008+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "c633a9894a63",
+      "primary_entities": [
+        "366gb",
+        "50gb",
+        "nier automata",
+        "nier automata’s",
+        "pc",
+        "square enix"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://dexerto.com/gaming/square-enix-responds-after-nier-automata-update-triggers-massive-366gb-storage-requirement-3425350/",
+        "https://eurogamer.net/square-enix-nier-automata-update-required-file-size-366gb",
+        "https://kitguru.net/gaming/matthew-wilson/nier-automatas-latest-patch-somehow-requires-366gb-of-free-space/",
+        "https://pcgamer.com/games/rpg/nier-automata-developer-is-currently-investigating-a-bizarre-update-bug-that-drastically-inflated-the-games-file-size-from-50gb-to-366gb/",
+        "https://videogameschronicle.com/news/nier-automatas-latest-update-increases-game-size-from-50gb-to-366gb/"
+      ]
+    },
+    "original xbox games available today,pc,pc via xbox backwards compatibility,xbox,xbox adds 21 classic xbox games,xbox backward compatibility|announcement": {
+      "attempt_count": 4,
+      "last_attempt": "2026-11-25T12:08:07.579215+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "f6a9f65370da",
+      "primary_entities": [
+        "original xbox games available today",
+        "pc",
+        "pc via xbox backwards compatibility",
+        "xbox adds 21 classic xbox games",
+        "xbox backward compatibility"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://news.xbox.com/en-us/2026/11/12/25-original-xbox-games-now-available-on-pc/",
+        "https://techpowerup.com/354761/xbox-adds-21-classic-xbox-games-to-pc-via-xbox-backwards-compatibility-on-pc",
+        "https://videogameschronicle.com/news/21-original-xbox-games-are-now-on-pc-via-backward-compatibility/",
+        "https://videogameschronicle.com/uncategorised/21-original-xbox-games-are-now-on-pc-via-backward-compatibility/"
+      ]
+    },
+    "cheaper,console,ever,favorite mario kart rival,it's closer,microsoft,not a pc,not a pc xbox says,not a pc xbox says and the component crisis,now shaping the next xbox,pc,project helix,xbox,xbox head of next gen finally explains what project helix,xbox project helix|announcement": {
+      "attempt_count": 3,
+      "last_attempt": "2026-11-22T09:08:06.155908+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "8ac3d7403856",
+      "primary_entities": [
+        "cheaper",
+        "console",
+        "ever",
+        "favorite mario kart rival",
+        "it's closer",
+        "microsoft",
+        "not a pc",
+        "not a pc xbox says",
+        "not a pc xbox says and the component crisis",
+        "now shaping the next xbox",
+        "pc",
+        "project helix",
+        "xbox",
+        "xbox head of next gen finally explains what project helix",
+        "xbox project helix"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://dexerto.com/gaming/xbox-shuts-down-confusion-over-whether-project-helix-is-actually-a-pc-3428682/",
+        "https://eurogamer.net/microsoft-project-helix-interview-details",
+        "https://gamespot.com/articles/your-new-favorite-mario-kart-rival-on-pc-is-cheaper-than-ever/",
+        "https://insider-gaming.com/xbox-project-helix-console-first-not-pc/",
+        "https://kitguru.net/gaming/matthew-wilson/xbox-really-doesnt-want-you-thinking-of-project-helix-as-a-gaming-pc/",
+        "https://polygon.com/xbox-project-helix-play-pc-games-library/",
+        "https://talkesport.com/hardware/project-helix-not-a-pc-component-crisis-xbox-25th-anniversary-magazine/",
+        "https://techpowerup.com/354903/xbox-confirms-project-helix-is-not-a-pc-but-its-closer-than-ever",
+        "https://videogameschronicle.com/news/xbox-says-project-helix-is-a-console-that-can-play-pc-games-not-a-pc-that-can-play-console-games/"
+      ]
+    },
+    "512gb and 2tb reservations,may rise,steam machine,steam machine 2tb,valve,valve closes 2tb waitlist,valve’s|announcement": {
+      "attempt_count": 4,
+      "last_attempt": "2026-11-25T21:08:16.247663+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "6f2418ab471c",
+      "primary_entities": [
+        "hike",
+        "hikes and shortages",
+        "may rise",
+        "steam machine",
+        "valve",
+        "valve closes 2tb waitlist",
+        "valve ditches steam machine reservations",
+        "valve warns of a possible steam machine",
+        "warns"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://insider-gaming.com/steam-machine-512gb-2tb-reservation-update/",
+        "https://kitguru.net/gaming/matthew-wilson/valves-latest-steam-machine-update-doesnt-inspire-confidence-for-2tb-buyers/",
+        "https://pcgamesn.com/valve/steam-machine-price-increase",
+        "https://polygon.com/steam-machine-possible-price-hike/",
+        "https://rockpapershotgun.com/valve-are-pausing-steam-machine-2tb-orders-over-supply-constraints-though-the-512gb-model-is-free-of-its-waitlist",
+        "https://talkesport.com/news/steam-machine-price-increase-2tb-waitlist-closed/",
+        "https://techpowerup.com/355040/valve-ditches-steam-machine-reservations-but-warns-of-price-hikes-and-shortages"
+      ]
+    },
+    "ai,ai infrastructure,fbi,law,nvidia expands commitments,nvidia expands open source commitment,nvidia’s,openshell donation,pr nvidia expands commitments,supply chain partners,support ai infrastructure buildout,trump|announcement": {
+      "attempt_count": 2,
+      "last_attempt": "2026-11-22T18:08:08.039464+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "8a98f594a842",
+      "primary_entities": [
+        "ai",
+        "ai infrastructure",
+        "fbi",
+        "law",
+        "nvidia expands commitments",
+        "nvidia expands open source commitment",
+        "nvidia’s",
+        "openshell donation",
+        "pr nvidia expands commitments",
+        "supply chain partners",
+        "support ai infrastructure buildout",
+        "trump"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://blogs.nvidia.com/blog/open-source-openshell-infrastructure/",
+        "https://nvidianews.nvidia.com/news/nvidia-expands-commitments-with-supply-chain-partners-to-support-ai-infrastructure-buildout",
+        "https://pcgamer.com/hardware/graphics-cards/law-firms-lining-up-for-a-chance-to-bop-nvidias-nose-on-behalf-of-its-own-shareholders-president-trump-says-fbi-are-sniffing-around-the-case/",
+        "https://techpowerup.com/354985/nvidia-expands-commitments-with-supply-chain-partners-to-support-ai-infrastructure-buildout"
+      ]
+    },
+    "deny if that’s studio president sam houser,former,fps mode,future gta set outside america,gta,gta 5 5,gta 6,gta 6 breaks records rockstar devs call for union recognition,gta 6 screenshots ahead,james bond,obbe vermeij,refused,rockstar,rockstar dumps nearly 40 spectacular,rockstar explains why gta 6 doesn’t,rockstar open,rockstar tells tribunal sacked staff flouted rules,rockstar wouldn’t,rockstar's,scottish,union vote runs through gta 6,vice city,why did rockstar remove prostitutes,why gta 6 took 13 years rockstar says|announcement": {
+      "attempt_count": 1,
+      "last_attempt": "2026-11-22T21:08:06.662306+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "5a476d953d40",
+      "primary_entities": [
+        "deny if that’s studio president sam houser",
+        "former",
+        "fps mode",
+        "future gta set outside america",
+        "gta",
+        "gta 5 5",
+        "gta 6",
+        "gta 6 breaks records rockstar devs call for union recognition",
+        "gta 6 screenshots ahead",
+        "james bond",
+        "obbe vermeij",
+        "refused",
+        "rockstar",
+        "rockstar dumps nearly 40 spectacular",
+        "rockstar explains why gta 6 doesn’t",
+        "rockstar open",
+        "rockstar tells tribunal sacked staff flouted rules",
+        "rockstar wouldn’t",
+        "rockstar's",
+        "scottish",
+        "union vote runs through gta 6",
+        "vice city",
+        "why did rockstar remove prostitutes",
+        "why gta 6 took 13 years rockstar says"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://eurogamer.net/gta-vice-city-retrospective",
+        "https://insider-gaming.com/rockstar-explains-why-gta-6-doesnt-have-a-40-fps-mode/",
+        "https://insider-gaming.com/rockstar-gta-outside-america/",
+        "https://kotaku.com/rockstar-dumps-nearly-40-spectacular-new-gta-6-screenshots-ahead-of-launch-2000754266",
+        "https://kotaku.com/rockstar-wouldnt-confirm-or-deny-if-thats-studio-president-sam-houser-in-gta-6-2000758489",
+        "https://pcgamer.com/games/grand-theft-auto/21-percent-of-rockstar-staff-have-been-employed-by-the-company-for-over-10-years-which-explains-a-lot-about-gta-6s-record-breaking-launch/",
+        "https://polygon.com/gta-6-devs-union-vote-recognition/",
+        "https://rockpapershotgun.com/what-would-rockstar-have-done-if-gta-hadnt-taken-off-former-tech-director-obbe-vermeij-on-scottish-zombies-james-bond-and-the-curse-of-success",
+        "https://talkesport.com/gta-6/gta-6-prostitutes/",
+        "https://talkesport.com/gta-6/rockstar-tribunal-union-vote-gta-6-launch/",
+        "https://talkesport.com/gta-6/why-did-gta-6-take-so-long-rockstar-gta-5-5/"
+      ]
+    },
+    "actor's health issues,ahead of the witcher 3 songs of the past,ai,cd projekt,cdpr,gen-ai,genai,geralt's,geralt's polish,geralt’s polish,geralt’s polish voice,help,songs of the past,those ways where you can use ai ethically,touch up geralt's polish voice due,toussaint,witcher 3,witcher 3 devs explain using ai,witcher 3 dlc uses ai,witcher 3 geralt,witcher 3 songs of the past|announcement": {
+      "attempt_count": 1,
+      "last_attempt": "2026-11-23T00:08:12.355950+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "8a6fc9d2e5a6",
+      "primary_entities": [
+        "actor's health issues",
+        "ahead of the witcher 3 songs of the past",
+        "ai",
+        "cd projekt",
+        "cdpr",
+        "gen-ai",
+        "genai",
+        "geralt's",
+        "geralt's polish",
+        "geralt’s polish",
+        "geralt’s polish voice",
+        "help",
+        "songs of the past",
+        "those ways where you can use ai ethically",
+        "touch up geralt's polish voice due",
+        "toussaint",
+        "witcher 3",
+        "witcher 3 devs explain using ai",
+        "witcher 3 dlc uses ai",
+        "witcher 3 geralt",
+        "witcher 3 songs of the past"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://dexerto.com/gaming/witcher-3-geralt-actor-approves-ai-use-for-his-return-after-stroke-changed-his-voice-3427613/",
+        "https://eurogamer.net/cd-projekt-red-geralt-gen-ai-voice-polish-jacek-rozenek",
+        "https://kotaku.com/the-witcher-3-devs-explain-using-ai-to-help-with-geralts-polish-voice-in-songs-of-the-past-this-is-one-of-those-ways-where-you-can-use-ai-ethically-2000756004",
+        "https://pcgamer.com/games/the-witcher/cd-projekt-used-ai-to-modify-the-voice-of-geralts-polish-actor-after-a-stroke-left-it-significantly-changed-this-was-a-special-case/",
+        "https://pushsquare.com/news/2026/11/new-witcher-3-dlc-uses-ai-to-touch-up-geralts-polish-voice-due-to-actors-health-issues",
+        "https://rockpapershotgun.com/ahead-of-the-witcher-3-songs-of-the-past-heres-a-lore-friendly-unofficial-expansion-to-geralts-life-in-toussaint-from-a-well-established-quest-modder",
+        "https://rockpapershotgun.com/one-of-those-ways-where-you-can-use-ai-ethically-cdpr-have-modified-geralts-polish-voice-in-the-witcher-3-songs-of-the-past-with-genai-due-to-actors-stroke",
+        "https://videogameschronicle.com/news/the-witcher-3-expansion-uses-ai-to-adjust-geralts-polish-voiceover-because-the-actor-suffered-a-stroke/"
+      ]
+    },
+    "gaming history,grand theft auto vi,gta 6,gta 6 officially breaks pre-order records,gta 6 the biggest,gta 6 the festival,history,live,officially the biggest,one-off live music event partly presented,playstation,playstation and xbox history,playstation and xbox stores,playstation history,pre-ordered digital game,pre-ordered game,ps store's,ps5,sony gta 6,thank|announcement": {
+      "attempt_count": 5,
+      "last_attempt": "2026-11-26T18:08:17.033610+00:00",
+      "failure_reason": "gate failure",
+      "cluster_id": "847f0d9e5be5",
+      "primary_entities": [
+        "grand theft auto vi",
+        "gta 6",
+        "gta 6 becomes the biggest",
+        "officially the biggest",
+        "playstation",
+        "playstation history",
+        "thank"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://blog.playstation.com/2026/11/23/thank-you-for-making-grand-theft-auto-vi-the-biggest-launch-in-playstation-history/",
+        "https://eurogamer.net/more-than-39-million-people-have-played-gta-6-on-playstation-alone-sony-says-as-the-game-breaks-all-time-player-numbers-on-the-platform",
+        "https://insider-gaming.com/gta-6-most-pre-ordered-game-playstation-xbox/",
+        "https://kitguru.net/gaming/mustafa-mahmoud/gta-vi-launch-has-broken-even-more-playstation-records/",
+        "https://kotaku.com/live-updates-on-gta-6-the-biggest-launch-in-gaming-history-2000758030",
+        "https://pcgamer.com/games/grand-theft-auto/sony-gta-6-set-record-for-highest-number-of-concurrent-players-for-any-game-on-playstation-ever/",
+        "https://polygon.com/gta-6-biggest-launch-in-ps-history/",
+        "https://polygon.com/gta-6-pre-order-records-ps5-xbox-series-x/",
+        "https://pushsquare.com/news/2026/11/gta-6-officially-the-biggest-launch-in-playstation-history-with-over-39-million-players",
+        "https://pushsquare.com/news/2026/11/gta-6-on-ps5-is-ps-stores-most-pre-ordered-digital-game-in-history",
+        "https://pushsquare.com/news/2026/11/gta-6-the-festival-is-a-one-off-live-music-event-partly-presented-by-playstation",
+        "https://talkesport.com/gta-6/gta-6-playstation-launch-record/",
+        "https://videogameschronicle.com/news/gta-6-was-the-biggest-launch-in-playstation-history-with-over-39-million-players/"
+      ]
+    },
+    "daylight,daylight terrifier’s,dead,killer,killer's ptb,no laughing matter,terrifier|announcement": {
+      "attempt_count": 1,
+      "last_attempt": "2026-11-25T15:08:06.432060+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "6fb5a852bc1a",
+      "primary_entities": [
+        "daylight",
+        "daylight terrifier’s",
+        "dead",
+        "killer",
+        "killer's ptb",
+        "no laughing matter",
+        "terrifier"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://news.xbox.com/en-us/2026/11/24/dead-by-daylight-terrifiers-new-killer-is-no-laughing-matter/",
+        "https://pcgamesn.com/dead-by-daylight/update-10-3-terrifier-balance-changes"
+      ]
+    },
+    "december’s playstation plus extra,horror games,playstation plus,playstation plus december 2026 free games lineup officially,playstation plus free games for december 2026,playstation plus free games for december 2026 include,playstation plus monthly games,playstation plus monthly games for december 2026,playstation plus monthly games for december tony hawk’s pro skater 3 4 dragon ball xenoverse 2 amnesia the bunker,playstation plus pc,pro skater 3,tony hawk,tony hawk’s pro skater 3 4,years|announcement": {
+      "attempt_count": 3,
+      "last_attempt": "2026-11-28T08:25:24.982078+00:00",
+      "failure_reason": "gate failure",
+      "cluster_id": "910ff654d8cf",
+      "primary_entities": [
+        "december’s playstation plus extra",
+        "horror games",
+        "playstation plus",
+        "playstation plus december 2026 free games lineup officially",
+        "playstation plus free games for december 2026",
+        "playstation plus free games for december 2026 include",
+        "playstation plus monthly games",
+        "playstation plus monthly games for december 2026",
+        "playstation plus monthly games for december tony hawk’s pro skater 3 4 dragon ball xenoverse 2 amnesia the bunker",
+        "playstation plus pc",
+        "pro skater 3",
+        "tony hawk",
+        "tony hawk’s pro skater 3 4",
+        "years"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://blog.playstation.com/2026/11/25/playstation-plus-monthly-games-for-december-tony-hawks-pro-skater-34-dragon-ball-xenoverse-2-amnesia-the-bunker/",
+        "https://dexerto.com/entertainment/tony-hawk-kicked-out-of-iconic-pro-skater-3-location-during-anniversary-video-3424312/",
+        "https://gamespot.com/articles/playstation-plus-essential-free-games-for-december-2026/",
+        "https://gematsu.com/2026/11/playstation-plus-monthly-games-lineup-for-december-2026-announced",
+        "https://insider-gaming.com/playstation-plus-monthly-games-for-december-2026-revealed/",
+        "https://kitguru.net/tech-news/mustafa-mahmoud/decembers-playstation-plus-extra-departees-officially-announced/",
+        "https://kotaku.com/playstation-plus-free-games-for-december-2026-include-one-of-the-best-horror-games-in-years-2001000406",
+        "https://pcgamer.com/gaming-industry/playstation-plus-pc-app-is-being-shut-down-in-december-because-less-than-0-4-percent-of-eligible-subscribers-are-using-it/",
+        "https://polygon.com/playstation-plus-december-2026-games-announced-ps4-ps5-free-essential/",
+        "https://videogameschronicle.com/news/playstation-plus-games-for-december-include-tony-hawks-pro-skater-34/"
+      ]
+    },
+    "black friday deals,hardware,playstation,playstation store’s black friday deals 2026|announcement": {
+      "attempt_count": 1,
+      "last_attempt": "2026-11-26T21:07:59.942228+00:00",
+      "failure_reason": "gate failure",
+      "cluster_id": "ac19038caf07",
+      "primary_entities": [
+        "black friday deals",
+        "hardware",
+        "playstation",
+        "playstation store’s black friday deals 2026"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://blog.playstation.com/2026/11/03/playstations-black-friday-deals-2026/",
+        "https://polygon.com/playstation-black-friday-hardware-deals/"
+      ]
+    },
+    "ally,hitman,hitman 007,hitman world of assassination,io interactive,lenny kravitz brings bawma the pirate king of aleph,lenny kravitz your,light,light ps5 crossover|announcement": {
+      "attempt_count": 3,
+      "last_attempt": "2026-11-28T11:57:50.804292+00:00",
+      "failure_reason": "article_rejected",
+      "cluster_id": "d501e6f7ac20",
+      "primary_entities": [
+        "ally",
+        "hitman",
+        "hitman 007",
+        "hitman world of assassination",
+        "io interactive",
+        "lenny kravitz brings bawma the pirate king of aleph",
+        "lenny kravitz your",
+        "light",
+        "light ps5 crossover"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://kitguru.net/gaming/matthew-wilson/io-interactive-brings-007-first-light-character-to-hitman-in-new-dlc/",
+        "https://news.xbox.com/en-us/2026/11/26/hitman-bawma-elusive-target/",
+        "https://pushsquare.com/news/2026/11/hitman-007-first-light-ps5-crossover-makes-lenny-kravitz-your-new-ally"
+      ]
+    },
+    "cherry time,hollow knight silksong,hollow knight silksong sea of sorrow,hollow knight silksong sea of sorrow dlc,hollow knight silksong's,hollow knight silksong's sea of sorrow dlc,hollow knight silksong’s,it's free,regions bosses,sea of sorrow,sea of sorrow dlc|announcement": {
+      "attempt_count": 1,
+      "last_attempt": "2026-11-28T15:08:03.906258+00:00",
+      "failure_reason": "gate failure",
+      "cluster_id": "5d92dcf5adbb",
+      "primary_entities": [
+        "cherry time",
+        "hollow knight silksong",
+        "hollow knight silksong sea of sorrow",
+        "hollow knight silksong sea of sorrow dlc",
+        "hollow knight silksong's",
+        "hollow knight silksong's sea of sorrow dlc",
+        "hollow knight silksong’s",
+        "it's free",
+        "regions bosses",
+        "sea of sorrow",
+        "sea of sorrow dlc"
+      ],
+      "story_type": "announcement",
+      "member_urls": [
+        "https://eurogamer.net/hollow-knight-silksong-dlc-livestream-sea-of-sorrows-update",
+        "https://eurogamer.net/hollow-knight-silksong-physical-free-content-packs-sea-of-sorrow",
+        "https://eurogamer.net/hollow-knight-silksongs-first-big-expansion-sea-of-sorrows-comes-out-in-two-weeks-and-seems-to-include-a-fishing-minigame",
+        "https://gamingonlinux.com/2026/11/hollow-knight-silksong-sea-of-sorrow-arrives-december-11/",
+        "https://gematsu.com/2026/11/cherry-time-broadcast-set-for-november-27-featuring-exciting-announcements-and-hollow-knight-silksong-free-expansion-sea-of-sorrow",
+        "https://gematsu.com/2026/11/hollow-knight-silksong-free-expansion-sea-of-sorrow-launches-december-11",
+        "https://kitguru.net/gaming/matthew-wilson/hollow-knight-silksong-gets-free-sea-of-sorrow-expansion-next-month/",
+        "https://pushsquare.com/news/2026/11/hollow-knight-silksongs-sea-of-sorrow-dlc-launches-next-month-and-its-free",
+        "https://talkesport.com/news/silksong-sea-of-sorrow-dlc-release-date/",
+        "https://videogameschronicle.com/news/hollow-knight-silksongs-first-expansion-sea-of-sorrow-is-officially-out-next-month/"
+      ]
+    }
+  },
+  "unconfirmed": {
+    "1964cceefe14": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-04T16:24:38.846700+00:00",
+      "attempts": 3
+    },
+    "521ec52c21b5": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-01T18:59:16.755984+00:00",
+      "attempts": 1
+    },
+    "da5025909168": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-01T18:59:16.755984+00:00",
+      "attempts": 1
+    },
+    "c19f5fb3c542": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-01T21:01:00.397072+00:00",
+      "attempts": 1
+    },
+    "b7fc148fa9d3": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-01T21:01:00.397072+00:00",
+      "attempts": 1
+    },
+    "c438fef5c516": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-01T21:01:00.397072+00:00",
+      "attempts": 1
+    },
+    "67321fd7d1a4": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-01T22:54:16.662934+00:00",
+      "attempts": 1
+    },
+    "e225eaaacc98": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-01T22:54:16.662934+00:00",
+      "attempts": 1
+    },
+    "420bdfbe63a1": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-02T02:35:48.767304+00:00",
+      "attempts": 1
+    },
+    "02ed67a521df": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-03T03:30:08.533882+00:00",
+      "attempts": 2
+    },
+    "7a9ebafec84d": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-02T02:35:48.767304+00:00",
+      "attempts": 1
+    },
+    "c5daed19e425": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-02T21:46:31.057384+00:00",
+      "attempts": 1
+    },
+    "fd7d436f8eb9": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-02T21:46:31.057384+00:00",
+      "attempts": 1
+    },
+    "9f36682c94d2": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-03T03:30:08.533882+00:00",
+      "attempts": 1
+    },
+    "a450d55879f4": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-03T03:30:08.533882+00:00",
+      "attempts": 1
+    },
+    "5a94813e906e": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-03T12:00:59.467773+00:00",
+      "attempts": 1
+    },
+    "e001c2b247d2": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-03T12:00:59.467773+00:00",
+      "attempts": 1
+    },
+    "55738e187d53": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-03T12:00:59.467773+00:00",
+      "attempts": 1
+    },
+    "c3de1f9d1654": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-28T12:08:03.663744+00:00",
+      "attempts": 11
+    },
+    "f40bb8b16bbe": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-04T16:24:38.846700+00:00",
+      "attempts": 1
+    },
+    "6ee5eb0ec9ef": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-28T15:08:03.906258+00:00",
+      "attempts": 9
+    },
+    "b2c8482de9b5": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-05T12:29:52.953050+00:00",
+      "attempts": 1
+    },
+    "36556c8a7f72": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-05T12:29:52.953050+00:00",
+      "attempts": 1
+    },
+    "54e155d4f945": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-10T09:59:39.819017+00:00",
+      "attempts": 5
+    },
+    "140eed823365": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-08T21:44:41.054694+00:00",
+      "attempts": 3
+    },
+    "e957caff5e8c": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-05T20:42:41.045732+00:00",
+      "attempts": 1
+    },
+    "f3c773f492bb": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-06T17:33:16.104058+00:00",
+      "attempts": 1
+    },
+    "89fd6c012053": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-09T06:48:49.922479+00:00",
+      "attempts": 3
+    },
+    "a507689c4cda": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-10T23:29:36.435236+00:00",
+      "attempts": 2
+    },
+    "1208f0ff6bfc": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-07T02:53:36.367334+00:00",
+      "attempts": 1
+    },
+    "fc83dc27f277": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-07T10:12:45.950280+00:00",
+      "attempts": 1
+    },
+    "f02b409af8bf": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-07T10:12:45.950280+00:00",
+      "attempts": 1
+    },
+    "28a481957f32": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-07T10:23:50.559363+00:00",
+      "attempts": 1
+    },
+    "ac810c3a97d3": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-07T10:23:50.559363+00:00",
+      "attempts": 1
+    },
+    "ebb31f51268c": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-07T10:23:50.559363+00:00",
+      "attempts": 1
+    },
+    "c633a9894a63": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-10T09:47:22.996683+00:00",
+      "attempts": 3
+    },
+    "838864fedb85": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-07T16:54:17.985899+00:00",
+      "attempts": 1
+    },
+    "ed243082d43f": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-07T16:54:17.985899+00:00",
+      "attempts": 1
+    },
+    "47714fcd6b5e": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-25T15:08:06.432060+00:00",
+      "attempts": 5
+    },
+    "62d041617f8b": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-09T06:48:49.922479+00:00",
+      "attempts": 1
+    },
+    "b3175fd4dbfc": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-09T17:37:38.428303+00:00",
+      "attempts": 1
+    },
+    "bfa123e64731": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-10T01:38:13.661008+00:00",
+      "attempts": 1
+    },
+    "d07f0a89c93c": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-10T09:47:22.996683+00:00",
+      "attempts": 1
+    },
+    "e72bdb5605cf": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-10T09:59:39.819017+00:00",
+      "attempts": 1
+    },
+    "0f4a8f04e3d5": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-19T09:08:29.835980+00:00",
+      "attempts": 3
+    },
+    "cdf811b71f45": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-10T17:56:42.625921+00:00",
+      "attempts": 1
+    },
+    "850452f2fa03": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T12:08:11.242087+00:00",
+      "attempts": 3
+    },
+    "238a8788feef": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-10T23:29:36.435236+00:00",
+      "attempts": 1
+    },
+    "313699f40c5b": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-11T06:41:15.829755+00:00",
+      "attempts": 1
+    },
+    "5903647115eb": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-11T06:41:15.829755+00:00",
+      "attempts": 1
+    },
+    "d776a97d0793": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-14T00:08:09.162079+00:00",
+      "attempts": 2
+    },
+    "ad5179fce69c": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-28T09:08:08.276652+00:00",
+      "attempts": 8
+    },
+    "5e5225d55cba": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-19T09:12:11.275907+00:00",
+      "attempts": 1
+    },
+    "863ad7675cb0": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T05:53:54.458196+00:00",
+      "attempts": 3
+    },
+    "68120b3ca187": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-20T18:08:06.246029+00:00",
+      "attempts": 2
+    },
+    "ac19038caf07": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-28T09:08:08.276652+00:00",
+      "attempts": 7
+    },
+    "e6782733fd65": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-19T15:29:26.387062+00:00",
+      "attempts": 1
+    },
+    "0e49047d1115": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-28T12:08:03.663744+00:00",
+      "attempts": 5
+    },
+    "ddd880c60254": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-20T03:28:00.084835+00:00",
+      "attempts": 1
+    },
+    "b0a99fc89a73": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-22T12:08:11.242087+00:00",
+      "attempts": 2
+    },
+    "230f0d0d887f": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-20T13:06:48.734276+00:00",
+      "attempts": 1
+    },
+    "81ba352bf76a": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T15:08:00.558905+00:00",
+      "attempts": 2
+    },
+    "e063c0f83a7c": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-20T21:08:05.283898+00:00",
+      "attempts": 1
+    },
+    "7fca7b483522": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T07:02:41.797301+00:00",
+      "attempts": 2
+    },
+    "35be9d704b21": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-22T05:53:54.458196+00:00",
+      "attempts": 1
+    },
+    "3a56d1ddb1b0": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-28T09:08:08.276652+00:00",
+      "attempts": 4
+    },
+    "e5986b5053a2": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T07:02:41.797301+00:00",
+      "attempts": 1
+    },
+    "e731eb1d93d4": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T15:08:00.558905+00:00",
+      "attempts": 1
+    },
+    "7f4924caa142": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T15:08:00.558905+00:00",
+      "attempts": 1
+    },
+    "f8c832681185": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T21:08:06.662306+00:00",
+      "attempts": 1
+    },
+    "82608881a2fe": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T21:08:06.662306+00:00",
+      "attempts": 1
+    },
+    "5a476d953d40": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T21:53:31.043980+00:00",
+      "attempts": 1
+    },
+    "c23c4ad244de": {
+      "reason": "insufficient sources",
+      "last_attempt": "2026-11-22T21:53:31.043980+00:00",
+      "attempts": 1
+    },
+    "e06dd7c7ed58": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-22T21:53:31.043980+00:00",
+      "attempts": 1
+    },
+    "8a98f594a842": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-26T21:07:59.942228+00:00",
+      "attempts": 3
+    },
+    "5457f6f9b973": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-26T12:08:18.925876+00:00",
+      "attempts": 1
+    },
+    "d79090ec7241": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-26T15:08:05.367900+00:00",
+      "attempts": 1
+    },
+    "9bf6ed1447cc": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-26T15:08:05.367900+00:00",
+      "attempts": 1
+    },
+    "426cd9b29329": {
+      "reason": "unconfirmed",
+      "last_attempt": "2026-11-28T12:08:03.663744+00:00",
+      "attempts": 1
+    }
+  }
+}

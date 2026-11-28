@@ -1,0 +1,114 @@
+{
+  "feeds": {
+    "https://nvidianews.nvidia.com/cats/gaming.xml": {
+      "etag": "\"6b008499-11c02\"",
+      "last_modified": "Fri, 20 Nov 2026 17:34:17 GMT"
+    },
+    "https://feeds.feedburner.com/nvidiablog": {
+      "last_modified": "Sat, 28 Nov 2026 14:09:50 GMT"
+    },
+    "http://feeds.feedburner.com/psblog": {
+      "last_modified": "Fri, 27 Nov 2026 17:18:52 GMT"
+    },
+    "https://news.xbox.com/en-us/feed/": {
+      "etag": "\"f536554790045bbcbfe81b400fc7fcb1\"",
+      "last_modified": "Fri, 27 Nov 2026 15:00:00 GMT"
+    },
+    "https://newsroom.amd.com/rss.xml": {},
+    "https://newsroom.intel.com/feed/": {
+      "etag": "\"8bcdb-65fecb8e2d4e7-gzip\""
+    },
+    "https://www.tomshardware.com/feeds.xml": {},
+    "https://www.techpowerup.com/rss/news": {},
+    "https://gamersnexus.net/rss.xml": {
+      "etag": "\"1795841995\"",
+      "last_modified": "Sat, 28 Nov 2026 04:59:55 GMT"
+    },
+    "https://www.pcgamer.com/feeds.xml": {},
+    "https://www.eurogamer.net/feed": {
+      "last_modified": "Sat, 28 Nov 2026 13:05:00 GMT"
+    },
+    "https://www.rockpapershotgun.com/feed": {
+      "last_modified": "Sat, 28 Nov 2026 10:00:00 GMT"
+    },
+    "https://www.vg247.com/feed": {
+      "last_modified": "Tue, 02 Jun 2026 08:41:21 GMT"
+    },
+    "https://www.pushsquare.com/feeds/latest": {},
+    "https://www.gamespot.com/feeds/mashup/": {},
+    "https://dotesports.com/feed": {
+      "last_modified": "Thu, 05 Nov 2026 19:28:24 GMT"
+    },
+    "https://esports-news.co.uk/feed": {
+      "etag": "W/\"40cde75665c5180f75238726d9eeef5c\"",
+      "last_modified": "Sat, 28 Nov 2026 08:35:04 GMT"
+    },
+    "https://thebridge.in/category/esports/google_feeds.xml": {
+      "etag": "\"9133-1795682724539\"",
+      "last_modified": "Thu, 26 Nov 2026 08:45:24 GMT"
+    },
+    "https://respawn.outlookindia.com/rss/gaming": {
+      "last_modified": "Sat, 28 Nov 2026 15:07:18 GMT"
+    },
+    "https://insider-gaming.com/feed/": {
+      "etag": "\"89796dfc03490492eaf3edabd2830154\"",
+      "last_modified": "Sat, 28 Nov 2026 00:10:38 GMT"
+    },
+    "https://www.dexerto.com/feed/": {
+      "last_modified": "Sat, 28 Nov 2026 15:08:26 GMT"
+    },
+    "https://kotaku.com/rss": {
+      "etag": "\"9d9107ce4c5ec8dfe86c7b2e3a39a59e\"",
+      "last_modified": "Sat, 28 Nov 2026 14:45:39 GMT"
+    },
+    "https://www.polygon.com/rss/index.xml": {},
+    "https://www.kitguru.net/feed/": {
+      "etag": "\"06e66e609ffc14e56b63767f8a765acd\"",
+      "last_modified": "Fri, 27 Nov 2026 18:54:42 GMT"
+    },
+    "https://www.videogameschronicle.com/feed/": {
+      "etag": "W/\"6b0aedbc-a51\"",
+      "last_modified": "Sat, 28 Nov 2026 15:05:32 GMT"
+    },
+    "https://www.gematsu.com/feed": {
+      "etag": "W/\"f2fda3709ab86330a511ece44bc1ef84\"",
+      "last_modified": "Sat, 28 Nov 2026 14:09:28 GMT"
+    },
+    "https://www.talkesport.com/feed/": {
+      "etag": "W/\"f7eab3657cb955c13dc68a570f18f376\"",
+      "last_modified": "Sat, 28 Nov 2026 14:25:14 GMT"
+    },
+    "https://www.vlr.gg/rss": {},
+    "https://esports.gg/feed/": {
+      "etag": "W/\"5862dd7b7b57bf066ee2c283d4950c0a\"",
+      "last_modified": "Sat, 28 Nov 2026 11:45:10 GMT"
+    },
+    "https://www.pcgamesn.com/mainrss.xml": {
+      "etag": "\"2162b79d0d7924029336d561427e10e7\"",
+      "last_modified": "Sat, 28 Nov 2026 14:34:44 GMT"
+    },
+    "https://www.siliconera.com/feed/": {
+      "etag": "W/\"4edeae1e3057af2b0b0f8995c085c770\"",
+      "last_modified": "Sat, 28 Nov 2026 14:00:19 GMT"
+    },
+    "https://www.theverge.com/rss/games/index.xml": {
+      "etag": "\"e7b29b9c04f605301d49e260eacaa74b\""
+    },
+    "https://www.thexboxhub.com/feed/": {
+      "etag": "W/\"8d8c629d23f1d2113d195882258fe39e\"",
+      "last_modified": "Sat, 28 Nov 2026 15:07:14 GMT"
+    },
+    "https://www.gamingonlinux.com/article_rss.php": {
+      "etag": "W/\"87d19fc41f23a26418979b3a853e6910-gzip\""
+    },
+    "https://gameinformer.com/rss.xml": {
+      "etag": "W/\"1795802998\"",
+      "last_modified": "Fri, 27 Nov 2026 18:09:58 GMT"
+    },
+    "https://nvidianews.nvidia.com/rss.xml": {
+      "etag": "\"6b09c960-668c4\"",
+      "last_modified": "Fri, 27 Nov 2026 18:18:08 GMT"
+    }
+  },
+  "updated_at": "2026-11-28T15:08:04.581347+00:00"
+}

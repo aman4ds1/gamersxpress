@@ -1,0 +1,10 @@
+{
+  "consecutive_failures": 3,
+  "last_failure_date": "2026-11-28",
+  "open": false,
+  "recent_failures": [
+    "publish gates failed: sony-reveals-december-playstation-plus-monthly-games-lineup",
+    "verification failed (article_rejected): io-interactive-brings-007-first-light-character-to-hitman-in-new-dlc",
+    "publish gates failed: team-cherry-sets-december-release-date-for-silksong-expansion"
+  ]
+}
