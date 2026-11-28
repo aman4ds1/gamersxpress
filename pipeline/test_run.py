@@ -137,12 +137,27 @@ def test_fail_gate_exits_3_and_increments_breaker(tmp_path):
     assert breaker["consecutive_failures"] == 1
 
 
+def _no_attempt_limit_config(tmp_path):
+    """The real config with the failed-story attempt limit off.
+
+    The breaker tests open the breaker by failing the one dry-run sample story
+    ``breaker_threshold`` times; with the limit on, that story would stop being
+    retried after ``cluster.failed_max_attempts`` failures.
+    """
+    config = yaml.safe_load((Path(run_module.__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8"))
+    config.setdefault("cluster", {})["failed_max_attempts"] = 0
+    path = tmp_path / "config-no-attempt-limit.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return str(path)
+
+
 def test_breaker_opens_after_the_configured_number_of_gate_failures_and_pauses(tmp_path):
     config = yaml.safe_load((Path(run_module.__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8"))
     threshold = int(config["safety"]["breaker_threshold"])
     for index in range(threshold):
         # Advance past the 24h failed-story cooldown so the same story is retried.
-        result = run_once(tmp_path, dry_run=True, scenario="fail-gate", now=NOW + dt.timedelta(hours=25 * index))
+        result = run_once(tmp_path, dry_run=True, scenario="fail-gate", now=NOW + dt.timedelta(hours=25 * index),
+                          config_path=_no_attempt_limit_config(tmp_path))
     assert result.status == "failed"
     assert result.exit_code == 3
     breaker = json.loads((tmp_path / "state" / "breaker.json").read_text(encoding="utf-8"))
@@ -169,7 +184,7 @@ def _open_breaker(tmp_path):
     config = yaml.safe_load((Path(run_module.__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8"))
     for index in range(int(config["safety"]["breaker_threshold"])):
         opened = NOW + dt.timedelta(hours=25 * index)
-        run_once(tmp_path, dry_run=True, scenario="fail-gate", now=opened)
+        run_once(tmp_path, dry_run=True, scenario="fail-gate", now=opened, config_path=_no_attempt_limit_config(tmp_path))
     return opened + dt.timedelta(hours=1)  # the next hourly run
 
 

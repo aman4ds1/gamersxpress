@@ -64,6 +64,10 @@ DEFAULT_POOL_PATH = PROJECT_ROOT / "data" / "pool.json"
 DEFAULT_SEEN_PATH = PROJECT_ROOT / "data" / "seen.json"
 DEFAULT_FAILED_PATH = PROJECT_ROOT / "data" / "failed.json"
 DEFAULT_FAILED_COOLDOWN_HOURS = 24
+#: A story whose written article failed this many times is never tried again: each
+#: failure counts toward the circuit breaker, so one stubborn story retried after
+#: every cooldown could open it on its own. 0 or None means no limit.
+DEFAULT_FAILED_MAX_ATTEMPTS = 3
 
 SEEN_COOLDOWN = dt.timedelta(days=7)
 DEFAULT_STALE_AFTER = dt.timedelta(days=7)
@@ -1589,6 +1593,7 @@ def cluster_items(
     cooldown: dt.timedelta = SEEN_COOLDOWN,
     failed_cooldown: dt.timedelta | None = None,
     failed_cooldown_hours: int | None = None,
+    failed_max_attempts: int | None = DEFAULT_FAILED_MAX_ATTEMPTS,
     threshold: float = SIMILARITY_THRESHOLD,
     min_event_overlap: int = DEFAULT_EVENT_OVERLAP,
 ) -> list[dict]:
@@ -1605,6 +1610,9 @@ def cluster_items(
     content, not by the membership-hash id: a story that grows by one outlet
     gets a new id but still shares URLs with the covered story, so it is not
     written again.
+
+    A story whose article failed twice waits ``failed_cooldown`` before its next
+    try, and one that failed ``failed_max_attempts`` times is not tried again.
     """
     now = now or dt.datetime.now(dt.timezone.utc)
     seen = seen or {"clusters": {}}
@@ -1649,6 +1657,12 @@ def cluster_items(
             attempt_count = sum(int(entry.get("attempt_count") or 0) for entry in failed_entries)
             attempt_times = [_parse_time(entry.get("last_attempt")) for entry in failed_entries]
             last_attempt = max((time for time in attempt_times if time is not None), default=None)
+            if failed_max_attempts and attempt_count >= failed_max_attempts:
+                logger.info(
+                    "skipping cluster %s: failed %d times (limit %d), not retried again",
+                    cluster_id, attempt_count, failed_max_attempts,
+                )
+                continue
             if attempt_count >= 2 and last_attempt is not None:
                 if (now - last_attempt) < failed_cooldown:
                     logger.info("skipping cluster %s: failed attempts within cooldown", cluster_id)

@@ -689,6 +689,9 @@ def run(
                 failed_cooldown_hours = int(
                     cluster_section.get("failed_cooldown_hours", cluster.DEFAULT_FAILED_COOLDOWN_HOURS)
                 )
+                failed_max_attempts = int(
+                    cluster_section.get("failed_max_attempts", cluster.DEFAULT_FAILED_MAX_ATTEMPTS) or 0
+                )
                 min_event_overlap = int(
                     cluster_section.get("min_event_overlap", cluster.DEFAULT_EVENT_OVERLAP)
                 )
@@ -699,6 +702,7 @@ def run(
                     failed=failed,
                     cooldown=seen_cooldown,
                     failed_cooldown_hours=failed_cooldown_hours,
+                    failed_max_attempts=failed_max_attempts,
                     min_event_overlap=min_event_overlap,
                 )
         if not clusters:

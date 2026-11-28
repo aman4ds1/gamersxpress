@@ -463,6 +463,47 @@ def test_failed_twice_is_skipped_for_24h_then_allowed_again():
     assert len(cluster.cluster_items(items, now=after_cooldown, failed=failed)) == 1
 
 
+def _failed_times(items, times, *, at=NOW):
+    story = cluster.cluster_items(items, now=at)[0]
+    failed = {"stories": {}}
+    for _ in range(times):
+        cluster.record_attempt(
+            failed, story["id"], primary_entities=story["entities"],
+            story_type=story["story_type"], reason="article_rejected", now=at,
+        )
+    return failed
+
+
+def test_a_story_that_failed_three_times_is_never_tried_again():
+    # From the 2026-11-28 run: the Hitman / 007 First Light story failed a third
+    # time after its 24-hour wait, and each failure counted toward the breaker.
+    items = _failed_story_items()
+    failed = _failed_times(items, 3)
+    a_week_later = NOW + dt.timedelta(days=7)
+    assert cluster.cluster_items(items, now=a_week_later, failed=failed) == []
+
+
+def test_two_failures_still_get_one_more_try_after_the_cooldown():
+    items = _failed_story_items()
+    failed = _failed_times(items, 2)
+    assert len(cluster.cluster_items(items, now=NOW + dt.timedelta(hours=25), failed=failed)) == 1
+
+
+def test_the_attempt_limit_is_configurable_and_zero_means_no_limit():
+    items = _failed_story_items()
+    failed = _failed_times(items, 3)
+    later = NOW + dt.timedelta(hours=25)
+    assert len(cluster.cluster_items(items, now=later, failed=failed, failed_max_attempts=0)) == 1
+    assert len(cluster.cluster_items(items, now=later, failed=failed, failed_max_attempts=4)) == 1
+    assert cluster.cluster_items(items, now=later, failed=_failed_times(items, 2), failed_max_attempts=2) == []
+
+
+def test_config_sets_the_default_attempt_limit():
+    import yaml
+    config = yaml.safe_load(cluster.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert config["cluster"]["failed_max_attempts"] == cluster.DEFAULT_FAILED_MAX_ATTEMPTS == 3
+
+
 def test_failed_once_is_still_eligible():
     items = _failed_story_items()
     story = cluster.cluster_items(items, now=NOW)[0]

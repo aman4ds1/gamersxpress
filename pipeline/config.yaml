@@ -197,6 +197,11 @@ freshness:
 cluster:
   seen_cooldown_days: 7
   failed_cooldown_hours: 24
+  # A story whose written article failed this many times (rejected by the
+  # verifier or the publish gates) is never tried again. Every such failure
+  # counts toward the circuit breaker, so without a limit one stubborn story,
+  # retried after each cooldown, could open the breaker on its own. 0 = no limit.
+  failed_max_attempts: 3
   # Two headlines joined by only one shared named entity must also share this
   # many event words (content words left after removing the entity and generic
   # words) before they may merge, unless they share a specific story type
