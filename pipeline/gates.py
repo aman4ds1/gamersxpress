@@ -831,14 +831,23 @@ def title_entity_coverage(
     known_names = list(known) if known is not None else list(load_known_names())
     known_tokens = [_entity_tokens(name) for name in known_names]
     entity_tokens = [_entity_tokens(name) for name in entities if str(name).strip()]
-    facts_tokens = _entity_tokens(_facts_claim_text(facts))
+    # Each claim and value on its own: joined, a claim ending "... in December"
+    # and the next starting "PlayStation Plus ..." made "December PlayStation
+    # Plus" look like a name the sheet states (seo.canonicalize_entities, which
+    # checks the same text, then dropped it and the gate could never pass).
+    facts_parts = [
+        tokens
+        for claim in (facts or {}).get("claims") or []
+        for tokens in (_entity_tokens(str(claim.get("claim", ""))), _entity_tokens(str(claim.get("value", ""))))
+        if tokens
+    ]
     missing: list[str] = []
     for phrase in story_phrases(title):
         tokens = _entity_tokens(phrase)
         if not tokens or not any(token.isalpha() for token in tokens):
             continue
         is_known = any(_name_covers(tokens, known_name) for known_name in known_tokens)
-        in_facts = bool(facts_tokens) and _contains_run(facts_tokens, tokens)
+        in_facts = any(_contains_run(part, tokens) for part in facts_parts)
         if not (is_known or in_facts):
             continue
         if any(token.isdigit() for token in tokens) and not is_known:

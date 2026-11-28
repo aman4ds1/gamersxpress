@@ -51,6 +51,8 @@ import cluster
 import verify
 from gates import (
     outlets_named,
+    _contains_run,
+    _entity_tokens,
     entity_mention_failures,
     load_content_limits,
     load_content_rules,
@@ -331,6 +333,27 @@ def canonicalize_text(text: str, entities: list[dict]) -> str:
     return pattern.sub(lambda m: mapping.get(m.group(0).lower(), m.group(0)), text)
 
 
+def _known_name_inside(phrase: str, facts: dict, entities: list[dict]) -> str:
+    """``phrase``, or the longest known entity name inside it when the phrase itself would be dropped.
+
+    A title phrase like "December PlayStation Plus" is demanded because it holds
+    the known name "PlayStation Plus", but :func:`canonicalize_entities` drops the
+    phrase itself (no entity and no claim spells it). The known name covers the
+    phrase for the gate, so it is added instead and the draft can pass.
+    """
+    key = _entity_key(phrase)
+    if key in _alias_index(entities) or key in _entity_key(_facts_text(facts)):
+        return phrase
+    phrase_tokens = _entity_tokens(phrase)
+    best: tuple[int, str] | None = None
+    for entity in entities:
+        for name in (entity["canonical"], *entity.get("aliases", [])):
+            tokens = _entity_tokens(str(name or ""))
+            if tokens and _contains_run(phrase_tokens, tokens) and (best is None or len(tokens) > best[0]):
+                best = (len(tokens), entity["canonical"])
+    return best[1] if best else phrase
+
+
 def add_required_entities(
     names: list[str],
     *,
@@ -347,7 +370,10 @@ def add_required_entities(
     top entity is only added when the title or body names it. Returns the final
     canonical names and the new entities to persist.
     """
-    required = list(title_entity_coverage(title, names, facts))
+    required = [
+        _known_name_inside(phrase, facts, entities)
+        for phrase in title_entity_coverage(title, names, facts)
+    ]
     canonical = ((facts or {}).get("coherence") or {}).get("canonical_entities") or []
     top = str(canonical[0]).strip() if canonical else ""
     if top and not entity_mention_failures(title, [top], article if isinstance(article, str) else str(article)):

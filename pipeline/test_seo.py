@@ -1195,3 +1195,47 @@ def test_time_words_are_never_dropped_as_filler():
     for word in ("currently", "recently", "now"):
         assert word in fitted or fitted == " ".join(padded.split()), word
     assert fitted == " ".join(padded.split()) or all(word in fitted for word in ("currently", "recently"))
+
+
+# --- a title phrase holding a known name ("December PlayStation Plus") -----------------------------------------------
+
+PS_PLUS_TITLE = "Sony reveals December PlayStation Plus monthly games lineup"
+PS_PLUS_ENTITIES = [{"canonical": "PlayStation Plus", "aliases": ["PS Plus"]}, {"canonical": "Sony", "aliases": []}]
+
+
+def ps_plus_facts(*claims):
+    return {"claims": [{"claim": claim, "value": ""} for claim in claims]}
+
+
+def test_a_phrase_two_neighbouring_claims_only_spell_together_is_not_demanded():
+    # From the 2026-11-28 run: one claim ended "... in December", the next began
+    # "PlayStation Plus PC app ...", and the joined text made a phrase no claim states.
+    import gates
+    facts = ps_plus_facts("The app is being shut down in December", "PlayStation Plus PC app is being shut down")
+    assert gates.title_entity_coverage(PS_PLUS_TITLE, ["Sony"], facts, known=["sony"]) == []
+
+
+def test_a_phrase_one_claim_states_is_still_demanded():
+    import gates
+    facts = ps_plus_facts("The December PlayStation Plus lineup has three games")
+    assert gates.title_entity_coverage(PS_PLUS_TITLE, ["Sony"], facts, known=["sony"]) == ["December PlayStation Plus"]
+
+
+def test_the_known_name_inside_a_demanded_phrase_is_added_instead_of_the_phrase(monkeypatch):
+    import gates
+    monkeypatch.setattr(gates, "load_known_names", lambda: frozenset({"playstation plus", "sony"}))
+    facts = ps_plus_facts("Sony revealed the monthly games")
+    article = f"# {PS_PLUS_TITLE}\n\nSony revealed the December PlayStation Plus monthly games.\n"
+    names, _new = seo.add_required_entities(["Sony"], title=PS_PLUS_TITLE, article=article,
+                                            facts=facts, entities=PS_PLUS_ENTITIES)
+    assert "PlayStation Plus" in names and "December PlayStation Plus" not in names
+    assert gates.title_entity_coverage(PS_PLUS_TITLE, names, facts, known=["playstation plus", "sony"]) == []
+
+
+def test_a_phrase_the_sheet_spells_is_kept_as_it_is():
+    facts = ps_plus_facts("The December PlayStation Plus lineup has three games")
+    assert seo._known_name_inside("December PlayStation Plus", facts, PS_PLUS_ENTITIES) == "December PlayStation Plus"
+
+
+def test_a_phrase_with_no_known_name_inside_is_left_for_canonicalize_to_judge():
+    assert seo._known_name_inside("Mystery Thing", ps_plus_facts("Nothing here"), PS_PLUS_ENTITIES) == "Mystery Thing"
