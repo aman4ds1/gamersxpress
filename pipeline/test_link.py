@@ -223,3 +223,61 @@ def test_related_articles_still_use_every_listed_entity():
 
 def test_everyday_capitalized_stopwords_and_short_words_are_not_keywords():
     assert link._keywords("Update on News With Many PS5 Pro Changes") == ["changes"]
+
+
+# --- a link never splits a longer name, and a title keyword only links a proper noun ---------------------------
+
+def real_case_articles():
+    return [
+        article("me", "Lenny Kravitz brings Bawma to Hitman", "gaming-news", "2026-10-09T12:00:00+00:00", []),
+        article("gta", "Grand Theft Auto VI launches on PlayStation 5 and Xbox Cloud", "gaming-news",
+                "2026-10-01T12:00:00+00:00", ["Grand Theft Auto VI"]),
+        article("nioh", "Nioh 3 and Complete Edition arrive on Xbox on January 28, 2027", "xbox",
+                "2026-10-01T12:00:00+00:00", ["Nioh 3"]),
+    ]
+
+
+def body_of(text):
+    return "---\ntitle: Lenny Kravitz brings Bawma to Hitman\n---\n\n## What happened\n\n" + text + "\n"
+
+
+def linked(text):
+    return link.add_links(body_of(text), link.build_index(real_case_articles()), self_id="me", now=NOW)
+
+
+def test_a_word_inside_a_longer_name_is_never_linked():
+    # From the 2026-11-27 run: "Xbox One" became "[Xbox](/news/...) One" and the gate failed the draft.
+    result = linked("Players can take on the target on Xbox One, PC and Xbox Series X|S.")
+    assert result.links == []
+    assert "Xbox One" in result.article
+
+
+def test_the_same_word_on_its_own_is_still_linked():
+    result = linked("The mission is also on Xbox through cloud play.")
+    assert [item["term"] for item in result.links] == ["Xbox"]
+
+
+def test_a_word_after_a_capitalized_word_mid_sentence_is_part_of_that_name():
+    result = linked("Fans of the Microsoft Xbox can play it.")
+    assert result.links == []
+
+
+def test_a_capitalized_first_word_does_not_make_the_next_word_part_of_a_name():
+    result = linked("The Xbox version arrives later.")
+    assert [item["term"] for item in result.links] == ["Xbox"]
+
+
+def test_a_title_keyword_never_links_an_everyday_lowercase_word():
+    # From the same run: the verb "complete" linked to "Nioh 3 and Complete Edition ...".
+    result = linked("Players who complete The Mutiny unlock a suit.")
+    assert result.links == []
+
+
+def test_a_title_keyword_at_the_start_of_a_sentence_is_not_linked():
+    result = linked("It is fun. Complete the mission to unlock a suit.")
+    assert result.links == []
+
+
+def test_a_title_keyword_written_as_a_proper_noun_is_still_linked():
+    result = linked("The bundle is part of the Complete, according to Koei Tecmo.")
+    assert [item["id"] for item in result.links] == ["nioh"]

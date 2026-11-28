@@ -261,27 +261,63 @@ def _about(entity: str, title: str) -> bool:
     return bool(wanted) and 2 * sum(1 for word in wanted if word in present) >= len(wanted)
 
 
-def _candidates(index: dict, self_id: str, now: dt.datetime) -> list[tuple[str, dict]]:
+def _candidates(index: dict, self_id: str, now: dt.datetime) -> list[tuple[str, dict, bool]]:
+    """``(term, record, is_keyword)`` for every linkable term, longest terms first."""
     records = {record["id"]: record for record in index.get("articles") or []}
-    pairs: list[tuple[str, dict]] = []
+    pairs: list[tuple[str, dict, bool]] = []
     for term in sorted(index.get("by_entity") or {}, key=len, reverse=True):
         for article_id in index["by_entity"][term]:
             record = records.get(article_id)
             if record and _eligible(record, self_id, now) and _about(term, record.get("title", "")):
-                pairs.append((term, record))
+                pairs.append((term, record, False))
     for term in sorted(index.get("by_keyword") or {}, key=len, reverse=True):
         for article_id in index["by_keyword"][term]:
             record = records.get(article_id)
             if record and _eligible(record, self_id, now):
-                pairs.append((term, record))
+                pairs.append((term, record, True))
     return pairs
 
 
-def _find(line: str, term: str, spans: list[tuple[int, int]]) -> re.Match | None:
+#: A capitalized word or a number right after the match continues a longer name ("Xbox One", "Hitman 3").
+_NAME_CONTINUES_RE = re.compile(r"^ (?:[A-Z]|\d)")
+#: The capitalized word right before the match, and what precedes it.
+_NAME_BEFORE_RE = re.compile(r"(.*?)([A-Z][\w'’-]*) $")
+#: Text before a word that makes it the first word of its sentence (a line start, list marker or end punctuation).
+_SENTENCE_START_RE = re.compile(r"(?:^|[.!?:;]|^\s*(?:[-*+]|\d+[.)]))[\s\"'“‘(]*$")
+
+
+def _sentence_initial(line: str, start: int) -> bool:
+    return bool(_SENTENCE_START_RE.search(line[:start]))
+
+
+def _inside_longer_name(line: str, match: re.Match) -> bool:
+    """Whether the match is only part of a longer proper name in the text.
+
+    Linking "Xbox" in "Xbox One" wrote "[Xbox](...) One": the article no longer
+    named its own entity "Xbox One" and the publish gate failed it. The term is
+    part of a longer name when a capitalized word or number follows it, or when
+    a capitalized word that does not start the sentence comes before it.
+    """
+    if _NAME_CONTINUES_RE.match(line[match.end():]):
+        return True
+    before = _NAME_BEFORE_RE.fullmatch(line[:match.start()])
+    return bool(before) and not _sentence_initial(line, len(before.group(1)))
+
+
+def _find(line: str, term: str, spans: list[tuple[int, int]], *, keyword: bool = False) -> re.Match | None:
+    """The first linkable mention of ``term`` in ``line``.
+
+    A title keyword is a proper noun ("Complete" in "Nioh 3 and Complete Edition
+    ..."), so it only matches a word written with a capital that is not merely
+    the start of a sentence; the verb "complete" is never linked.
+    """
     pattern = re.compile(rf"(?<![\w-]){re.escape(term)}(?![\w-])", re.IGNORECASE)
     for match in pattern.finditer(line):
-        if not _in_spans(match.start(), match.end(), spans):
-            return match
+        if _in_spans(match.start(), match.end(), spans) or _inside_longer_name(line, match):
+            continue
+        if keyword and (not match.group(0)[0].isupper() or _sentence_initial(line, match.start())):
+            continue
+        return match
     return None
 
 
@@ -328,10 +364,10 @@ def add_links(
         while changed and len(links) < max_links:
             changed = False
             spans = _link_spans(line)
-            for term, record in candidates:
+            for term, record, is_keyword in candidates:
                 if term in used_terms or record["id"] in used_targets:
                     continue
-                match = _find(line, term, spans)
+                match = _find(line, term, spans, keyword=is_keyword)
                 if match is None:
                     continue
                 label = match.group(0)
