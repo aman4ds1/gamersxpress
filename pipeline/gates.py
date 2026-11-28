@@ -573,10 +573,17 @@ def _facts_claim_text(facts: dict | None) -> str:
     return "\n".join(parts)
 
 
+#: Where one reader sentence ends: after terminal punctuation, or at a line break.
+#: "a.m." and "p.m." do not end a sentence ("discounted at 12 a.m. on November 16"
+#: is one sentence, so its date stays with its offer). The repair validator in
+#: write.py splits with this same pattern, so flagged sentences line up.
+SENTENCE_SPLIT_RE = re.compile(r"(?<!\b[aApP]\.[mM]\.)(?<=[.!?])\s+|\n+")
+
+
 def _sentences(body: str) -> list[str]:
     """Reader sentences in ``body`` (blank lines and terminal punctuation)."""
     text = _FENCE_BLOCK_RE.sub(" ", body or "")
-    return [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", text) if part.strip()]
+    return [part.strip() for part in SENTENCE_SPLIT_RE.split(text) if part.strip()]
 
 
 def _date_token(sentence: str) -> str | None:
@@ -586,6 +593,16 @@ def _date_token(sentence: str) -> str | None:
         if match:
             return match.group(0)
     return None
+
+
+def _has_fact_calendar_date(body: str, facts_text: str) -> bool:
+    """Whether ``body`` names a month or ISO date that the (lowercased) facts text also states."""
+    text = _FENCE_BLOCK_RE.sub(" ", body or "")
+    return any(
+        match.group(0).lower() in facts_text
+        for pattern in (_ISO_DATE_RE, _MONTH_RE)
+        for match in pattern.finditer(text)
+    )
 
 
 #: Organization match keys from ``data/orgs.json``; loaded once per process.
@@ -1493,15 +1510,19 @@ def run_gates(
     opinion_failures = _opinion_origin_failures(body, facts)
     record("opinion_attribution", opinion_failures)
 
-    # 5c. limited-time offers need a date the sheet states
+    # 5c. limited-time offers need a date the sheet states. The date may sit in
+    # the offer's own sentence or anywhere else in the body (a deals story states
+    # the window once, not in every deal line); elsewhere only a month or ISO
+    # date counts, since a bare year is in nearly every story.
     offer_failures: list[str] = []
+    story_has_offer_date = _has_fact_calendar_date(body, facts_text)
     for sentence in _sentences(body):
         lowered = sentence.lower()
         offer = next((p for p in config["offer_phrases"] if p and _offer_in(lowered, p)), None)
         if not offer:
             continue
         date = _date_token(sentence)
-        if not date or date.lower() not in facts_text:
+        if (not date or date.lower() not in facts_text) and not story_has_offer_date:
             offer_failures.append(
                 f"body offers {offer!r} without a date range or start date from the facts sheet: {sentence!r}"
             )

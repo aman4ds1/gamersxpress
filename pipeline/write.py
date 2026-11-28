@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-from gates import _content_words, find_leaks
+from gates import SENTENCE_SPLIT_RE, _content_words, find_leaks
 from providers import (
     Generation,
     RunState,
@@ -587,7 +587,7 @@ def _fold(text: str) -> str:
 
 def _sentences(text: str) -> list[str]:
     """Sentences of ``text``; front-matter lines count as sentences of their own."""
-    return [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", text or "") if part.strip()]
+    return [part.strip() for part in SENTENCE_SPLIT_RE.split(text or "") if part.strip()]
 
 
 def _paragraph_sentence_groups(text: str) -> list[list[str]]:
@@ -601,7 +601,7 @@ def _paragraph_sentence_groups(text: str) -> list[list[str]]:
     for chunk in re.split(r"\n\s*\n", str(text or "")):
         sentences = [
             part.strip()
-            for part in re.split(r"(?<=[.!?])\s+|\n+", chunk)
+            for part in SENTENCE_SPLIT_RE.split(chunk)
             if part.strip()
         ]
         if sentences:

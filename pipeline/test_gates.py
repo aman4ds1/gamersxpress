@@ -1514,6 +1514,58 @@ def test_a_sale_with_a_date_from_the_facts_sheet_still_passes():
     assert offer_failures("The sale runs from October 7 to October 21.", facts=facts) == []
 
 
+def october_16_facts():
+    facts = make_facts()
+    facts["claims"] = [{"claim": "First-party games are discounted from October 16.", "value": "October 16",
+                        "source_url": "https://a.example/1", "confidence": 1.0, "kind": "confirmed"}]
+    return facts
+
+
+def test_a_time_with_am_does_not_split_the_offer_from_its_date():
+    # From the Black Friday deals story: the splitter used to stop at "a.m.".
+    sentence = "First-party games will get discounted at 12 a.m. in your local time on October 16, 2026."
+    assert gates._sentences(sentence) == [sentence]
+    assert offer_failures(sentence, facts=october_16_facts()) == []
+
+
+def test_pm_does_not_end_a_sentence_but_ordinary_full_stops_still_do():
+    assert gates._sentences("It opens at 6 p.m. Pacific on Friday. Then it closes.") == [
+        "It opens at 6 p.m. Pacific on Friday.", "Then it closes.",
+    ]
+
+
+def test_the_repair_validator_splits_sentences_the_same_way_as_the_gates():
+    import write as write_module
+    text = "It opens at 6 P.M. Pacific. The DualSense Edge gets a $30 discount.\nNext line."
+    assert write_module._sentences(text) == gates._sentences(text)
+
+
+def test_an_offer_passes_when_the_story_states_the_window_in_another_sentence():
+    failures = offer_failures(
+        "Sony's Black Friday deals run from October 16, 2026.",
+        "The DualSense Edge gets a $30 discount, bringing its price down to $169.",
+        facts=october_16_facts(),
+    )
+    assert failures == []
+
+
+def test_a_date_elsewhere_that_the_facts_sheet_does_not_state_does_not_help():
+    failures = offer_failures(
+        "The console launched in March.",
+        "The DualSense Edge gets a $30 discount.",
+        facts=october_16_facts(),
+    )
+    assert len(failures) == 1 and "'discount'" in failures[0]
+
+
+def test_a_bare_year_elsewhere_in_the_story_is_not_an_offer_window():
+    facts = make_facts()
+    facts["claims"] = [{"claim": "The deals were announced in 2026.", "value": "2026",
+                        "source_url": "https://a.example/1", "confidence": 1.0, "kind": "confirmed"}]
+    failures = offer_failures("The deals were announced in 2026.", "The DualSense Edge gets a $30 discount.", facts=facts)
+    assert len(failures) == 1 and "'discount'" in failures[0]
+
+
 def test_a_sale_of_up_to_a_percentage_is_still_caught_by_the_percent_off_phrase():
     failures = offer_failures("Steam runs a sale of up to 50% off.")
     assert len(failures) == 1 and "'% off'" in failures[0]
