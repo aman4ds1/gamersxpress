@@ -1196,6 +1196,11 @@ safety:
   # again and the gates re-run. Failures no sentence is behind (a thin section, a missing
   # source) still reject the draft. Costs two extra model calls on a draft that needs it.
   gate_repair: true
+  # When the verifier still rejects sentences after the writer's repair (or the repair
+  # was itself rejected), those sentences are deleted in code and the draft is verified
+  # once more. A deletion adds no claim; the lead is never deleted and no more than a
+  # third of the body may go. Costs one extra verifier call on a draft that needs it.
+  delete_unsupported: true
 
 # Per-provider and per-role timeouts and TPM limits.
 provider:

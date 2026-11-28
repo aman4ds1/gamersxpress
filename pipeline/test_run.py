@@ -10,6 +10,7 @@ import facts
 import providers
 import publish
 import run as run_module
+import write as write_module
 import score
 
 NOW = dt.datetime(2026, 10, 9, 12, tzinfo=dt.timezone.utc)
@@ -807,6 +808,15 @@ def test_repair_adding_new_unsupported_claim_still_fails(tmp_path):
     assert NEW_CLAIM in result.report["failures"][0]
 
 
+def _config_without_deletion(tmp_path):
+    """The real config with safety.delete_unsupported off, for tests of the writer repair on its own."""
+    config = yaml.safe_load((Path(run_module.__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8"))
+    config["safety"]["delete_unsupported"] = False
+    path = tmp_path / "config-no-delete.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return str(path)
+
+
 def test_no_second_repair_when_repaired_article_still_fails(tmp_path):
     paths = make_paths(tmp_path)
     original = dryrun.sample_body() + f"\n\n{UNSUPPORTED}\n"
@@ -816,7 +826,8 @@ def test_no_second_repair_when_repaired_article_still_fails(tmp_path):
     )
 
     result = run_module.run(paths=paths, now=NOW, env={}, dry_run=True, generate=generate,
-                            link_checker=lambda url: 200, site_checks=STUB_CHECKS)
+                            link_checker=lambda url: 200, site_checks=STUB_CHECKS,
+                            config_path=_config_without_deletion(tmp_path))
 
     assert result.status == "failed"
     assert calls["writer"] == 2, "a failing repair is never repaired a second time"
@@ -854,7 +865,8 @@ def test_a_repair_that_leaks_the_facts_sheet_is_rejected(tmp_path):
     generate = repair_generate([original, repaired], [verdict_json(UNSUPPORTED), verdict_json()], calls)
 
     result = run_module.run(paths=paths, now=NOW, env={}, dry_run=True, generate=generate,
-                            link_checker=lambda url: 200, site_checks=STUB_CHECKS)
+                            link_checker=lambda url: 200, site_checks=STUB_CHECKS,
+                            config_path=_config_without_deletion(tmp_path))
 
     assert result.status == "failed"
     assert result.exit_code == 3
@@ -868,6 +880,23 @@ def test_a_repair_that_leaks_the_facts_sheet_is_rejected(tmp_path):
 
     breaker = json.loads(paths.breaker.read_text(encoding="utf-8"))
     assert breaker["consecutive_failures"] == 1, "a rejected repair still counts one failed attempt"
+
+
+def test_after_a_leaking_repair_the_flagged_sentence_is_deleted_from_the_original_draft(tmp_path):
+    paths = make_paths(tmp_path)
+    original = dryrun.sample_body() + f"\n\n{UNSUPPORTED}\n"
+    repaired = dryrun.sample_body() + "\n\n## Facts sheet\n\nF1: 'Nvidia confirmed the launch window'\n"
+    calls = repair_calls()
+    generate = repair_generate([original, repaired], [verdict_json(UNSUPPORTED), verdict_json()], calls)
+
+    result = run_module.run(paths=paths, now=NOW, env={}, dry_run=True, generate=generate,
+                            link_checker=lambda url: 200, site_checks=STUB_CHECKS)
+
+    assert result.status == "completed", result.report.get("failures")
+    assert calls["writer"] == 2
+    assert calls["verifier"] == 2, "the rejected repair is not verified; the code deletion is"
+    published = (paths.articles_dir / f"{result.report['slug']}.md").read_text(encoding="utf-8")
+    assert UNSUPPORTED not in published and "Facts sheet" not in published
 
 
 # --- readiness gate (enough contributing sources and usable claims) ----------
@@ -2264,3 +2293,70 @@ def test_a_rumor_clause_that_differs_only_in_case_or_punctuation_is_still_taken_
     _paths, calls, result = run_with_stubs(tmp_path, [body], [verdict_json()], repair_fn=capture_repair(seen),
                                            verify_fn=stub_verify([clause_in_list], detail))
     assert seen == [] and calls["writer"] == 1 and result.status == "completed"
+
+
+# --- sentences still rejected after the repair are deleted in code -------------------------------------------------
+
+def _last_body_sentence(article):
+    body = write_module._body_of_article(article)
+    sentences = [s for s in write_module._sentences(body) if s and not s.lstrip().startswith("#")]
+    return sentences[-1]
+
+
+def _rejecting_verify(calls, *, unmatched=False):
+    """Reject while the first draft's last sentence is present; pass once it is gone."""
+    real_verify = run_module.verify_stage.verify
+    target = {}
+
+    def verify(article, *args, **kwargs):
+        calls.append(article)
+        report = real_verify(article, *args, **kwargs)
+        target.setdefault("sentence", _last_body_sentence(article))
+        if target["sentence"] in article:
+            report.passed = False
+            report.failure_reason = "article_rejected"
+            report.unsupported = [target["sentence"]]
+            if unmatched:
+                report.unmatched_numbers = ["30"]
+        return report
+
+    return verify, target
+
+
+def _unchanged_repair(draft, flagged_clauses, facts, **kwargs):
+    return providers.Generation("writer", "gemini", "g", "google", draft)
+
+
+def test_a_sentence_the_repair_did_not_fix_is_deleted_and_the_story_publishes(tmp_path):
+    calls = []
+    verify, target = _rejecting_verify(calls)
+    result = run_once(tmp_path, dry_run=True, scenario="pass", verify_fn=verify, repair_fn=_unchanged_repair)
+    assert result.status == "completed", result.report.get("failures")
+    assert len(calls) == 3  # the draft, the writer's repair, the code deletion
+    published = (tmp_path / "state" / "articles" / f"{dryrun.SAMPLE_SLUG}.md").read_text(encoding="utf-8")
+    assert target["sentence"] not in published
+
+
+def test_the_deletion_can_be_switched_off(tmp_path):
+    calls = []
+    verify, _target = _rejecting_verify(calls)
+    config = yaml.safe_load((Path(run_module.__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8"))
+    config["safety"]["delete_unsupported"] = False
+    path = tmp_path / "config-no-delete.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    result = run_once(tmp_path, dry_run=True, scenario="pass", verify_fn=verify, repair_fn=_unchanged_repair,
+                      config_path=str(path))
+    assert result.status == "failed" and len(calls) == 2
+
+
+def test_an_unmatched_number_is_not_deleted_away(tmp_path):
+    calls = []
+    verify, _target = _rejecting_verify(calls, unmatched=True)
+    result = run_once(tmp_path, dry_run=True, scenario="pass", verify_fn=verify, repair_fn=_unchanged_repair)
+    assert result.status == "failed" and len(calls) == 2
+
+
+def test_the_writer_prompt_makes_the_commentary_sections_optional():
+    prompt = (Path(run_module.__file__).resolve().parent.parent / "prompts" / "writer.md").read_text(encoding="utf-8")
+    assert "`## Why gamers should care` (optional" in prompt
+    assert "never write a sentence to fill a section" in prompt

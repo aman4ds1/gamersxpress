@@ -529,6 +529,7 @@ def run(
     daily_cap = int(env.get("DAILY_CAP") or safety.get("daily_cap", 4))
     modes = tuple(safety.get("publish_modes") or publish_stage.PUBLISH_MODES)
     gate_repair = bool(safety.get("gate_repair", True))
+    delete_unsupported = bool(safety.get("delete_unsupported", True))
     publish_mode = str(env.get("PUBLISH_MODE", "draft"))
     gates_config = gates_stage.load_gates_config(config_path)
     verify_config = verify_stage.load_verify_config(config_path)
@@ -1085,6 +1086,48 @@ def run(
                             "repaired_chars": len(repaired_text),
                         },
                     )
+
+        # Last resort, in code: when the rewrite still leaves unsupported sentences
+        # (or was itself rejected), delete exactly those sentences and verify once
+        # more. A deletion cannot add a claim, so the article can only get more
+        # accurate; delete_flagged_sentences keeps the lead, takes a dependent
+        # "This ..." sentence and an emptied heading with it, and refuses when more
+        # than a third of the body would go. Numbers the code check could not match
+        # are not sentences the verifier flagged, so that failure is left as it is.
+        if (
+            delete_unsupported
+            and not verify_report.passed
+            and verify_report.failure_reason == "article_rejected"
+            and verify_report.unsupported
+            and not verify_report.unmatched_numbers
+        ):
+            trimmed, removed = write_stage.delete_flagged_sentences(draft, list(verify_report.unsupported))
+            if removed:
+                logger.info(
+                    "verify still rejected %d clause(s); deleted %d sentence(s) in code and verifying again: %s",
+                    len(verify_report.unsupported), len(removed), removed,
+                )
+                publish_stage.save_repair(
+                    draft, trimmed, slug=provisional_slug, drafts_dir=paths.drafts_dir,
+                    changed_clauses=list(verify_report.unsupported),
+                )
+                with timings.stage("verify"):
+                    trimmed_report = verify_fn(
+                        trimmed, facts, run_state=run_state, generate=generate,
+                        report_dir=paths.reports_dir, id=cluster_id,
+                        source_texts=gates_stage.gathered_texts(gathered),
+                        repair={
+                            "attempted": True,
+                            "changed_clauses": list(verify_report.unsupported),
+                            "deleted_sentences": removed,
+                            "original_chars": len(draft),
+                            "repaired_chars": len(trimmed),
+                        },
+                    )
+                if trimmed_report.passed:
+                    draft, verify_report, repair_problems = trimmed, trimmed_report, []
+                else:
+                    verify_report = trimmed_report
 
         if not verify_report.passed:
             reason = verify_report.failure_reason or "unknown"
